@@ -1,8 +1,8 @@
-site_name: strato
+site_name: completr
 site_description: "Serverless autocompletion: an embedded engine whose database is a bucket."
-site_url: https://sayef.github.io/strato/
-repo_url: https://github.com/sayef/strato
-repo_name: sayef/strato
+site_url: https://sayef.github.io/completr/
+repo_url: https://github.com/sayef/completr
+repo_name: sayef/completr
 edit_uri: edit/main/docs/
 copyright: Copyright &copy; sayef. Released under the MIT License.
 
@@ -53,7 +53,7 @@ plugins:
       default_handler: python
       handlers:
         python:
-          paths: [crates/strato-py/python]
+          paths: [crates/completr-py/python]
           options:
             allow_inspection: false
             show_root_heading: true
@@ -141,4 +141,4 @@ nav:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/sayef/strato
+      link: https://github.com/sayef/completr

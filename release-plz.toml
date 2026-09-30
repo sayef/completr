@@ -9,10 +9,10 @@ pr_labels = ["release"]
 semver_check = true
 
 [[package]]
-name = "strato"
+name = "completr"
 changelog_update = true
 changelog_path = "CHANGELOG.md"
-changelog_include = ["strato-py", "strato-cli"]
+changelog_include = ["completr-py", "completr-cli"]
 publish = true
 git_tag_enable = true
 git_tag_name = "v{{ version }}"
@@ -21,12 +21,12 @@ git_release_name = "v{{ version }}"
 
 # Released with the library at the same version.
 [[package]]
-name = "strato-cli"
+name = "completr-cli"
 publish = true
 
 # Versioned through the workspace version, built and published to PyPI by release.yml.
 [[package]]
-name = "strato-py"
+name = "completr-py"
 release = false
 
 [changelog]

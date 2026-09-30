@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes how strato stores, searches and updates indexes. strato is serverless: the engine
+This document describes how completr stores, searches and updates indexes. completr is serverless: the engine
 runs inside each application process, and the only shared component is the store. For usage, see
 [Getting started](getting-started.md) and the guides.
 
@@ -23,7 +23,7 @@ A segment is one file. Every section is 8-byte aligned and read in place from a 
 segment involves no parsing or copying beyond validation.
 
 ```
-magic "STRATO\0\0" | version | settings | layout
+magic "COMPLETR\0\0" | version | settings | layout
 ids (sorted) | weights | text lengths | single-word flags | deletes
 document store     zstd blocks of 128 documents' aliases and contexts, with block offsets
 titles             dictionary: normalised title -> postings
@@ -48,7 +48,7 @@ xxh3 checksum of everything above
 
 ### Dictionaries
 
-strato fixes the dictionary per key set (`Layout`, recorded in the segment) instead of making it a user
+completr fixes the dictionary per key set (`Layout`, recorded in the segment) instead of making it a user
 option:
 
 | Key set | Dictionary | Why |

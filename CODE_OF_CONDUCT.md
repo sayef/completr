@@ -1,8 +1,8 @@
 # Code of Conduct
 
-strato follows the [Contributor Covenant, version 2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).
+completr follows the [Contributor Covenant, version 2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).
 
-In short, we want strato to be welcoming and harassment-free for everyone, whatever their age, body size,
+In short, we want completr to be welcoming and harassment-free for everyone, whatever their age, body size,
 visible or invisible disability, ethnicity, sex characteristics, gender identity and expression, level of
 experience, education, socio-economic status, nationality, personal appearance, race, caste, colour,
 religion, or sexual identity and orientation.

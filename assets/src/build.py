@@ -59,14 +59,14 @@ def icon(x=0, y=0, size=128):
 
 
 def wordmark(x, baseline, size, theme):
-    """`str` typed, a caret, and `ato` as the ghost completion."""
+    """`compl` typed, a caret, and `etr` as the ghost completion."""
     colors = THEMES[theme]
-    typed, typed_w = text_path(BOLD, "str", x, baseline, size, -0.02)
+    typed, typed_w = text_path(BOLD, "compl", x, baseline, size, -0.02)
     gap = size * 0.06
     caret_x = x + typed_w + gap
     caret_w = size * 0.055
     ghost_x = caret_x + caret_w + gap
-    ghost, ghost_w = text_path(BOLD, "ato", ghost_x, baseline, size, -0.02)
+    ghost, ghost_w = text_path(BOLD, "etr", ghost_x, baseline, size, -0.02)
     cap = size * 0.78
     parts = [
         f'<path d="{typed}" fill="{colors["typed"]}"/>',
@@ -86,27 +86,27 @@ def svg(width, height, body, label):
 
 TAGLINE = "Serverless autocompletion for Rust and Python"
 
-(OUT / "logo.svg").write_text(svg(128, 128, icon(), "strato"))
+(OUT / "logo.svg").write_text(svg(128, 128, icon(), "completr"))
 
 for theme in THEMES:
     mark, mark_w = wordmark(172, 98, 84, theme)
     tag, tag_w = text_path(MEDIUM, TAGLINE, 176, 142, 22)
     width = int(max(172 + mark_w, 176 + tag_w) + 24)
     body = f'{icon(16, 24)}\n{mark}\n<path d="{tag}" fill="{THEMES[theme]["tagline"]}"/>'
-    (OUT / f"banner-{theme}.svg").write_text(svg(width, 176, body, f"strato: {TAGLINE.lower()}"))
+    (OUT / f"banner-{theme}.svg").write_text(svg(width, 176, body, f"completr: {TAGLINE.lower()}"))
 
 # Wordmark alone, and icon plus wordmark, for places where the banner's tagline does not fit.
 for theme in THEMES:
     size, pad = 96, 6
     baseline = pad + size * 0.78
     mark, mark_w = wordmark(pad, baseline, size, theme)
-    height = int(baseline + size * 0.12 + pad)
-    (OUT / f"wordmark-{theme}.svg").write_text(svg(int(mark_w + 2 * pad), height, mark, "strato"))
+    height = int(baseline + size * 0.24 + pad)
+    (OUT / f"wordmark-{theme}.svg").write_text(svg(int(mark_w + 2 * pad), height, mark, "completr"))
     size = 64
     baseline = 48 + size * 0.78 / 2
     mark, mark_w = wordmark(120, baseline, size, theme)
     body = f"{icon(0, 0, 96)}\n{mark}"
-    (OUT / f"lockup-{theme}.svg").write_text(svg(int(120 + mark_w + 8), 96, body, "strato"))
+    (OUT / f"lockup-{theme}.svg").write_text(svg(int(120 + mark_w + 8), 96, body, "completr"))
 
 mark, mark_w = wordmark(0, 0, 150, "dark")
 tag, tag_w = text_path(MEDIUM, TAGLINE, 0, 0, 36)
@@ -120,5 +120,5 @@ social = f"""<rect width="1280" height="640" fill="#0B1020"/>
 <g transform="translate({left + 304} 328)">{mark}</g>
 <g transform="translate({left + 308} 390)"><path d="{tag}" fill="#94A3B8"/></g>
 <g transform="translate({left + 308} 446)"><path d="{kinds}" fill="{CARET}"/></g>"""
-(OUT / "social-preview.svg").write_text(svg(1280, 640, social, "strato"))
+(OUT / "social-preview.svg").write_text(svg(1280, 640, social, "completr"))
 print("written to", OUT)

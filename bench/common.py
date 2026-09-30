@@ -25,7 +25,7 @@ def load_docs():
 
 
 def weight(score, max_score):
-    """Popularity in [0, 1] for strato: log-scaled points."""
+    """Popularity in [0, 1] for completr: log-scaled points."""
     return math.log1p(score) / math.log1p(max_score)
 
 

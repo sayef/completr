@@ -734,6 +734,57 @@ dependencies = [
 ]
 
 [[package]]
+name = "completr"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "aws-config",
+ "aws-credential-types",
+ "criterion",
+ "fsst-rs",
+ "fst",
+ "futures",
+ "libc",
+ "memmap2",
+ "object_store",
+ "rapidfuzz",
+ "rayon",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "turbovec",
+ "url",
+ "uuid",
+ "xxhash-rust",
+ "zstd",
+]
+
+[[package]]
+name = "completr-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "completr",
+ "serde_json",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "completr-py"
+version = "0.1.0"
+dependencies = [
+ "completr",
+ "pyo3",
+ "pyo3-log",
+ "tracing",
+]
+
+[[package]]
 name = "const-oid"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2600,57 +2651,6 @@ dependencies = [
  "nalgebra",
  "num-traits",
  "rand 0.8.8",
-]
-
-[[package]]
-name = "strato"
-version = "0.1.0"
-dependencies = [
- "arc-swap",
- "async-trait",
- "aws-config",
- "aws-credential-types",
- "criterion",
- "fsst-rs",
- "fst",
- "futures",
- "libc",
- "memmap2",
- "object_store",
- "rapidfuzz",
- "rayon",
- "rustc-hash",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "turbovec",
- "url",
- "uuid",
- "xxhash-rust",
- "zstd",
-]
-
-[[package]]
-name = "strato-cli"
-version = "0.1.0"
-dependencies = [
- "clap",
- "serde_json",
- "strato",
- "tokio",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "strato-py"
-version = "0.1.0"
-dependencies = [
- "pyo3",
- "pyo3-log",
- "strato",
- "tracing",
 ]
 
 [[package]]

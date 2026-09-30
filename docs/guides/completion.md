@@ -6,7 +6,7 @@ ranked in one request; you do not choose between prefix, infix or fuzzy search.
 The examples on this page use this index:
 
 ```python
-from strato import Index
+from completr import Index
 
 index = Index.from_documents([
     {"id": "ml", "text": "Machine Learning", "popularity": 0.9, "abbreviations": ["ML"], "contexts": ["courses"]},
@@ -99,13 +99,13 @@ results.
 === "Rust"
 
     ```rust
-    use strato::SearchOptions;
+    use completr::SearchOptions;
 
     let books = SearchOptions::new(10).contexts(["books"]);
     let hits = index.complete_with("mach", &books);
     ```
 
-Contexts are the only filter strato has. Use them for categories, tenants or languages, or use separate
+Contexts are the only filter completr has. Use them for categories, tenants or languages, or use separate
 indexes and [layers](layers.md) when the partitions are large.
 
 ## Synonyms

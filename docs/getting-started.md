@@ -8,7 +8,7 @@ database that serving processes follow while it changes.
 === "Python"
 
     ```sh
-    pip install strato
+    pip install completr
     ```
 
     The wheel is abi3 for CPython 3.11 and newer, and includes every storage backend. It releases the GIL
@@ -17,9 +17,9 @@ database that serving processes follow while it changes.
 === "Rust"
 
     ```sh
-    cargo add strato                                        # engine
-    cargo add strato --features store                       # plus databases on local disk and in memory
-    cargo add strato --features aws-credentials,gcp,azure   # plus S3, GCS and Azure
+    cargo add completr                                        # engine
+    cargo add completr --features store                       # plus databases on local disk and in memory
+    cargo add completr --features aws-credentials,gcp,azure   # plus S3, GCS and Azure
     ```
 
     | Cargo feature | Adds |
@@ -36,7 +36,7 @@ an embedding. `Index.from_documents` builds one segment from them and searches i
 === "Python"
 
     ```python
-    from strato import Index
+    from completr import Index
 
     docs = [
         {"id": "ml", "text": "Machine Learning", "popularity": 0.9, "abbreviations": ["ML"]},
@@ -52,7 +52,7 @@ an embedding. `Index.from_documents` builds one segment from them and searches i
 === "Rust"
 
     ```rust
-    use strato::{Document, Index};
+    use completr::{Document, Index};
 
     let index = Index::from_documents([
         Document::keyed("ml", "Machine Learning", 0.9).with_abbreviation("ML"),
@@ -113,16 +113,16 @@ print(index.complete_aliases("data an"))   # [AliasSuggestion(id='ds', text="Dat
 
 An index built in memory is fine for tests and scripts. In production, the data lives in a **database**: a
 local directory or an object-store bucket holding versioned manifests and immutable segment files.
-`strato.connect` opens one, and creates it if it does not exist.
+`completr.connect` opens one, and creates it if it does not exist.
 
 === "Python"
 
     ```python
     import tempfile
 
-    import strato
+    import completr
 
-    db = strato.connect(tempfile.mkdtemp())   # or s3://bucket/prefix, gs://..., az://..., memory:///name
+    db = completr.connect(tempfile.mkdtemp())   # or s3://bucket/prefix, gs://..., az://..., memory:///name
 
     txn = db.begin()
     txn.append("products", [{"id": f"p{i}", "text": f"product {i}", "popularity": 0.5} for i in range(10_000)])
@@ -132,7 +132,7 @@ local directory or an object-store bucket holding versioned manifests and immuta
 === "Rust"
 
     ```rust
-    use strato::{Database, Document};
+    use completr::{Database, Document};
 
     let database = Database::open("/tmp/completions", Vec::<(String, String)>::new()).await?;
 
@@ -161,7 +161,7 @@ A serving process asks the database for an engine. The engine loads every index 
 === "Rust"
 
     ```rust
-    use strato::{Engine, IndexOptions, Replica};
+    use completr::{Engine, IndexOptions, Replica};
 
     let engine = Engine::new();
     let replica = Replica::new(database.clone(), IndexOptions::default());
@@ -180,12 +180,12 @@ ingestor lease acts, so many processes can run one safely.
 === "Python"
 
     ```python
-    changes = strato.ChangeSet()
+    changes = completr.ChangeSet()
     changes.upsert("products", [{"id": "kb-1", "text": "Wireless Keyboard", "popularity": 0.9}])
     changes.delete("products", ["p42"])
     db.submit(changes)
 
-    ingestor = strato.Ingestor(db, "ingestor-1")
+    ingestor = completr.Ingestor(db, "ingestor-1")
     print(ingestor.run_once())   # {'step': 'committed', 'version': 2, 'change_sets': 1, 'documents': 1}
     ingestor.release()
 
@@ -196,7 +196,7 @@ ingestor lease acts, so many processes can run one safely.
 === "Rust"
 
     ```rust
-    use strato::{key_id, ChangeSet, IngestStep, Ingestor};
+    use completr::{key_id, ChangeSet, IngestStep, Ingestor};
 
     let mut changes = ChangeSet::new();
     changes
@@ -220,8 +220,8 @@ ingestor lease acts, so many processes can run one safely.
 In a real deployment, the ingestor runs in its own process and calls `run_once()` in a loop, and serving
 processes call `engine.sync()` every few seconds. [Serverless deployment](guides/serverless.md) covers
 both, and the runnable examples are
-[`live_updates.py`](https://github.com/sayef/strato/blob/main/crates/strato-py/examples/live_updates.py)
-and [`live_updates.rs`](https://github.com/sayef/strato/blob/main/crates/strato/examples/live_updates.rs).
+[`live_updates.py`](https://github.com/sayef/completr/blob/main/crates/completr-py/examples/live_updates.py)
+and [`live_updates.rs`](https://github.com/sayef/completr/blob/main/crates/completr/examples/live_updates.rs).
 
 ## Next steps
 

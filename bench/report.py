@@ -2,7 +2,7 @@
 import json
 from common import RESULTS
 
-ORDER = ["strato", "tantivy", "typesense", "typesense-buckets", "meilisearch", "meilisearch-popfirst"]
+ORDER = ["completr", "tantivy", "typesense", "typesense-buckets", "meilisearch", "meilisearch-popfirst"]
 QUALITY_COLS = ["mrr_over_prefixes"] + [f"s@{k}_len{L}" for L in (3, 5, 8) for k in (1, 5, 10)] + \
                ["reached_top1", "keystrokes_top1", "reached_top5", "keystrokes_top5", "chars_saved_top5"]
 
@@ -37,8 +37,8 @@ def render(res):
             m0, m1 = r["rss_after_index_bytes"], r["rss_after_queries_bytes"]
         row(n, r["version"], secs(b["index_s"]), mb(b["disk_bytes"]), mb(m0), mb(m1),
             secs(r.get("restart_to_first_hit_s", r.get("open_s"))))
-    if "strato" in res and "build_8_threads" in res["strato"]:
-        out.append(f"\nstrato with build_threads=8: {secs(res['strato']['build_8_threads']['index_s'])}.")
+    if "completr" in res and "build_8_threads" in res["completr"]:
+        out.append(f"\ncompletr with build_threads=8: {secs(res['completr']['build_8_threads']['index_s'])}.")
     out.append("\nIn-process engines: RSS growth of a fresh process after opening, then after 5,000 prefix queries. "
                "Servers: RSS of the server process after indexing, then after all queries.")
 

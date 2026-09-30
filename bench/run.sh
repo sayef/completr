@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 PY=${PYTHON:-python3}
 $PY fetch.py
 if [ -f samples.json ]; then $PY bench.py samples --check; else $PY bench.py samples; fi
-for e in strato tantivy typesense meilisearch; do $PY bench.py run $e --throughput; done
+for e in completr tantivy typesense meilisearch; do $PY bench.py run $e --throughput; done
 $PY bench.py run typesense --variant buckets --throughput
 $PY bench.py run meilisearch --variant popfirst --throughput
 $PY report.py

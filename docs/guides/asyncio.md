@@ -1,6 +1,6 @@
 # asyncio
 
-`strato.connect_async` opens the same database with awaitable storage operations, for FastAPI and other
+`completr.connect_async` opens the same database with awaitable storage operations, for FastAPI and other
 asyncio services. Storage calls run in worker threads through `asyncio.to_thread`, so they never block the
 event loop. Completions stay synchronous: they take well under a millisecond and release the GIL.
 
@@ -10,11 +10,11 @@ event loop. Completions stay synchronous: they take well under a millisecond and
 import asyncio
 import tempfile
 
-import strato
+import completr
 
 
 async def main():
-    db = await strato.connect_async(tempfile.mkdtemp())   # or "s3://my-bucket/completions"
+    db = await completr.connect_async(tempfile.mkdtemp())   # or "s3://my-bucket/completions"
 
     txn = await db.begin()
     txn.append("products", [{"id": "kb-1", "text": "Wireless Keyboard", "popularity": 0.9}])
@@ -42,11 +42,11 @@ async def follow(engine, interval=5.0):
         await asyncio.sleep(interval)
         try:
             await engine.sync()
-        except strato.StorageError:
+        except completr.StorageError:
             pass   # keep serving the current version; try again next round
 ```
 
-The [FastAPI example](https://github.com/sayef/strato/tree/main/examples/fastapi) starts this task in
+The [FastAPI example](https://github.com/sayef/completr/tree/main/examples/fastapi) starts this task in
 the application's lifespan and serves `/complete` from the engine.
 
 ## Methods
@@ -66,7 +66,7 @@ the application's lifespan and serves `/complete` from the engine.
 
 ```python
 async def ingest(db):
-    ingestor = strato.Ingestor(db.database, "worker-1")
+    ingestor = completr.Ingestor(db.database, "worker-1")
     try:
         while True:
             step = await db.run_ingestor(ingestor)

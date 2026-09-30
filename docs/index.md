@@ -1,27 +1,27 @@
 ---
-title: strato
+title: completr
 hide:
   - navigation
   - toc
 ---
 
-<div class="strato-hero" markdown>
+<div class="completr-hero" markdown>
 
-![strato: serverless autocompletion for Rust and Python](assets/banner-light.svg#only-light){ width="620" }
-![strato: serverless autocompletion for Rust and Python](assets/banner-dark.svg#only-dark){ width="620" }
+![completr: serverless autocompletion for Rust and Python](assets/banner-light.svg#only-light){ width="620" }
+![completr: serverless autocompletion for Rust and Python](assets/banner-dark.svg#only-dark){ width="620" }
 
 </div>
 
-<p class="strato-pitch"><strong>Serverless autocompletion: an embedded engine whose database is a bucket.</strong></p>
+<p class="completr-pitch"><strong>Serverless autocompletion: an embedded engine whose database is a bucket.</strong></p>
 
-strato is a library, not a service. Your application embeds it (in Rust, or in Python through first-class
+completr is a library, not a service. Your application embeds it (in Rust, or in Python through first-class
 bindings), and an object-store bucket or a local directory is the database. There is no cluster to deploy,
 scale or keep alive: every process that serves completions reads the index straight from storage, and
 writers coordinate through the storage itself.
 
-<div class="strato-hero" markdown>
+<div class="completr-hero" markdown>
 
-![strato completing queries: prefix, abbreviation, spelling correction, word decomposition and infix](assets/demo.svg){ width="600" }
+![completr completing queries: prefix, abbreviation, spelling correction, word decomposition and infix](assets/demo.svg){ width="600" }
 
 </div>
 
@@ -88,20 +88,20 @@ writers coordinate through the storage itself.
 === "Python"
 
     ```sh
-    pip install strato
+    pip install completr
     ```
 
 === "Rust"
 
     ```sh
-    cargo add strato                     # engine
-    cargo add strato --features store    # plus databases on local disk and in memory
+    cargo add completr                     # engine
+    cargo add completr --features store    # plus databases on local disk and in memory
     ```
 
 === "Command line"
 
     ```sh
-    cargo install strato-cli
+    cargo install completr-cli
     ```
 
 ## Quick start
@@ -109,7 +109,7 @@ writers coordinate through the storage itself.
 === "Python"
 
     ```python
-    from strato import Index
+    from completr import Index
 
     index = Index.from_documents([
         {"id": "ml", "text": "Machine Learning", "popularity": 0.9, "abbreviations": ["ML"]},
@@ -124,7 +124,7 @@ writers coordinate through the storage itself.
 === "Rust"
 
     ```rust
-    use strato::{Document, Index};
+    use completr::{Document, Index};
 
     let index = Index::from_documents([
         Document::keyed("ml", "Machine Learning", 0.9).with_abbreviation("ML"),

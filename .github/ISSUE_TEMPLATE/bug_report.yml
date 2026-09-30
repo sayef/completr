@@ -20,7 +20,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: strato version
+      label: completr version
       placeholder: "0.1.0"
     validations:
       required: true

@@ -10,31 +10,31 @@ def du(path):
     return int(out.split()[0]) * 1024
 
 
-class Strato:
-    """The installed strato package: one segment file, opened with default Index settings."""
-    name = "strato"
+class Completr:
+    """The installed completr package: one segment file, opened with default Index settings."""
+    name = "completr"
     in_process = True
 
     def __init__(self, threads=1):
-        self.version = "strato " + md.version("strato")
-        self.path = WORK / "strato.seg"
+        self.version = "completr " + md.version("completr")
+        self.path = WORK / "completr.seg"
         self.threads = threads
 
     def build(self, docs):
-        import strato
+        import completr
         m = max(d["score"] for d in docs)
         rows = [{"id": d["id"], "text": d["title"], "popularity": weight(d["score"], m)} for d in docs]
         WORK.mkdir(parents=True, exist_ok=True)
         t = time.perf_counter()
-        seg = strato.Segment.build(rows, build_threads=self.threads)
+        seg = completr.Segment.build(rows, build_threads=self.threads)
         build_s = time.perf_counter() - t
         seg.save(self.path)
         return {"index_s": build_s, "disk_bytes": os.path.getsize(self.path), "build_threads": self.threads}
 
     def open(self):
-        import strato
+        import completr
         t = time.perf_counter()
-        self.index = strato.Index([strato.Segment.open(self.path)])
+        self.index = completr.Index([completr.Segment.open(self.path)])
         return time.perf_counter() - t
 
     def search(self, q):
@@ -264,8 +264,8 @@ class Meilisearch(Server):
 
 
 def make(name, variant=None, key=None):
-    if name == "strato":
-        return Strato(threads=int(variant) if variant else 1)
+    if name == "completr":
+        return Completr(threads=int(variant) if variant else 1)
     if name == "tantivy":
         return Tantivy()
     if name == "typesense":

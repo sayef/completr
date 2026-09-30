@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  # Publishes `strato` to crates.io, tags `v*` and creates the GitHub release once a release PR is merged.
+  # Publishes `completr` to crates.io, tags `v*` and creates the GitHub release once a release PR is merged.
   # The tag is pushed with GITHUB_TOKEN, so release.yml picks it up through `workflow_run`, not `push`.
   release:
     if: github.repository_owner == 'sayef'

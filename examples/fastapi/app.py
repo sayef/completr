@@ -1,4 +1,4 @@
-"""A completion API over a strato database: STRATO_URL=./completions uvicorn app:app"""
+"""A completion API over a completr database: COMPLETR_URL=./completions uvicorn app:app"""
 
 import asyncio
 import contextlib
@@ -6,14 +6,14 @@ import logging
 import os
 from typing import Annotated
 
-import strato
+import completr
 from fastapi import FastAPI, Query, Request
 from pydantic import BaseModel
 
-DATABASE_URL = os.environ.get("STRATO_URL", "./completions")
-INDEX = os.environ.get("STRATO_INDEX", "products")
-CACHE_DIR = os.environ.get("STRATO_CACHE_DIR")
-SYNC_SECONDS = float(os.environ.get("STRATO_SYNC_SECONDS", "5"))
+DATABASE_URL = os.environ.get("COMPLETR_URL", "./completions")
+INDEX = os.environ.get("COMPLETR_INDEX", "products")
+CACHE_DIR = os.environ.get("COMPLETR_CACHE_DIR")
+SYNC_SECONDS = float(os.environ.get("COMPLETR_SYNC_SECONDS", "5"))
 
 logger = logging.getLogger(__name__)
 
@@ -31,18 +31,18 @@ class Completions(BaseModel):
     suggestions: list[Suggestion]
 
 
-async def follow(engine: strato.AsyncEngine) -> None:
+async def follow(engine: completr.AsyncEngine) -> None:
     while True:
         await asyncio.sleep(SYNC_SECONDS)
         try:
             await engine.sync()
-        except strato.StratoError:
+        except completr.CompletrError:
             logger.exception("sync failed; serving the current version")
 
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
-    db = await strato.connect_async(DATABASE_URL, cache_dir=CACHE_DIR)
+    db = await completr.connect_async(DATABASE_URL, cache_dir=CACHE_DIR)
     app.state.engine = await db.engine()
     task = asyncio.create_task(follow(app.state.engine))
     yield
@@ -51,7 +51,7 @@ async def lifespan(app: FastAPI):
         await task
 
 
-app = FastAPI(title="strato completions", lifespan=lifespan)
+app = FastAPI(title="completr completions", lifespan=lifespan)
 
 
 @app.get("/complete")
@@ -61,7 +61,7 @@ async def complete(
     limit: Annotated[int, Query(ge=1, le=50)] = 10,
     contexts: Annotated[list[str] | None, Query()] = None,
 ) -> Completions:
-    engine: strato.AsyncEngine = request.app.state.engine
+    engine: completr.AsyncEngine = request.app.state.engine
     hits = engine.complete(q, [INDEX], limit, contexts=contexts)
     return Completions(
         version=engine.version,

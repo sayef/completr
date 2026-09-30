@@ -9,7 +9,7 @@ deletions and additions shadow the shared data without copying it.
 === "Python"
 
     ```python
-    from strato import Engine, Index
+    from completr import Engine, Index
 
     shared = Index.from_documents([
         {"id": "ml", "text": "Machine Learning", "popularity": 0.9},
@@ -30,7 +30,7 @@ deletions and additions shadow the shared data without copying it.
 
     ```rust
     use std::sync::Arc;
-    use strato::{Document, Engine, Index};
+    use completr::{Document, Engine, Index};
 
     let engine = Engine::new();
     engine.publish([
@@ -70,7 +70,7 @@ earlier one for every id it holds or deletes, whether or not its own version mat
 - **Additions**: documents that exist only in the tenant's index are completed alongside the shared ones.
 
 ```python
-changes = strato.ChangeSet()
+changes = completr.ChangeSet()
 changes.upsert("acme", [{"id": "mv", "text": "Computer Vision"}])   # rename for acme only
 changes.delete("acme", ["mt"])                                      # hide for acme only
 db.submit(changes)
@@ -93,9 +93,9 @@ The library has no notion of tenants or languages. Express them as index names, 
 
 ```python
 import tempfile
-import strato
+import completr
 
-db = strato.connect(tempfile.mkdtemp())
+db = completr.connect(tempfile.mkdtemp())
 txn = db.begin()
 txn.append("shared/en", [{"id": "ml", "text": "Machine Learning", "popularity": 0.9}])
 txn.append("acme/en", [{"id": "ml", "text": "Machine Learning at Acme", "popularity": 0.9}])

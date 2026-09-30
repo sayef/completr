@@ -1,17 +1,17 @@
 # Serverless deployment
 
-A strato deployment has no strato server. It has a bucket or directory (the database), your serving
+A completr deployment has no completr server. It has a bucket or directory (the database), your serving
 processes with an engine in each, and one or more processes that run an ingestor. This page covers
 storage, credentials, the roles each process plays, maintenance schedules and memory.
 
 !!! warning "Run ingestors outside serving processes"
     Building segments and compacting indexes use far more memory and CPU than serving. Build and
     compaction peaks belong to the ingestor, so run ingestors in separate processes (a worker, a cron job
-    or `strato ingest`), not inside the processes that answer completion requests.
+    or `completr ingest`), not inside the processes that answer completion requests.
 
 ## Storage backends
 
-`strato.connect(url)` opens a database. Local directories are created if they do not exist.
+`completr.connect(url)` opens a database. Local directories are created if they do not exist.
 
 | URL | Backend |
 |---|---|
@@ -31,9 +31,9 @@ profiles, SSO, web identity, ECS and IMDS. The region is taken from the configur
 the bucket. Explicit `options` override all of them:
 
 ```python
-import strato
+import completr
 
-db = strato.connect(
+db = completr.connect(
     "s3://my-bucket/completions",
     options={"aws_region": "eu-central-1", "aws_access_key_id": "...", "aws_secret_access_key": "..."},
 )
@@ -57,7 +57,7 @@ remove cached files that no current index uses after each sync. `cache_dir` has 
 databases, whose files are memory-mapped directly.
 
 ```python
-db = strato.connect("s3://my-bucket/completions", cache_dir="/var/cache/strato")
+db = completr.connect("s3://my-bucket/completions", cache_dir="/var/cache/completr")
 ```
 
 ## Roles
@@ -80,7 +80,7 @@ Completions never wait for a sync.
 import threading
 import time
 
-db = strato.connect("s3://my-bucket/completions", cache_dir="/var/cache/strato")
+db = completr.connect("s3://my-bucket/completions", cache_dir="/var/cache/completr")
 engine = db.engine()
 
 def follow(interval=5.0):
@@ -92,7 +92,7 @@ threading.Thread(target=follow, daemon=True).start()
 ```
 
 For asyncio services, see [asyncio](asyncio.md) and the
-[FastAPI example](https://github.com/sayef/strato/tree/main/examples/fastapi).
+[FastAPI example](https://github.com/sayef/completr/tree/main/examples/fastapi).
 
 ### Submitting changes
 
@@ -101,7 +101,7 @@ for a commit. Change sets from one process apply in submission order, and later 
 document id.
 
 ```python
-changes = strato.ChangeSet()
+changes = completr.ChangeSet()
 changes.upsert("products", [{"id": "kb-1", "text": "Wireless Keyboard", "popularity": 0.9}])
 changes.delete("products", ["p42"])
 change_set_id = db.submit(changes)
@@ -127,7 +127,7 @@ lease holder acts, and another takes over within `lease_ttl_seconds` (30 by defa
 ```python
 import time
 
-ingestor = strato.Ingestor(db, "worker-1", lease_ttl_seconds=30.0)
+ingestor = completr.Ingestor(db, "worker-1", lease_ttl_seconds=30.0)
 try:
     while True:
         step = ingestor.run_once()   # {'step': 'standby' | 'idle' | 'committed', ...}
@@ -146,7 +146,7 @@ finally:
 Commits carry the lease generation as a fencing token, so an ingestor that lost its lease cannot commit,
 and a change set left over after a crash is never applied twice. Call `run_once()` well within
 `lease_ttl_seconds`: it renews the lease once a third of the TTL has passed, and loses it after the TTL. The command-line tool runs the same loop:
-`strato s3://my-bucket/completions ingest --interval 1`.
+`completr s3://my-bucket/completions ingest --interval 1`.
 
 ## Compaction and cleanup
 
@@ -172,9 +172,9 @@ print(db.cleanup(keep_versions=10, older_than_seconds=3600))
 
 | Task | Suggested schedule | Command-line equivalent |
 |---|---|---|
-| Ingest | Continuously, one-second rounds | `strato <url> ingest --interval 1` |
-| Compact after direct transactions | After each bulk load | `strato <url> compact <index>` |
-| Cleanup | Hourly or daily | `strato <url> cleanup --keep-versions 10 --older-than-seconds 3600` |
+| Ingest | Continuously, one-second rounds | `completr <url> ingest --interval 1` |
+| Compact after direct transactions | After each bulk load | `completr <url> compact <index>` |
+| Cleanup | Hourly or daily | `completr <url> cleanup --keep-versions 10 --older-than-seconds 3600` |
 
 Keep `older_than_seconds` well above your sync interval and the time a replica needs to load a version.
 

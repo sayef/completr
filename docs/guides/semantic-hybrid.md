@@ -1,9 +1,9 @@
 # Semantic and hybrid completion
 
-Documents can carry embeddings from any model. strato does not include an embedding model: you compute
+Documents can carry embeddings from any model. completr does not include an embedding model: you compute
 vectors with the model of your choice, at build time for documents and at query time for queries.
 
-strato quantises embeddings with [TurboQuant](https://crates.io/crates/turbovec), 4 bits per dimension by
+completr quantises embeddings with [TurboQuant](https://crates.io/crates/turbovec), 4 bits per dimension by
 default (2 or 3 optional), and searches them with deleted and filtered-out documents masked out.
 
 ## Adding embeddings
@@ -15,7 +15,7 @@ vectors in place of a model:
 import zlib
 
 import numpy as np
-from strato import Index
+from completr import Index
 
 docs = [
     {"id": "ml", "text": "Machine Learning", "popularity": 0.9},
@@ -74,7 +74,7 @@ their words.
 === "Rust"
 
     ```rust
-    use strato::{Fusion, HybridOptions};
+    use completr::{Fusion, HybridOptions};
 
     let options = HybridOptions::default().fusion(Fusion::ReciprocalRank { k: 60.0 });
     let hits = index.hybrid_search("deep lea", &query_vector, 10, &options)?;
@@ -107,9 +107,9 @@ pass `vectors=` to `Transaction.append`, `Transaction.overwrite` and `ChangeSet.
 
 ```python
 import tempfile
-import strato
+import completr
 
-db = strato.connect(tempfile.mkdtemp(), vector_bits=4)
+db = completr.connect(tempfile.mkdtemp(), vector_bits=4)
 txn = db.begin()
 txn.append("topics", docs, vectors=vectors)
 txn.commit()

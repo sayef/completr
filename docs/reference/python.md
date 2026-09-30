@@ -1,154 +1,154 @@
 # Python API
 
-The reference for the `strato` package, generated from its typed stubs
-([`__init__.pyi`](https://github.com/sayef/strato/blob/main/crates/strato-py/python/strato/__init__.pyi)).
-Every name on this page is importable from `strato`.
+The reference for the `completr` package, generated from its typed stubs
+([`__init__.pyi`](https://github.com/sayef/completr/blob/main/crates/completr-py/python/completr/__init__.pyi)).
+Every name on this page is importable from `completr`.
 
 ## Connecting
 
-::: strato.connect
+::: completr.connect
     options:
       heading_level: 3
 
-`connect` takes the same arguments as [`Database`][strato.Database]: `url`, `options`, `cache_dir`, and
+`connect` takes the same arguments as [`Database`][completr.Database]: `url`, `options`, `cache_dir`, and
 the keyword-only build options `min_word_chars`, `max_edit_distance`, `fuzzy_prefix_chars`, `vector_bits`,
 `compact_keys` and `build_threads`.
 
-::: strato.connect_async
+::: completr.connect_async
     options:
       heading_level: 3
 
 ## Documents
 
-::: strato.Document
+::: completr.Document
     options:
       heading_level: 3
 
-::: strato.DocumentDict
+::: completr.DocumentDict
     options:
       heading_level: 3
 
-::: strato.Id
+::: completr.Id
     options:
       heading_level: 3
 
-::: strato.Documents
+::: completr.Documents
     options:
       heading_level: 3
 
-::: strato.Vector
+::: completr.Vector
     options:
       heading_level: 3
 
-::: strato.Vectors
+::: completr.Vectors
     options:
       heading_level: 3
 
-::: strato.key_id
+::: completr.key_id
     options:
       heading_level: 3
 
 ## Suggestions
 
-::: strato.Suggestion
+::: completr.Suggestion
     options:
       heading_level: 3
 
-::: strato.HybridSuggestion
+::: completr.HybridSuggestion
     options:
       heading_level: 3
 
-::: strato.AliasSuggestion
+::: completr.AliasSuggestion
     options:
       heading_level: 3
 
-::: strato.MatchKind
+::: completr.MatchKind
     options:
       heading_level: 3
 
-::: strato.FusionKind
+::: completr.FusionKind
     options:
       heading_level: 3
 
 ## Segments, indexes and engines
 
-::: strato.Segment
+::: completr.Segment
     options:
       heading_level: 3
 
-::: strato.Index
+::: completr.Index
     options:
       heading_level: 3
 
-::: strato.Engine
+::: completr.Engine
     options:
       heading_level: 3
 
 ## Databases
 
-::: strato.Database
+::: completr.Database
     options:
       heading_level: 3
 
-::: strato.Transaction
+::: completr.Transaction
     options:
       heading_level: 3
 
-::: strato.ChangeSet
+::: completr.ChangeSet
     options:
       heading_level: 3
 
-::: strato.Ingestor
+::: completr.Ingestor
     options:
       heading_level: 3
 
-::: strato.Replica
+::: completr.Replica
     options:
       heading_level: 3
 
-::: strato.Lease
+::: completr.Lease
     options:
       heading_level: 3
 
-::: strato.Store
+::: completr.Store
     options:
       heading_level: 3
 
 ## asyncio
 
-::: strato.AsyncDatabase
+::: completr.AsyncDatabase
     options:
       heading_level: 3
 
-::: strato.AsyncEngine
+::: completr.AsyncEngine
     options:
       heading_level: 3
 
 ## Errors
 
-Every error derives from `StratoError`. `NotFoundError` is also a `LookupError`, `InvalidInputError` a
+Every error derives from `CompletrError`. `NotFoundError` is also a `LookupError`, `InvalidInputError` a
 `ValueError`, and `StorageError` an `OSError`.
 
-::: strato.StratoError
+::: completr.CompletrError
     options:
       heading_level: 3
 
-::: strato.ConflictError
+::: completr.ConflictError
     options:
       heading_level: 3
 
-::: strato.CorruptionError
+::: completr.CorruptionError
     options:
       heading_level: 3
 
-::: strato.NotFoundError
+::: completr.NotFoundError
     options:
       heading_level: 3
 
-::: strato.InvalidInputError
+::: completr.InvalidInputError
     options:
       heading_level: 3
 
-::: strato.StorageError
+::: completr.StorageError
     options:
       heading_level: 3

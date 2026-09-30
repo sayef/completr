@@ -2,17 +2,17 @@
 
 ## What does "serverless" mean here?
 
-The same as for [LanceDB](https://github.com/lancedb/lancedb): there is no strato server. The engine is a
+The same as for [LanceDB](https://github.com/lancedb/lancedb): there is no completr server. The engine is a
 library in your process, and the database is a set of files in a bucket or directory. Your application is
-still deployed however you like, on containers, VMs or functions; strato adds no extra service to it.
+still deployed however you like, on containers, VMs or functions; completr adds no extra service to it.
 
-## How does strato differ from Elasticsearch, OpenSearch, Typesense or Meilisearch?
+## How does completr differ from Elasticsearch, OpenSearch, Typesense or Meilisearch?
 
 Those are search servers for documents with many fields, filters and facets: you run and scale a cluster,
-and every query crosses the network. strato is serverless and does autocompletion only: it runs inside
+and every query crosses the network. completr is serverless and does autocompletion only: it runs inside
 your process, and ranks the match kinds a completion box needs (abbreviations, spelling correction, word
 decomposition) together with popularity. Many applications use both: a search server for the results
-page, strato for the box.
+page, completr for the box.
 
 ## How do several writers avoid conflicts without a server?
 
@@ -24,7 +24,7 @@ as a fencing token, so an ingestor that lost its lease cannot commit.
 ## How does it differ from an FST or trie library?
 
 [`fst`](https://crates.io/crates/fst) and [marisa-trie](https://github.com/s-yata/marisa-trie) are
-excellent key dictionaries, and strato uses the same ideas internally. On top of them it adds scoring,
+excellent key dictionaries, and completr uses the same ideas internally. On top of them it adds scoring,
 typo tolerance, abbreviations, semantic search, updates without rebuilding, and storage.
 
 ## Which languages does it support?
@@ -47,20 +47,20 @@ seconds. Transactions committed directly are visible at the next sync.
 
 ## Is the on-disk format stable?
 
-strato is young. The format is versioned and checked on load, but it and the API may still change before
+completr is young. The format is versioned and checked on load, but it and the API may still change before
 1.0. Segments of an older format are rejected rather than misread, and must be rebuilt.
 
 ## Why the name?
 
-*Strato* is Italian for *layer*, from the Latin *stratum*. Indexes are stacks of immutable segments in
-storage, and searches stack override layers: completions are served from strata.
+*completr* is said "completer": it completes what people type, and the missing vowel is a nod to
+search-engine names such as Solr. Its wordmark shows the name being completed as you type it.
 
 ## Non-features
 
-strato does one job. It deliberately does not include:
+completr does one job. It deliberately does not include:
 
 - a server or HTTP API; it is serverless by design, so expose it through your own API if you need one (see
-  the [FastAPI example](https://github.com/sayef/strato/tree/main/examples/fastapi));
+  the [FastAPI example](https://github.com/sayef/completr/tree/main/examples/fastapi));
 - full-text search over long documents, filtering beyond [contexts](guides/completion.md#contexts), or
   faceting;
 - multi-field schemas; each document has one text, plus aliases and an optional embedding;
