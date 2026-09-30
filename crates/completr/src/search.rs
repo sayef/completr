@@ -320,7 +320,7 @@ impl Index {
                     .iter()
                     .map(|word| {
                         let mut docs = Vec::new();
-                        self.scan(Field::Word, word, usize::MAX, |_, doc, _| docs.push(doc));
+                        self.scan_docs(Field::Word, word, |doc| docs.push(doc));
                         docs
                     })
                     .collect();

@@ -132,17 +132,20 @@ pub(crate) fn term_key(s: &str) -> Vec<u8> {
 }
 
 /// Postings of one key: inline in the FST value, or a range of the postings column.
-pub(crate) enum Postings<'a> {
-    One([u32; 1]),
-    Many(&'a [u32]),
+/// A key's postings: one inline, or a range of a packed column.
+pub(crate) struct Postings<'a> {
+    one: Option<u32>,
+    many: crate::trie::PackedIter<'a>,
 }
 
-impl Postings<'_> {
-    pub(crate) fn as_slice(&self) -> &[u32] {
-        match self {
-            Self::One(p) => p,
-            Self::Many(p) => p,
-        }
+impl Iterator for Postings<'_> {
+    type Item = u32;
+
+    #[inline]
+    fn next(&mut self) -> Option<u32> {
+        self.one
+            .take()
+            .or_else(|| self.many.next().map(|v| v as u32))
     }
 }
 
@@ -151,7 +154,7 @@ impl Postings<'_> {
 pub(crate) struct Keyed {
     pub(crate) map: Dict,
     offsets: Option<Column<u32>>,
-    values: Column<u32>,
+    values: Packed,
     bound: u32,
 }
 
@@ -181,7 +184,7 @@ impl Keyed {
             packed_values.push(value);
         }
         Dict::write(w, kind, &keys, &packed_values)?;
-        w.column(&values);
+        Packed::write(w, &values.iter().map(|&v| u64::from(v)).collect::<Vec<_>>());
         Ok(())
     }
 
@@ -203,7 +206,7 @@ impl Keyed {
         let ordinals: Vec<u64> = (0..keys.len() as u64).collect();
         Dict::write(w, kind, &keys, &ordinals)?;
         w.column(&offsets);
-        w.column(&values);
+        Packed::write(w, &values.iter().map(|&v| u64::from(v)).collect::<Vec<_>>());
         Ok(())
     }
 
@@ -220,13 +223,13 @@ impl Keyed {
         } else {
             None
         };
-        let values = r.column::<u32>()?;
-        let mut valid = !full || values.as_slice().iter().all(|&v| v < bound);
+        let values = Packed::read(r)?;
+        let mut valid = !full || (0..values.len).all(|i| values.get(i) < u64::from(bound));
         if let Some(offsets) = &offsets {
             let o = offsets.as_slice();
             valid &= o.len() == map.len() + 1
                 && o.first() == Some(&0)
-                && o.last().map(|&l| l as usize) == Some(values.len())
+                && o.last().map(|&l| l as usize) == Some(values.len)
                 && (!full || o.windows(2).all(|w| w[0] <= w[1]));
         }
         valid
@@ -241,27 +244,34 @@ impl Keyed {
 
     /// Postings for an FST value; out-of-range values from a corrupt file yield none.
     pub(crate) fn postings(&self, value: u64) -> Postings<'_> {
-        let values = self.values.as_slice();
-        match &self.offsets {
+        let values = &self.values;
+        let range = match &self.offsets {
             Some(offsets) => {
                 let o = offsets.as_slice();
                 let i = value as usize;
                 match (o.get(i), o.get(i + 1)) {
-                    (Some(&start), Some(&end)) => {
-                        Postings::Many(&values[start as usize..end as usize])
-                    }
-                    _ => Postings::Many(&[]),
+                    (Some(&start), Some(&end)) => start as usize..end as usize,
+                    _ => 0..0,
                 }
             }
-            None if value & INLINE != 0 => match u32::try_from(value & !INLINE) {
-                Ok(p) if p < self.bound => Postings::One([p]),
-                _ => Postings::Many(&[]),
-            },
+            None if value & INLINE != 0 => {
+                let one = u32::try_from(value & !INLINE)
+                    .ok()
+                    .filter(|&p| p < self.bound);
+                return Postings {
+                    one,
+                    many: values.iter(0..0),
+                };
+            }
             None => {
                 let start = (value >> LEN_BITS) as usize;
-                let len = (value & ((1 << LEN_BITS) - 1)) as usize;
-                Postings::Many(values.get(start..start.saturating_add(len)).unwrap_or(&[]))
+                start..start.saturating_add((value & ((1 << LEN_BITS) - 1)) as usize)
             }
+        };
+        let valid = range.start <= range.end && range.end <= values.len;
+        Postings {
+            one: None,
+            many: values.iter(if valid { range } else { 0..0 }),
         }
     }
 
@@ -274,7 +284,7 @@ impl Keyed {
     }
 
     fn size(&self) -> usize {
-        self.map.size() + self.offsets.as_ref().map_or(0, |o| o.len() * 4) + self.values.len() * 4
+        self.map.size() + self.offsets.as_ref().map_or(0, |o| o.len() * 4) + self.values.size()
     }
 }
 
@@ -407,7 +417,7 @@ impl StrColumn {
 /// under `FSST_MIN_BYTES` are stored raw, where a symbol table would not pay for itself.
 struct FsstColumn {
     data: Bytes,
-    offsets: Column<u32>,
+    offsets: Packed,
     symbols: Option<([fsst::Symbol; 255], [u8; 255])>,
 }
 
@@ -420,15 +430,13 @@ impl FsstColumn {
         let raw: usize = items.iter().map(|i| i.len()).sum();
         let compressor = (raw >= FSST_MIN_BYTES).then(|| fsst::Compressor::train(&items));
         let mut data = Vec::new();
-        let mut offsets = vec![0u32];
+        let mut offsets = vec![0u64];
         for item in &items {
             match &compressor {
                 Some(c) => data.extend_from_slice(&c.compress(item)),
                 None => data.extend_from_slice(item),
             }
-            offsets.push(
-                u32::try_from(data.len()).map_err(|_| Error::input("text column over 4 GiB"))?,
-            );
+            offsets.push(data.len() as u64);
         }
         let (symbols, lengths): (Vec<u64>, Vec<u8>) = match compressor {
             Some(c) => {
@@ -443,21 +451,20 @@ impl FsstColumn {
         w.column(&symbols);
         w.column(&lengths);
         w.bytes(&data);
-        w.column(&offsets);
+        Packed::write(w, &offsets);
         Ok(())
     }
 
-    fn read(r: &mut Reader, n: usize) -> Result<Self, Error> {
+    fn read(r: &mut Reader, n: usize, full: bool) -> Result<Self, Error> {
         let bad = || Error::Corrupt("invalid string column".into());
         let symbols: Column<u64> = r.column()?;
         let lengths: Column<u8> = r.column()?;
         let data = r.bytes()?;
-        let offsets = r.column::<u32>()?;
-        let o = offsets.as_slice();
-        let valid = o.len() == n + 1
-            && o.first() == Some(&0)
-            && o.last().map(|&l| l as usize) == Some(data.as_ref().len())
-            && o.windows(2).all(|w| w[0] <= w[1]);
+        let offsets = Packed::read(r)?;
+        let valid = offsets.len == n + 1
+            && offsets.get(0) == 0
+            && offsets.get(n) as usize == data.as_ref().len()
+            && (!full || (1..=n).all(|i| offsets.get(i - 1) <= offsets.get(i)));
         let symbols = match (symbols.as_slice(), lengths.as_slice()) {
             ([], []) => None,
             (s, l)
@@ -482,8 +489,8 @@ impl FsstColumn {
     }
 
     fn get(&self, i: usize) -> String {
-        let o = self.offsets.as_slice();
-        let bytes = &self.data.as_ref()[o[i] as usize..o[i + 1] as usize];
+        let range = self.offsets.get(i) as usize..self.offsets.get(i + 1) as usize;
+        let bytes = self.data.as_ref().get(range).unwrap_or(&[]);
         match &self.symbols {
             Some((symbols, lengths)) => {
                 // An escape code needs its literal byte; a truncated stream would read past it.
@@ -503,7 +510,7 @@ impl FsstColumn {
     }
 
     fn size(&self) -> usize {
-        self.data.as_ref().len() + self.offsets.len() * 4 + self.symbols.map_or(0, |_| 255 * 9)
+        self.data.as_ref().len() + self.offsets.size() + self.symbols.map_or(0, |_| 255 * 9)
     }
 }
 
@@ -678,8 +685,6 @@ pub struct Segment {
     pub(crate) words: Keyed,
     word_freqs: Column<u32>,
     /// Per document, the ordinals of its indexed words, repeats included.
-    doc_word_offsets: Column<u32>,
-    doc_word_ords: Column<u32>,
     word_texts: StrColumn,
     /// Postings are `local << 1 | kind`.
     pub(crate) aliases: Keyed,
@@ -781,31 +786,20 @@ impl Segment {
         let mut title_keys = KeyArena::default();
         let mut alias_keys = KeyArena::default();
         let mut context_keys = KeyArena::default();
-        // Per word: postings, occurrences, and a provisional id for the forward index.
-        let mut word_map: FxHashMap<String, (Vec<u32>, u32, u32)> = FxHashMap::default();
-        let mut doc_word_offsets = vec![0u32];
-        let mut doc_word_ids: Vec<u32> = Vec::new();
+        // Per word: postings and occurrences.
+        let mut word_map: FxHashMap<String, (Vec<u32>, u32)> = FxHashMap::default();
         for (local, doc) in docs.iter().enumerate() {
             let local = local as u32;
             let lower = text::lower(&doc.text);
             text_lens.push(u16::try_from(text::char_len(&lower)).unwrap_or(u16::MAX));
             single_word.push(u8::from(text::words(&lower).count() == 1));
-            for word in
-                text::words(&lower).filter(|w| text::char_len(w) >= config.min_word_chars as usize)
-            {
-                let next_id = word_map.len() as u32;
-                let (postings, freq, id) = word_map
-                    .entry(word.to_owned())
-                    .or_insert_with(|| (Vec::new(), 0, next_id));
+            for word in indexed_words(&lower, config.min_word_chars) {
+                let (postings, freq) = word_map.entry(word.to_owned()).or_default();
                 if postings.last() != Some(&local) {
                     postings.push(local);
                 }
                 *freq += 1;
-                doc_word_ids.push(*id);
             }
-            doc_word_offsets.push(
-                u32::try_from(doc_word_ids.len()).map_err(|_| Error::input("too many words"))?,
-            );
             title_keys.push(lower.as_bytes(), local)?;
             for alias in &doc.aliases {
                 alias_keys.push(
@@ -821,27 +815,13 @@ impl Segment {
             }
         }
 
-        // Term key, word, postings and occurrences.
+        // Term key, word, postings and occurrences, in key order.
         type Word = (Vec<u8>, String, Vec<u32>, u32);
-        let mut remap = vec![0u32; word_map.len()];
-        let mut words: Vec<Word> = Vec::with_capacity(word_map.len());
-        let mut provisional: Vec<u32> = Vec::with_capacity(word_map.len());
-        for (w, (postings, freq, id)) in word_map {
-            words.push((term_key(&w), w, postings, freq));
-            provisional.push(id);
-        }
-        let mut order: Vec<usize> = (0..words.len()).collect();
-        order.sort_unstable_by(|&a, &b| words[a].0.cmp(&words[b].0));
-        for (ordinal, &i) in order.iter().enumerate() {
-            remap[provisional[i] as usize] = ordinal as u32;
-        }
-        let mut sorted_words = Vec::with_capacity(words.len());
-        let mut slots: Vec<Option<Word>> = words.into_iter().map(Some).collect();
-        for &i in &order {
-            sorted_words.push(slots[i].take().expect("each word once"));
-        }
-        let words = sorted_words;
-        let doc_word_ords: Vec<u32> = doc_word_ids.iter().map(|&id| remap[id as usize]).collect();
+        let mut words: Vec<Word> = word_map
+            .into_iter()
+            .map(|(w, (postings, freq))| (term_key(&w), w, postings, freq))
+            .collect();
+        words.par_sort_unstable_by(|a, b| a.0.cmp(&b.0));
         if words.len() >> (32 - Variants::FINGERPRINT_BITS) != 0 {
             return Err(Error::input("too many distinct words for one segment"));
         }
@@ -904,7 +884,6 @@ impl Segment {
         // place one by one and building them concurrently produce the same bytes.
         type Section<'s> = Box<dyn FnOnce(&mut Writer) -> Result<(), Error> + Send + 's>;
         let (docs_ref, words_ref, rows_ref) = (&docs, &words, &rows);
-        let (doc_word_offsets_ref, doc_word_ords_ref) = (&doc_word_offsets[..], &doc_word_ords[..]);
         let sections: Vec<Section> = vec![
             Box::new(move |w| DocStore::write(w, docs_ref)),
             Box::new(move |w| Keyed::write_packed(w, layout.titles, title_keys)),
@@ -915,10 +894,7 @@ impl Segment {
                     words_ref.iter().map(|w| (w.0.as_slice(), w.2.as_slice())),
                 )?;
                 w.column(&words_ref.iter().map(|w| w.3).collect::<Vec<_>>());
-                StrColumn::write(w, words_ref.iter().map(|w| w.1.as_str()))?;
-                w.column(doc_word_offsets_ref);
-                w.column(doc_word_ords_ref);
-                Ok(())
+                StrColumn::write(w, words_ref.iter().map(|w| w.1.as_str()))
             }),
             Box::new(move |w| Keyed::write_packed(w, layout.aliases, alias_keys)),
             Box::new(move |w| {
@@ -999,7 +975,7 @@ impl Segment {
                 self.words.size() + self.word_freqs.len() * 4 + self.word_texts.data.as_ref().len(),
             ),
             ("aliases keys", self.aliases.map.size()),
-            ("aliases postings", self.aliases.values.len() * 4),
+            ("aliases postings", self.aliases.values.size()),
             ("variants", self.variants.size()),
             ("vectors", self.vectors.as_ref().map_or(0, Vectors::size)),
         ]
@@ -1060,10 +1036,12 @@ impl Segment {
     }
 
     /// Ordinals of the indexed words of `local`, repeats included.
-    pub(crate) fn doc_words(&self, local: usize) -> &[u32] {
-        let o = self.doc_word_offsets.as_slice();
-        let range = o[local] as usize..o[local + 1] as usize;
-        self.doc_word_ords.as_slice().get(range).unwrap_or(&[])
+    /// The indexed words of `local`'s text, repeats included.
+    pub(crate) fn doc_words(&self, local: usize) -> Vec<String> {
+        let lower = text::lower(&self.text(local));
+        indexed_words(&lower, self.config.min_word_chars)
+            .map(str::to_owned)
+            .collect()
     }
 
     pub(crate) fn weights(&self) -> &[f32] {
@@ -1188,18 +1166,6 @@ impl Segment {
         let words = Keyed::read(&mut r, layout.words, true, local_bound, full)?;
         let word_freqs: Column<u32> = r.column()?;
         let word_texts = StrColumn::read(&mut r)?;
-        let doc_word_offsets: Column<u32> = r.column()?;
-        let doc_word_ords: Column<u32> = r.column()?;
-        let (o, ords) = (doc_word_offsets.as_slice(), doc_word_ords.as_slice());
-        let forward_ok = o.len() == n + 1
-            && o.first() == Some(&0)
-            && o.last().map(|&l| l as usize) == Some(ords.len())
-            && (!full
-                || o.windows(2).all(|w| w[0] <= w[1])
-                    && ords.iter().all(|&w| (w as usize) < word_freqs.len()));
-        if !forward_ok {
-            return Err(Error::Corrupt("invalid forward index".into()));
-        }
         let aliases = Keyed::read(
             &mut r,
             layout.aliases,
@@ -1211,8 +1177,8 @@ impl Segment {
             u32::try_from(word_freqs.len()).map_err(|_| Error::Corrupt("too many words".into()))?;
         let variants = Variants::read(&mut r, word_bound, full)?;
         let vectors = Vectors::read(&mut r, n)?;
-        let texts = FsstColumn::read(&mut r, n)?;
-        let keys = FsstColumn::read(&mut r, n)?;
+        let texts = FsstColumn::read(&mut r, n, full)?;
+        let keys = FsstColumn::read(&mut r, n, full)?;
         let contexts = Keyed::read(&mut r, Dictionary::Fst, false, local_bound, full)?;
         r.align()?;
         r.u64()?;
@@ -1230,8 +1196,6 @@ impl Segment {
             words,
             word_freqs,
             word_texts,
-            doc_word_offsets,
-            doc_word_ords,
             aliases,
             variants,
             vectors,
@@ -1251,6 +1215,11 @@ impl Segment {
             .then_some(segment)
             .ok_or_else(|| Error::Corrupt("inconsistent segment".into()))
     }
+}
+
+/// The indexed words of a lowercased text, repeats included.
+pub(crate) fn indexed_words(lower: &str, min_chars: u8) -> impl Iterator<Item = &str> {
+    text::words(lower).filter(move |w| text::char_len(w) >= min_chars as usize)
 }
 
 /// One section written to its own buffer, ending aligned.
@@ -1340,7 +1309,7 @@ mod tests {
             copy.titles
                 .get(&term_key("data science"))
                 .unwrap()
-                .as_slice(),
+                .collect::<Vec<_>>(),
             [0]
         );
         assert!(Segment::from_bytes(b"nonsense".to_vec()).is_err());
@@ -1367,21 +1336,11 @@ mod tests {
             .collect();
         let seg = Segment::build(docs.clone(), []).unwrap();
         assert_eq!(
-            seg.titles
-                .get(&term_key("shared title 1"))
-                .unwrap()
-                .as_slice()
-                .len(),
+            seg.titles.get(&term_key("shared title 1")).unwrap().count(),
             100
         );
         assert_eq!(seg.documents().collect::<Vec<_>>(), docs);
-        let word = |local: usize| -> Vec<&str> {
-            seg.doc_words(local)
-                .iter()
-                .map(|&o| seg.word_text(o))
-                .collect()
-        };
-        assert_eq!(word(0), ["shared", "title"]);
-        assert_eq!(word(299), ["shared", "title"]);
+        assert_eq!(seg.doc_words(0), ["shared", "title"]);
+        assert_eq!(seg.doc_words(299), ["shared", "title"]);
     }
 }

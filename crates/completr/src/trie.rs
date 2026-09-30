@@ -179,6 +179,32 @@ fn select1(words: &[u64], samples: &[u32], k: usize) -> usize {
     }
 }
 
+pub(crate) struct PackedIter<'a> {
+    words: &'a [u64],
+    width: u32,
+    mask: u64,
+    bit: usize,
+    end: usize,
+}
+
+impl Iterator for PackedIter<'_> {
+    type Item = u64;
+
+    #[inline]
+    fn next(&mut self) -> Option<u64> {
+        if self.bit >= self.end {
+            return None;
+        }
+        let (at, shift) = (self.bit / 64, self.bit % 64);
+        let mut v = self.words[at] >> shift;
+        if shift + self.width as usize > 64 {
+            v |= self.words[at + 1] << (64 - shift);
+        }
+        self.bit += self.width as usize;
+        Some(v & self.mask)
+    }
+}
+
 /// Bit packed unsigned integers of one width.
 pub(crate) struct Packed {
     words: Column<u64>,
@@ -221,6 +247,18 @@ impl Packed {
             return Err(Error::Corrupt("invalid packed array".into()));
         }
         Ok(Self { words, width, len })
+    }
+
+    /// Values `range` in order, unpacked one after another.
+    pub(crate) fn iter(&self, range: std::ops::Range<usize>) -> PackedIter<'_> {
+        let width = self.width as usize;
+        PackedIter {
+            words: self.words.as_slice(),
+            width: self.width,
+            mask: u64::MAX >> (64 - self.width),
+            bit: range.start * width,
+            end: range.end.max(range.start) * width,
+        }
     }
 
     pub(crate) fn get(&self, i: usize) -> u64 {
