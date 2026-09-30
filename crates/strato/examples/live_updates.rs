@@ -1,7 +1,7 @@
-//! A dataset with streamed updates: `cargo run --example live_updates --features store -- [url]`
+//! A database with streamed updates: `cargo run --example live_updates --features store -- [url]`
 //! The url may be a local path, `s3://bucket/prefix`, `gs://...`, `az://...` or `memory:///name`.
 
-use strato::{Batch, Dataset, Document, Engine, Follower, IndexConfig, Writer, WriterStep};
+use strato::{ChangeSet, Database, Document, Engine, IndexConfig, IngestStep, Ingestor, Replica};
 
 #[tokio::main]
 async fn main() -> Result<(), strato::Error> {
@@ -9,10 +9,10 @@ async fn main() -> Result<(), strato::Error> {
     let url = std::env::args()
         .nth(1)
         .unwrap_or_else(|| dir.path().to_string_lossy().into_owned());
-    let dataset = Dataset::open(&url, Vec::<(String, String)>::new()).await?;
+    let database = Database::open(&url, Vec::<(String, String)>::new()).await?;
 
     // Bulk load in one transaction.
-    let mut txn = dataset.begin().await?;
+    let mut txn = database.begin().await?;
     txn.append_documents(
         "products",
         (0..10_000).map(|i| Document::new(i, format!("product {i}"), 0.5)),
@@ -20,31 +20,33 @@ async fn main() -> Result<(), strato::Error> {
     )?;
     txn.commit().await?;
 
-    // Serving processes follow the dataset and publish new versions atomically.
+    // Serving processes follow the database and publish new versions atomically.
     let engine = Engine::new();
-    let follower = Follower::new(dataset.clone(), IndexConfig::default());
-    follower.sync(&engine).await?;
+    let replica = Replica::new(database.clone(), IndexConfig::default());
+    replica.sync(&engine).await?;
 
-    // Any process submits batches; the one holding the writer lease commits them.
-    let mut batch = Batch::new();
-    batch
+    // Any process submits change sets; the one holding the ingestor lease commits them.
+    let mut changes = ChangeSet::new();
+    changes
         .upsert(
             "products",
             [Document::new(10_000, "wireless keyboard", 0.9)],
         )
         .delete("products", [42]);
-    dataset.submit(batch).await?;
-    let mut writer = Writer::new(dataset.clone(), "writer-1");
-    if let WriterStep::Committed {
-        version, batches, ..
-    } = writer.run_once().await?
+    database.submit(changes).await?;
+    let mut ingestor = Ingestor::new(database.clone(), "ingestor-1");
+    if let IngestStep::Committed {
+        version,
+        change_sets,
+        ..
+    } = ingestor.run_once().await?
     {
-        println!("committed {batches} batch(es) as version {version}");
+        println!("committed {change_sets} change set(s) as version {version}");
     }
-    writer.release().await?;
+    ingestor.release().await?;
 
-    follower.sync(&engine).await?;
-    for hit in engine.autocomplete(&["products"], "wirel", 5) {
+    replica.sync(&engine).await?;
+    for hit in engine.complete(&["products"], "wirel", 5) {
         println!(
             "{} {} {:.3}",
             hit.hit.id,

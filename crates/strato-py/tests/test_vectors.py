@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from strato import Dataset, Engine, Follower, Index, Segment
+from strato import Database, Engine, Replica, Index, Segment
 
 rng = np.random.default_rng(0)
 N, DIM = 500, 64
@@ -16,7 +16,7 @@ def test_vector_search_returns_semantic_hits():
     hits = index.vector_search(VECTORS[42], limit=5)
     assert hits[0].id == 42 and {h.kind for h in hits} == {"semantic"}
     assert [h.id for h in index.vector_search(VECTORS[42].tolist(), 5)] == [h.id for h in hits]
-    assert index.autocomplete("entry 42")[0].kind == "exact"
+    assert index.complete("entry 42")[0].kind == "exact"
 
 
 def test_updates_deletes_and_compaction():
@@ -41,17 +41,17 @@ def test_configuration_and_errors():
     with pytest.raises(ValueError):
         Index([Segment.build(DOCS, vectors=VECTORS)], max_score=1000.0).vector_search(np.zeros(8, dtype=np.float32))
     strict = Segment.build(DOCS, min_word_chars=5, max_edit_distance=1)
-    assert Index([strict], max_score=1000.0).autocomplete("entri 4")
+    assert Index([strict], max_score=1000.0).complete("entri 4")
 
 
-def test_layers_and_dataset(tmp_path):
+def test_layers_and_database(tmp_path):
     engine = Engine(overfetch=3)
-    ds = Dataset(str(tmp_path / "ds"), vector_bits=2)
+    ds = Database(str(tmp_path / "ds"), vector_bits=2)
     t = ds.begin()
     t.append("default", DOCS, vectors=VECTORS)
     t.append("acme", DOCS[:20], vectors=VECTORS[:20])
     t.commit()
-    Follower(ds, engine).sync()
+    Replica(ds, engine).sync()
     hits = engine.vector_search(VECTORS[5], ["default", "acme"], 5)
     assert hits[0].id == 5 and hits[0].layer == "acme"
     for i in range(5):

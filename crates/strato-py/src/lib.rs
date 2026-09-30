@@ -243,7 +243,7 @@ impl Segment {
 }
 
 #[pyclass(frozen, get_all, module = "strato")]
-struct Hit {
+struct Suggestion {
     id: u64,
     score: f64,
     kind: &'static str,
@@ -251,10 +251,10 @@ struct Hit {
 }
 
 #[pymethods]
-impl Hit {
+impl Suggestion {
     fn __repr__(&self) -> String {
         format!(
-            "Hit(id={}, score={}, kind={:?}, layer={:?})",
+            "Suggestion(id={}, score={}, kind={:?}, layer={:?})",
             self.id, self.score, self.kind, self.layer
         )
     }
@@ -262,7 +262,7 @@ impl Hit {
 
 /// A fused hybrid result: `kind` is the lexical match kind when matched lexically, else "semantic".
 #[pyclass(frozen, get_all, module = "strato")]
-struct HybridHit {
+struct HybridSuggestion {
     id: u64,
     score: f64,
     kind: &'static str,
@@ -272,10 +272,10 @@ struct HybridHit {
 }
 
 #[pymethods]
-impl HybridHit {
+impl HybridSuggestion {
     fn __repr__(&self) -> String {
         format!(
-            "HybridHit(id={}, score={}, kind={:?}, lexical_score={:?}, semantic_score={:?}, layer={:?})",
+            "HybridSuggestion(id={}, score={}, kind={:?}, lexical_score={:?}, semantic_score={:?}, layer={:?})",
             self.id, self.score, self.kind, self.lexical_score, self.semantic_score, self.layer
         )
     }
@@ -300,8 +300,8 @@ fn hybrid_options(
     Ok(strato_rs::HybridOptions { fusion, candidates })
 }
 
-fn to_hybrid(h: strato_rs::HybridHit, layer: Option<String>) -> HybridHit {
-    HybridHit {
+fn to_hybrid(h: strato_rs::HybridSuggestion, layer: Option<String>) -> HybridSuggestion {
+    HybridSuggestion {
         id: h.id,
         score: h.score,
         kind: h.kind.as_str(),
@@ -312,17 +312,17 @@ fn to_hybrid(h: strato_rs::HybridHit, layer: Option<String>) -> HybridHit {
 }
 
 #[pyclass(frozen, get_all, module = "strato")]
-struct AliasHit {
+struct AliasSuggestion {
     id: u64,
     score: f64,
     layer: Option<String>,
 }
 
 #[pymethods]
-impl AliasHit {
+impl AliasSuggestion {
     fn __repr__(&self) -> String {
         format!(
-            "AliasHit(id={}, score={}, layer={:?})",
+            "AliasSuggestion(id={}, score={}, layer={:?})",
             self.id, self.score, self.layer
         )
     }
@@ -374,14 +374,14 @@ impl Index {
         py: Python<'_>,
         vector: &Bound<'_, PyAny>,
         limit: usize,
-    ) -> PyResult<Vec<Hit>> {
+    ) -> PyResult<Vec<Suggestion>> {
         let query = query_vector(py, vector)?;
         let hits = py
             .detach(|| self.0.vector_search(&query, limit))
             .map_err(to_py_err)?;
         Ok(hits
             .into_iter()
-            .map(|h| Hit {
+            .map(|h| Suggestion {
                 id: h.id,
                 score: h.score,
                 kind: h.kind.as_str(),
@@ -396,10 +396,10 @@ impl Index {
     }
 
     #[pyo3(signature = (query, limit = 10))]
-    fn autocomplete(&self, py: Python<'_>, query: &str, limit: usize) -> Vec<Hit> {
-        let hits = py.detach(|| self.0.autocomplete(query, limit));
+    fn complete(&self, py: Python<'_>, query: &str, limit: usize) -> Vec<Suggestion> {
+        let hits = py.detach(|| self.0.complete(query, limit));
         hits.into_iter()
-            .map(|h| Hit {
+            .map(|h| Suggestion {
                 id: h.id,
                 score: h.score,
                 kind: h.kind.as_str(),
@@ -409,10 +409,10 @@ impl Index {
     }
 
     #[pyo3(signature = (query, limit = 10))]
-    fn search_aliases(&self, py: Python<'_>, query: &str, limit: usize) -> Vec<AliasHit> {
-        let hits = py.detach(|| self.0.search_aliases(query, limit));
+    fn complete_aliases(&self, py: Python<'_>, query: &str, limit: usize) -> Vec<AliasSuggestion> {
+        let hits = py.detach(|| self.0.complete_aliases(query, limit));
         hits.into_iter()
-            .map(|h| AliasHit {
+            .map(|h| AliasSuggestion {
                 id: h.id,
                 score: h.score,
                 layer: None,
@@ -434,7 +434,7 @@ impl Index {
         rrf_k: f64,
         semantic_weight: f64,
         candidates: Option<usize>,
-    ) -> PyResult<Vec<HybridHit>> {
+    ) -> PyResult<Vec<HybridSuggestion>> {
         let query = query_vector(py, vector)?;
         let options = hybrid_options(fusion, rrf_k, semantic_weight, candidates)?;
         let hits = py
@@ -514,17 +514,17 @@ impl Engine {
 
     /// Later layers override earlier ones per document id; missing names are empty layers.
     #[pyo3(signature = (query, layers, limit = 10))]
-    fn autocomplete(
+    fn complete(
         &self,
         py: Python<'_>,
         query: &str,
         layers: Vec<String>,
         limit: usize,
-    ) -> Vec<Hit> {
+    ) -> Vec<Suggestion> {
         let names: Vec<&str> = layers.iter().map(String::as_str).collect();
-        let hits = py.detach(|| self.0.autocomplete(&names, query, limit));
+        let hits = py.detach(|| self.0.complete(&names, query, limit));
         hits.into_iter()
-            .map(|h| Hit {
+            .map(|h| Suggestion {
                 id: h.hit.id,
                 score: h.hit.score,
                 kind: h.hit.kind.as_str(),
@@ -534,17 +534,17 @@ impl Engine {
     }
 
     #[pyo3(signature = (query, layers, limit = 10))]
-    fn search_aliases(
+    fn complete_aliases(
         &self,
         py: Python<'_>,
         query: &str,
         layers: Vec<String>,
         limit: usize,
-    ) -> Vec<AliasHit> {
+    ) -> Vec<AliasSuggestion> {
         let names: Vec<&str> = layers.iter().map(String::as_str).collect();
-        let hits = py.detach(|| self.0.search_aliases(&names, query, limit));
+        let hits = py.detach(|| self.0.complete_aliases(&names, query, limit));
         hits.into_iter()
-            .map(|h| AliasHit {
+            .map(|h| AliasSuggestion {
                 id: h.hit.id,
                 score: h.hit.score,
                 layer: Some(layers[h.layer].clone()),
@@ -565,7 +565,7 @@ impl Engine {
         rrf_k: f64,
         semantic_weight: f64,
         candidates: Option<usize>,
-    ) -> PyResult<Vec<HybridHit>> {
+    ) -> PyResult<Vec<HybridSuggestion>> {
         let query = query_vector(py, vector)?;
         let options = hybrid_options(fusion, rrf_k, semantic_weight, candidates)?;
         let names: Vec<&str> = layers.iter().map(String::as_str).collect();
@@ -588,7 +588,7 @@ impl Engine {
         vector: &Bound<'_, PyAny>,
         layers: Vec<String>,
         limit: usize,
-    ) -> PyResult<Vec<Hit>> {
+    ) -> PyResult<Vec<Suggestion>> {
         let query = query_vector(py, vector)?;
         let names: Vec<&str> = layers.iter().map(String::as_str).collect();
         let hits = py
@@ -596,7 +596,7 @@ impl Engine {
             .map_err(to_py_err)?;
         Ok(hits
             .into_iter()
-            .map(|h| Hit {
+            .map(|h| Suggestion {
                 id: h.hit.id,
                 score: h.hit.score,
                 kind: h.hit.kind.as_str(),
@@ -701,12 +701,12 @@ fn index_config(
 
 /// Named indexes versioned under one store URL, committed optimistically.
 #[pyclass(frozen, module = "strato")]
-struct Dataset(strato_rs::Dataset);
+struct Database(strato_rs::Database);
 
 #[pymethods]
-impl Dataset {
+impl Database {
     /// `cache_dir` keeps downloaded segments on local disk, memory-mapped. The keyword settings
-    /// apply to segments this dataset builds from documents.
+    /// apply to segments this database builds from documents.
     #[new]
     #[pyo3(signature = (
         url, options = None, cache_dir = None, *,
@@ -726,12 +726,12 @@ impl Dataset {
         build_threads: usize,
     ) -> PyResult<Self> {
         let options = options.unwrap_or_default();
-        let dataset = py
-            .detach(|| strato_rs::block_on(strato_rs::Dataset::open(url, options)))
+        let database = py
+            .detach(|| strato_rs::block_on(strato_rs::Database::open(url, options)))
             .map_err(to_py_err)?;
-        let dataset = match cache_dir {
-            Some(dir) => dataset.with_cache_dir(dir).map_err(to_py_err)?,
-            None => dataset,
+        let database = match cache_dir {
+            Some(dir) => database.with_cache_dir(dir).map_err(to_py_err)?,
+            None => database,
         };
         let config = segment_config(
             min_word_chars,
@@ -741,7 +741,7 @@ impl Dataset {
             compact_keys,
             build_threads,
         );
-        Ok(Self(dataset.with_segment_config(config)))
+        Ok(Self(database.with_segment_config(config)))
     }
 
     fn versions(&self, py: Python<'_>) -> PyResult<Vec<u64>> {
@@ -861,18 +861,18 @@ impl Dataset {
         Ok(out)
     }
 
-    /// Queues `batch` for the dataset's writer; returns the batch id.
-    fn submit(&self, py: Python<'_>, batch: &mut Batch) -> PyResult<String> {
-        let inner = batch
+    /// Queues `changes` for the database's ingestor; returns the change set's id.
+    fn submit(&self, py: Python<'_>, changes: &mut ChangeSet) -> PyResult<String> {
+        let inner = changes
             .0
             .take()
-            .ok_or_else(|| PyValueError::new_err("batch already submitted"))?;
+            .ok_or_else(|| PyValueError::new_err("change set already submitted"))?;
         py.detach(|| strato_rs::block_on(self.0.submit(inner)))
             .map_err(to_py_err)
     }
 
-    fn pending_batches(&self, py: Python<'_>) -> PyResult<usize> {
-        py.detach(|| strato_rs::block_on(self.0.pending_batches()))
+    fn pending_change_sets(&self, py: Python<'_>) -> PyResult<usize> {
+        py.detach(|| strato_rs::block_on(self.0.pending_change_sets()))
             .map_err(to_py_err)
     }
 
@@ -892,7 +892,7 @@ impl Dataset {
     }
 }
 
-impl Dataset {
+impl Database {
     async fn read(&self, version: Option<u64>) -> Result<strato_rs::Manifest, strato_rs::Error> {
         match version {
             Some(version) => self.0.manifest(version).await,
@@ -1042,23 +1042,23 @@ impl Lease {
     }
 }
 
-/// Changes to one or more indexes, submitted together with `Dataset.submit`.
+/// Changes to one or more indexes, submitted together with `Database.submit`.
 #[pyclass(module = "strato")]
-struct Batch(Option<strato_rs::Batch>);
+struct ChangeSet(Option<strato_rs::ChangeSet>);
 
-impl Batch {
-    fn inner(&mut self) -> PyResult<&mut strato_rs::Batch> {
+impl ChangeSet {
+    fn inner(&mut self) -> PyResult<&mut strato_rs::ChangeSet> {
         self.0
             .as_mut()
-            .ok_or_else(|| PyValueError::new_err("batch already submitted"))
+            .ok_or_else(|| PyValueError::new_err("change set already submitted"))
     }
 }
 
 #[pymethods]
-impl Batch {
+impl ChangeSet {
     #[new]
     fn new() -> Self {
-        Self(Some(strato_rs::Batch::new()))
+        Self(Some(strato_rs::ChangeSet::new()))
     }
 
     /// `vectors`, optional, holds one embedding row per document.
@@ -1087,53 +1087,53 @@ impl Batch {
     }
 }
 
-/// Drains the inbox while it holds the writer lease; run one per process.
+/// Drains the inbox while it holds the ingestor lease; run one per process.
 #[pyclass(module = "strato")]
-struct Writer(Option<strato_rs::Writer>);
+struct Ingestor(Option<strato_rs::Ingestor>);
 
 #[pymethods]
-impl Writer {
+impl Ingestor {
     #[new]
-    /// With `compact`, the writer compacts the indexes it committed to after each round.
-    #[pyo3(signature = (dataset, owner, lease_ttl_seconds = 30.0, max_batches = 1000, compact = true))]
+    /// With `compact`, the ingestor compacts the indexes it committed to after each round.
+    #[pyo3(signature = (database, owner, lease_ttl_seconds = 30.0, max_change_sets = 1000, compact = true))]
     fn new(
-        dataset: &Dataset,
+        database: &Database,
         owner: &str,
         lease_ttl_seconds: f64,
-        max_batches: usize,
+        max_change_sets: usize,
         compact: bool,
     ) -> Self {
-        let mut writer = strato_rs::Writer::new(dataset.0.clone(), owner);
-        writer.lease_ttl = Duration::from_secs_f64(lease_ttl_seconds);
-        writer.max_batches = max_batches;
+        let mut ingestor = strato_rs::Ingestor::new(database.0.clone(), owner);
+        ingestor.lease_ttl = Duration::from_secs_f64(lease_ttl_seconds);
+        ingestor.max_change_sets = max_change_sets;
         if !compact {
-            writer.compaction = None;
+            ingestor.compaction = None;
         }
-        Self(Some(writer))
+        Self(Some(ingestor))
     }
 
-    /// One round. Returns {"step": "not_leader" | "idle" | "committed", and for commits
-    /// "version", "batches", "documents"}.
+    /// One round. Returns {"step": "standby" | "idle" | "committed", and for commits
+    /// "version", "change_sets", "documents"}.
     fn run_once<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let writer = self
+        let ingestor = self
             .0
             .as_mut()
-            .ok_or_else(|| PyValueError::new_err("writer released"))?;
+            .ok_or_else(|| PyValueError::new_err("ingestor released"))?;
         let step = py
-            .detach(|| strato_rs::block_on(writer.run_once()))
+            .detach(|| strato_rs::block_on(ingestor.run_once()))
             .map_err(to_py_err)?;
         let out = PyDict::new(py);
         match step {
-            strato_rs::WriterStep::NotLeader => out.set_item("step", "not_leader")?,
-            strato_rs::WriterStep::Idle => out.set_item("step", "idle")?,
-            strato_rs::WriterStep::Committed {
+            strato_rs::IngestStep::Standby => out.set_item("step", "standby")?,
+            strato_rs::IngestStep::Idle => out.set_item("step", "idle")?,
+            strato_rs::IngestStep::Committed {
                 version,
-                batches,
+                change_sets,
                 documents,
             } => {
                 out.set_item("step", "committed")?;
                 out.set_item("version", version)?;
-                out.set_item("batches", batches)?;
+                out.set_item("change_sets", change_sets)?;
                 out.set_item("documents", documents)?;
             }
         }
@@ -1141,38 +1141,38 @@ impl Writer {
     }
 
     #[getter]
-    fn is_leader(&self) -> bool {
-        self.0.as_ref().is_some_and(strato_rs::Writer::is_leader)
+    fn is_active(&self) -> bool {
+        self.0.as_ref().is_some_and(strato_rs::Ingestor::is_active)
     }
 
     /// Gives up the lease so another process takes over at once.
     fn release(&mut self, py: Python<'_>) -> PyResult<()> {
         match self.0.take() {
-            Some(writer) => py
-                .detach(|| strato_rs::block_on(writer.release()))
+            Some(ingestor) => py
+                .detach(|| strato_rs::block_on(ingestor.release()))
                 .map_err(to_py_err),
             None => Ok(()),
         }
     }
 }
 
-/// Keeps an `Engine` on a dataset's latest version, loading only what changed.
+/// Keeps an `Engine` on a database's latest version, loading only what changed.
 #[pyclass(frozen, module = "strato")]
-struct Follower {
-    follower: strato_rs::Follower,
+struct Replica {
+    replica: strato_rs::Replica,
     engine: Arc<strato_rs::Engine>,
 }
 
 #[pymethods]
-impl Follower {
+impl Replica {
     #[new]
     #[pyo3(signature = (
-        dataset, engine, popularity_weight = 0.4, short_query_chars = 3, short_query_limit = 100,
+        database, engine, popularity_weight = 0.4, short_query_chars = 3, short_query_limit = 100,
         short_query_cache_entries = 10_000, vector_threads = 1, group_separator = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
-        dataset: &Dataset,
+        database: &Database,
         engine: &Engine,
         popularity_weight: f64,
         short_query_chars: usize,
@@ -1188,26 +1188,26 @@ impl Follower {
             short_query_cache_entries,
             vector_threads,
         );
-        let follower = strato_rs::Follower::new(dataset.0.clone(), config);
-        let follower = match group_separator {
-            Some(separator) => follower.with_groups_by_suffix(separator),
-            None => follower,
+        let replica = strato_rs::Replica::new(database.0.clone(), config);
+        let replica = match group_separator {
+            Some(separator) => replica.with_groups_by_suffix(separator),
+            None => replica,
         };
         Self {
-            follower,
+            replica,
             engine: engine.0.clone(),
         }
     }
 
     /// Publishes the latest version; returns it if it is new, else `None`.
     fn sync(&self, py: Python<'_>) -> PyResult<Option<u64>> {
-        py.detach(|| strato_rs::block_on(self.follower.sync(&self.engine)))
+        py.detach(|| strato_rs::block_on(self.replica.sync(&self.engine)))
             .map_err(to_py_err)
     }
 
     #[getter]
     fn version(&self, py: Python<'_>) -> u64 {
-        py.detach(|| strato_rs::block_on(self.follower.version()))
+        py.detach(|| strato_rs::block_on(self.replica.version()))
     }
 }
 
@@ -1218,15 +1218,15 @@ fn strato(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Index>()?;
     m.add_class::<Engine>()?;
     m.add_class::<Store>()?;
-    m.add_class::<Dataset>()?;
+    m.add_class::<Database>()?;
     m.add_class::<Transaction>()?;
     m.add_class::<Lease>()?;
-    m.add_class::<Follower>()?;
-    m.add_class::<Batch>()?;
-    m.add_class::<Writer>()?;
+    m.add_class::<Replica>()?;
+    m.add_class::<ChangeSet>()?;
+    m.add_class::<Ingestor>()?;
     m.add("ConflictError", m.py().get_type::<ConflictError>())?;
-    m.add_class::<Hit>()?;
-    m.add_class::<AliasHit>()?;
-    m.add_class::<HybridHit>()?;
+    m.add_class::<Suggestion>()?;
+    m.add_class::<AliasSuggestion>()?;
+    m.add_class::<HybridSuggestion>()?;
     Ok(())
 }

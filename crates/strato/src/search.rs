@@ -33,14 +33,14 @@ impl MatchKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Hit {
+pub struct Suggestion {
     pub id: u64,
     pub score: f64,
     pub kind: MatchKind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct AliasHit {
+pub struct AliasSuggestion {
     pub id: u64,
     pub score: f64,
 }
@@ -80,14 +80,14 @@ struct Merged {
 
 impl Index {
     /// Ranked completions for `query`: exact, prefix, abbreviation, infix and typo-tolerant matches.
-    pub fn autocomplete(&self, query: &str, limit: usize) -> Vec<Hit> {
+    pub fn complete(&self, query: &str, limit: usize) -> Vec<Suggestion> {
         let lower = text::lower(query);
         let stripped = text::strip(&lower);
         if let Some(cached) = self.short_query(stripped) {
             return cached
                 .iter()
                 .take(limit)
-                .map(|h| Hit {
+                .map(|h| Suggestion {
                     id: self.ids[h.doc as usize],
                     score: f64::from(h.score),
                     kind: h.kind,
@@ -97,7 +97,7 @@ impl Index {
         let mut hits = self.raw_autocomplete(&Memo::default(), query, limit, 0);
         hits.truncate(limit);
         hits.into_iter()
-            .map(|h| Hit {
+            .map(|h| Suggestion {
                 id: self.ids[h.doc as usize],
                 score: h.score,
                 kind: h.kind,
@@ -106,7 +106,7 @@ impl Index {
     }
 
     /// Documents with a synonym alias starting with `query`, ranked by alias length and weight.
-    pub fn search_aliases(&self, query: &str, limit: usize) -> Vec<AliasHit> {
+    pub fn complete_aliases(&self, query: &str, limit: usize) -> Vec<AliasSuggestion> {
         let lower = text::lower(query);
         let stripped = text::strip(&lower);
         if self.is_short(stripped) {
@@ -114,7 +114,7 @@ impl Index {
             return hits
                 .into_iter()
                 .take(limit)
-                .map(|(doc, score)| AliasHit {
+                .map(|(doc, score)| AliasSuggestion {
                     id: self.ids[doc as usize],
                     score: f64::from(score as f32),
                 })
@@ -122,7 +122,7 @@ impl Index {
         }
         let hits = self.raw_aliases(query, limit);
         hits.into_iter()
-            .map(|(doc, score)| AliasHit {
+            .map(|(doc, score)| AliasSuggestion {
                 id: self.ids[doc as usize],
                 score,
             })

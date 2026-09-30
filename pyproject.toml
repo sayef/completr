@@ -4,13 +4,13 @@ build-backend = "maturin"
 
 [project]
 name = "strato"
-description = "Layered autocompletion: prefix, infix, fuzzy, abbreviation, semantic and hybrid search over immutable, memory-mapped segments"
+description = "Serverless autocompletion engine for Rust and Python: exact, prefix, infix, abbreviation, spelling-tolerant, word-decomposing and semantic completions from object storage"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "sayef", email = "msi.sayef@gmail.com" }]
 requires-python = ">=3.11"
-keywords = ["autocomplete", "typeahead", "search", "fuzzy", "vector-search"]
+keywords = ["autocomplete", "autocompletion", "serverless", "suggestions", "spelling-correction", "fuzzy-search", "semantic-search", "hybrid-search"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",

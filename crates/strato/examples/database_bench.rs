@@ -1,17 +1,17 @@
-//! Dataset benchmarks on a real corpus. Run each phase in its own process so peak RSS is per phase:
-//!   dataset_bench load <corpus.json> <url>
-//!   dataset_bench open <url>
-//!   dataset_bench rebuild <url> <index>
-//!   dataset_bench incremental <url> <index> <batch sizes, comma separated>
-//!   dataset_bench compact <url> <index>
-//!   dataset_bench concurrent <url> <index> <writers> <batches> <batch size> [strict]
+//! Database benchmarks on a real corpus. Run each phase in its own process so peak RSS is per phase:
+//!   database_bench load <corpus.json> <url>
+//!   database_bench open <url>
+//!   database_bench rebuild <url> <index>
+//!   database_bench incremental <url> <index> <batch sizes, comma separated>
+//!   database_bench compact <url> <index>
+//!   database_bench concurrent <url> <index> <writers> <batches> <batch size> [strict]
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use strato::{
-    CompactionPolicy, Dataset, Document, Engine, Error, Follower, Index, IndexConfig, Segment,
+    CompactionPolicy, Database, Document, Engine, Error, Index, IndexConfig, Replica, Segment,
 };
 
 struct Usage {
@@ -108,7 +108,7 @@ fn latency(index: &Index, queries: &[String]) -> String {
         .iter()
         .map(|q| {
             let t = Instant::now();
-            std::hint::black_box(index.autocomplete(q, 10));
+            std::hint::black_box(index.complete(q, 10));
             t.elapsed().as_secs_f64() * 1000.0
         })
         .collect();
@@ -121,13 +121,13 @@ fn latency(index: &Index, queries: &[String]) -> String {
     )
 }
 
-async fn open(url: &str) -> Dataset {
-    let dataset = Dataset::open(url, Vec::<(String, String)>::new())
+async fn open(url: &str) -> Database {
+    let database = Database::open(url, Vec::<(String, String)>::new())
         .await
         .unwrap();
     match std::env::var("STRATO_CACHE_DIR") {
-        Ok(dir) => dataset.with_cache_dir(dir).unwrap(),
-        Err(_) => dataset,
+        Ok(dir) => database.with_cache_dir(dir).unwrap(),
+        Err(_) => database,
     }
 }
 
@@ -181,7 +181,7 @@ async fn load(corpus: &str, url: &str) {
 async fn open_all(url: &str) {
     let usage = start();
     let ds = open(url).await;
-    report("open dataset (store, credentials)", usage);
+    report("open database (store, credentials)", usage);
     let usage = start();
     let latest = ds.latest_version().await.unwrap();
     report(&format!("list versions (latest v{latest})"), usage);
@@ -190,9 +190,9 @@ async fn open_all(url: &str) {
     report("read manifest", usage);
     println!("  baseline rss {:.1} MB", rss_mb());
     let engine = Engine::new();
-    let follower = Follower::new(ds.clone(), IndexConfig::default());
+    let replica = Replica::new(ds.clone(), IndexConfig::default());
     let usage = start();
-    let version = follower.sync(&engine).await.unwrap();
+    let version = replica.sync(&engine).await.unwrap();
     report(&format!("cold load of all indexes (v{version:?})"), usage);
     for name in engine.names() {
         let index = engine.get(&name).unwrap();
@@ -290,8 +290,8 @@ fn change_batch(
 async fn incremental(url: &str, name: &str, sizes: &str) {
     let ds = open(url).await;
     let engine = Engine::new();
-    let follower = Follower::new(ds.clone(), IndexConfig::default());
-    follower.sync(&engine).await.unwrap();
+    let replica = Replica::new(ds.clone(), IndexConfig::default());
+    replica.sync(&engine).await.unwrap();
     let base = engine.get(name).unwrap();
     let docs: Vec<Document> = base.documents().collect();
     let qs = queries(&base, 2000);
@@ -329,8 +329,8 @@ async fn incremental(url: &str, name: &str, sizes: &str) {
             usage,
         );
         let usage = start();
-        follower.sync(&engine).await.unwrap();
-        report(&format!("batch {size}: follower sync"), usage);
+        replica.sync(&engine).await.unwrap();
+        report(&format!("batch {size}: replica sync"), usage);
         let index = engine.get(name).unwrap();
         println!(
             "    now {} docs in {} segments; queries {}",
@@ -346,14 +346,14 @@ async fn carry(url: &str, name: &str) {
     let ds = open(url).await;
     let carry = std::env::var("STRATO_CARRY").map_or(1000, |v| v.parse().unwrap());
     let engine = Engine::new();
-    let follower = Follower::new(
+    let replica = Replica::new(
         ds.clone(),
         IndexConfig {
             carry_short_queries: carry,
             ..IndexConfig::default()
         },
     );
-    follower.sync(&engine).await.unwrap();
+    replica.sync(&engine).await.unwrap();
     let base = engine.get(name).unwrap();
     let docs: Vec<Document> = base.documents().collect();
     let mut rng = Rng(5);
@@ -373,7 +373,7 @@ async fn carry(url: &str, name: &str) {
             .iter()
             .map(|q| {
                 let s = Instant::now();
-                std::hint::black_box(index.autocomplete(q, 10));
+                std::hint::black_box(index.complete(q, 10));
                 s.elapsed().as_secs_f64() * 1000.0
             })
             .collect();
@@ -397,7 +397,7 @@ async fn carry(url: &str, name: &str) {
     txn.append_documents(name, upserts, deletes).unwrap();
     txn.commit().await.unwrap();
     let usage = start();
-    follower.sync(&engine).await.unwrap();
+    replica.sync(&engine).await.unwrap();
     report("sync", usage);
     tokio::time::sleep(Duration::from_millis(3000)).await;
     println!(
@@ -406,7 +406,7 @@ async fn carry(url: &str, name: &str) {
     );
 }
 
-/// Producers submit batches to the inbox while `writers` compete for the writer lease.
+/// Producers submit batches to the inbox while `writers` compete for the ingestor lease.
 async fn inbox(
     url: &str,
     name: &str,
@@ -428,20 +428,20 @@ async fn inbox(
     for w in 0..writers {
         let (ds, stop) = (ds.clone(), stop.clone());
         writer_tasks.push(tokio::spawn(async move {
-            let mut writer = strato::Writer::new(ds, format!("bench-writer-{w}"));
+            let mut ingestor = strato::Ingestor::new(ds, format!("bench-ingestor-{w}"));
             let (mut commits, mut folded) = (0usize, 0usize);
             while !stop.load(Ordering::Relaxed) {
-                match writer.run_once().await {
-                    Ok(strato::WriterStep::Committed { batches, .. }) => {
+                match ingestor.run_once().await {
+                    Ok(strato::IngestStep::Committed { change_sets, .. }) => {
                         commits += 1;
-                        folded += batches;
+                        folded += change_sets;
                     }
                     Ok(_) => tokio::time::sleep(Duration::from_millis(100)).await,
                     Err(Error::Conflict(_)) => {}
-                    Err(e) => panic!("writer: {e}"),
+                    Err(e) => panic!("ingestor: {e}"),
                 }
             }
-            writer.release().await.unwrap();
+            ingestor.release().await.unwrap();
             (commits, folded)
         }));
     }
@@ -461,7 +461,7 @@ async fn inbox(
                         ..docs[rng.below(docs.len())].clone()
                     })
                     .collect();
-                let mut batch = strato::Batch::new();
+                let mut batch = strato::ChangeSet::new();
                 batch.upsert(&name, upserts);
                 let t = Instant::now();
                 ds.submit(batch).await.unwrap();
@@ -476,7 +476,7 @@ async fn inbox(
         t.await.unwrap();
     }
     let submitted = usage.wall.elapsed();
-    while ds.pending_batches().await.unwrap() > 0 {
+    while ds.pending_change_sets().await.unwrap() > 0 {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let drained = report(
@@ -525,7 +525,7 @@ async fn compact(url: &str, name: &str) {
         .await
         .unwrap();
     let qs = queries(&reference, 1000);
-    let expected: Vec<_> = qs.iter().map(|q| reference.autocomplete(q, 10)).collect();
+    let expected: Vec<_> = qs.iter().map(|q| reference.complete(q, 10)).collect();
     println!(
         "  {segments} segments, {} live docs, queries {}",
         reference.len(),
@@ -572,7 +572,7 @@ async fn compact(url: &str, name: &str) {
     let same = qs
         .iter()
         .zip(&expected)
-        .all(|(q, e)| index.autocomplete(q, 10) == *e);
+        .all(|(q, e)| index.complete(q, 10) == *e);
     println!(
         "  after: {} segments, results identical: {same}, queries {}",
         full.indexes[name].segments.len(),
@@ -631,15 +631,15 @@ async fn concurrent(
             (done, lost)
         })
     };
-    let follower = {
+    let replica = {
         let (ds, stop) = (ds.clone(), stop.clone());
         tokio::spawn(async move {
             let engine = Engine::new();
-            let follower = Follower::new(ds, IndexConfig::default());
+            let replica = Replica::new(ds, IndexConfig::default());
             let mut syncs = Vec::new();
             while !stop.load(Ordering::Relaxed) {
                 let t = Instant::now();
-                if follower.sync(&engine).await.unwrap().is_some() {
+                if replica.sync(&engine).await.unwrap().is_some() {
                     syncs.push(t.elapsed().as_secs_f64() * 1000.0);
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -650,7 +650,7 @@ async fn concurrent(
 
     let usage = start();
     let mut tasks = Vec::new();
-    for writer in 0..writers {
+    for ingestor in 0..writers {
         let (ds, docs, shared, records, latencies, attempts, conflicts, name) = (
             ds.clone(),
             docs.clone(),
@@ -662,9 +662,9 @@ async fn concurrent(
             name.to_owned(),
         );
         tasks.push(tokio::spawn(async move {
-            let mut rng = Rng(1000 + writer as u64);
+            let mut rng = Rng(1000 + ingestor as u64);
             for batch in 0..batches {
-                let first = first_new + ((writer * batches + batch) * size) as u64;
+                let first = first_new + ((ingestor * batches + batch) * size) as u64;
                 let mut upserts: Vec<Document> = (0..size as u64)
                     .map(|i| Document {
                         id: first + i,
@@ -673,7 +673,7 @@ async fn concurrent(
                     .collect();
                 let hot = shared[rng.below(shared.len())];
                 upserts.push(Document {
-                    text: format!("hot w{writer} b{batch}"),
+                    text: format!("hot w{ingestor} b{batch}"),
                     ..docs.iter().find(|d| d.id == hot).unwrap().clone()
                 });
                 let deletes = vec![docs[rng.below(docs.len())].id];
@@ -692,7 +692,7 @@ async fn concurrent(
                         attempts.lock().unwrap().push(n);
                         records.lock().unwrap().push((
                             manifest.version,
-                            writer,
+                            ingestor,
                             batch,
                             ids,
                             deletes,
@@ -701,7 +701,7 @@ async fn concurrent(
                     Err(Error::Conflict(_)) => {
                         conflicts.fetch_add(1, Ordering::Relaxed);
                     }
-                    Err(e) => panic!("writer {writer}: {e}"),
+                    Err(e) => panic!("ingestor {ingestor}: {e}"),
                 }
             }
         }));
@@ -718,7 +718,7 @@ async fn concurrent(
     );
     stop.store(true, Ordering::Relaxed);
     let (compactions, compactions_lost) = compactor.await.unwrap();
-    let syncs = follower.await.unwrap();
+    let syncs = replica.await.unwrap();
 
     let mut latencies = latencies.lock().unwrap().clone();
     latencies.sort_by(f64::total_cmp);
@@ -733,7 +733,7 @@ async fn concurrent(
         latencies[latencies.len() - 1]
     );
     println!(
-        "    manifest writes per commit: mean {:.2}, max {}; compactions {compactions} (lost to conflicts {compactions_lost}); follower syncs {} (mean {:.0} ms)",
+        "    manifest writes per commit: mean {:.2}, max {}; compactions {compactions} (lost to conflicts {compactions_lost}); replica syncs {} (mean {:.0} ms)",
         attempts.iter().sum::<usize>() as f64 / attempts.len() as f64,
         attempts.iter().max().unwrap(),
         syncs.len(),
@@ -750,7 +750,7 @@ async fn concurrent(
     let mut missing = 0;
     let mut hot_expected = std::collections::HashMap::new();
     let mut deleted = std::collections::HashSet::new();
-    for (_, writer, batch, ids, deletes) in &records {
+    for (_, ingestor, batch, ids, deletes) in &records {
         for id in ids {
             deleted.remove(id);
         }
@@ -760,7 +760,7 @@ async fn concurrent(
                 missing += 1;
             }
         }
-        hot_expected.insert(*ids.last().unwrap(), format!("hot w{writer} b{batch}"));
+        hot_expected.insert(*ids.last().unwrap(), format!("hot w{ingestor} b{batch}"));
     }
     let hot_wrong = hot_expected
         .iter()
@@ -773,7 +773,7 @@ async fn concurrent(
         .filter(|id| index.document(**id).is_some())
         .count();
     println!(
-        "    final v{} with {} segments: missing inserts {missing}, wrong last-writer values {hot_wrong}, deleted still visible {deleted_alive}",
+        "    final v{} with {} segments: missing inserts {missing}, wrong last-ingestor values {hot_wrong}, deleted still visible {deleted_alive}",
         manifest.version,
         manifest.indexes[name].segments.len()
     );

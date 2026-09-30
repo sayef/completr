@@ -20,9 +20,9 @@ pub struct Alias {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AliasKind {
-    /// Prefix-searchable through `search_aliases`.
+    /// Prefix-searchable through `complete_aliases`.
     Synonym = 0,
-    /// Matched only exactly, by `autocomplete`: acronyms, initialisms, short codes.
+    /// Matched only exactly, by `complete`: acronyms, initialisms, short codes.
     Abbreviation = 1,
 }
 

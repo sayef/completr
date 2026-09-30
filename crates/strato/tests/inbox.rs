@@ -2,9 +2,9 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use strato::{Batch, Dataset, Document, Error, IndexConfig, Writer, WriterStep};
+use strato::{ChangeSet, Database, Document, Error, IndexConfig, IngestStep, Ingestor};
 
-async fn datasets(dir: &tempfile::TempDir, name: &str) -> Vec<Dataset> {
+async fn databases(dir: &tempfile::TempDir, name: &str) -> Vec<Database> {
     let run = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -19,7 +19,7 @@ async fn datasets(dir: &tempfile::TempDir, name: &str) -> Vec<Dataset> {
     let mut out = Vec::new();
     for url in urls {
         out.push(
-            Dataset::open(&url, Vec::<(String, String)>::new())
+            Database::open(&url, Vec::<(String, String)>::new())
                 .await
                 .unwrap(),
         );
@@ -27,9 +27,9 @@ async fn datasets(dir: &tempfile::TempDir, name: &str) -> Vec<Dataset> {
     out
 }
 
-async fn wipe(dataset: &Dataset) {
-    for key in dataset.store().list("").await.unwrap() {
-        dataset.store().delete(&key).await.unwrap();
+async fn wipe(database: &Database) {
+    for key in database.store().list("").await.unwrap() {
+        database.store().delete(&key).await.unwrap();
     }
 }
 
@@ -37,7 +37,7 @@ fn doc(id: u64, text: &str) -> Document {
     Document::new(id, text, 0.5)
 }
 
-async fn text_of(ds: &Dataset, index: &str, id: u64) -> Option<String> {
+async fn text_of(ds: &Database, index: &str, id: u64) -> Option<String> {
     let manifest = ds.latest().await.unwrap();
     let index = ds
         .load_index(&manifest, index, IndexConfig::default())
@@ -49,8 +49,8 @@ async fn text_of(ds: &Dataset, index: &str, id: u64) -> Option<String> {
 #[tokio::test(flavor = "multi_thread")]
 async fn batches_fold_into_one_commit() {
     let dir = tempfile::tempdir().unwrap();
-    for ds in datasets(&dir, "fold").await {
-        let mut first = Batch::new();
+    for ds in databases(&dir, "fold").await {
+        let mut first = ChangeSet::new();
         first
             .upsert(
                 "default/en",
@@ -58,24 +58,24 @@ async fn batches_fold_into_one_commit() {
             )
             .upsert("acme/en", [doc(1, "python custom")]);
         ds.submit(first).await.unwrap();
-        let mut second = Batch::new();
+        let mut second = ChangeSet::new();
         second
             .upsert("default/en", [doc(2, "rust lang")])
             .delete("default/en", [3]);
         ds.submit(second).await.unwrap();
-        assert_eq!(ds.pending_batches().await.unwrap(), 2);
+        assert_eq!(ds.pending_change_sets().await.unwrap(), 2);
 
-        let mut writer = Writer::new(ds.clone(), "a");
-        let step = writer.run_once().await.unwrap();
+        let mut ingestor = Ingestor::new(ds.clone(), "a");
+        let step = ingestor.run_once().await.unwrap();
         assert_eq!(
             step,
-            WriterStep::Committed {
+            IngestStep::Committed {
                 version: 1,
-                batches: 2,
+                change_sets: 2,
                 documents: 5
             }
         );
-        assert_eq!(ds.pending_batches().await.unwrap(), 0);
+        assert_eq!(ds.pending_change_sets().await.unwrap(), 0);
         assert_eq!(
             text_of(&ds, "default/en", 2).await.as_deref(),
             Some("rust lang")
@@ -91,8 +91,8 @@ async fn batches_fold_into_one_commit() {
                 .len(),
             1
         );
-        assert_eq!(writer.run_once().await.unwrap(), WriterStep::Idle);
-        writer.release().await.unwrap();
+        assert_eq!(ingestor.run_once().await.unwrap(), IngestStep::Idle);
+        ingestor.release().await.unwrap();
         wipe(&ds).await;
     }
 }
@@ -100,24 +100,24 @@ async fn batches_fold_into_one_commit() {
 #[tokio::test(flavor = "multi_thread")]
 async fn one_leader_with_failover() {
     let dir = tempfile::tempdir().unwrap();
-    for ds in datasets(&dir, "leader").await {
-        let mut a = Writer::new(ds.clone(), "a");
-        let mut b = Writer::new(ds.clone(), "b");
-        assert_eq!(a.run_once().await.unwrap(), WriterStep::Idle);
-        assert_eq!(b.run_once().await.unwrap(), WriterStep::NotLeader);
+    for ds in databases(&dir, "leader").await {
+        let mut a = Ingestor::new(ds.clone(), "a");
+        let mut b = Ingestor::new(ds.clone(), "b");
+        assert_eq!(a.run_once().await.unwrap(), IngestStep::Idle);
+        assert_eq!(b.run_once().await.unwrap(), IngestStep::Standby);
         a.release().await.unwrap();
-        assert_eq!(b.run_once().await.unwrap(), WriterStep::Idle);
-        assert!(b.is_leader());
+        assert_eq!(b.run_once().await.unwrap(), IngestStep::Idle);
+        assert!(b.is_active());
 
-        // A writer whose lease expired steps down at its next round.
-        let mut c = Writer::new(ds.clone(), "c");
+        // A ingestor whose lease expired steps down at its next round.
+        let mut c = Ingestor::new(ds.clone(), "c");
         c.lease_ttl = Duration::from_millis(300);
         b.release().await.unwrap();
-        assert_eq!(c.run_once().await.unwrap(), WriterStep::Idle);
+        assert_eq!(c.run_once().await.unwrap(), IngestStep::Idle);
         tokio::time::sleep(Duration::from_millis(400)).await;
-        let mut d = Writer::new(ds.clone(), "d");
-        assert_eq!(d.run_once().await.unwrap(), WriterStep::Idle);
-        assert_eq!(c.run_once().await.unwrap(), WriterStep::NotLeader);
+        let mut d = Ingestor::new(ds.clone(), "d");
+        assert_eq!(d.run_once().await.unwrap(), IngestStep::Idle);
+        assert_eq!(c.run_once().await.unwrap(), IngestStep::Standby);
         d.release().await.unwrap();
         wipe(&ds).await;
     }
@@ -126,30 +126,30 @@ async fn one_leader_with_failover() {
 #[tokio::test(flavor = "multi_thread")]
 async fn leftover_applied_batches_are_not_reapplied() {
     let dir = tempfile::tempdir().unwrap();
-    for ds in datasets(&dir, "leftover").await {
-        let mut old = Batch::new();
+    for ds in databases(&dir, "leftover").await {
+        let mut old = ChangeSet::new();
         old.upsert("i", [doc(7, "first")]);
         let id = ds.submit(old).await.unwrap();
         let key = format!("_inbox/{id}.batch");
         let bytes = ds.store().get(&key).await.unwrap();
-        let mut writer = Writer::new(ds.clone(), "w");
+        let mut ingestor = Ingestor::new(ds.clone(), "w");
         assert!(matches!(
-            writer.run_once().await.unwrap(),
-            WriterStep::Committed { .. }
+            ingestor.run_once().await.unwrap(),
+            IngestStep::Committed { .. }
         ));
 
-        // As if the writer crashed after committing, before deleting the batch.
+        // As if the ingestor crashed after committing, before deleting the batch.
         ds.store().put(&key, bytes).await.unwrap();
-        let mut newer = Batch::new();
+        let mut newer = ChangeSet::new();
         newer.upsert("i", [doc(7, "second")]);
         ds.submit(newer).await.unwrap();
         assert!(matches!(
-            writer.run_once().await.unwrap(),
-            WriterStep::Committed { batches: 1, .. }
+            ingestor.run_once().await.unwrap(),
+            IngestStep::Committed { change_sets: 1, .. }
         ));
         assert_eq!(text_of(&ds, "i", 7).await.as_deref(), Some("second"));
-        assert_eq!(ds.pending_batches().await.unwrap(), 0);
-        writer.release().await.unwrap();
+        assert_eq!(ds.pending_change_sets().await.unwrap(), 0);
+        ingestor.release().await.unwrap();
         wipe(&ds).await;
     }
 }
@@ -157,23 +157,23 @@ async fn leftover_applied_batches_are_not_reapplied() {
 #[tokio::test(flavor = "multi_thread")]
 async fn older_generations_are_fenced() {
     let dir = tempfile::tempdir().unwrap();
-    for ds in datasets(&dir, "fence").await {
+    for ds in databases(&dir, "fence").await {
         let mut newer = ds.begin().await.unwrap();
         newer
             .append_documents("i", [doc(1, "a")], [])
             .unwrap()
-            .fence("writer", 5);
+            .fence("ingestor", 5);
         newer.commit().await.unwrap();
         let mut older = ds.begin().await.unwrap();
         older
             .append_documents("i", [doc(2, "b")], [])
             .unwrap()
-            .fence("writer", 4);
+            .fence("ingestor", 4);
         assert!(matches!(older.commit().await, Err(Error::Conflict(_))));
         let mut same = ds.begin().await.unwrap();
         same.append_documents("i", [doc(3, "c")], [])
             .unwrap()
-            .fence("writer", 5);
+            .fence("ingestor", 5);
         same.commit().await.unwrap();
         wipe(&ds).await;
     }
@@ -182,23 +182,23 @@ async fn older_generations_are_fenced() {
 #[tokio::test(flavor = "multi_thread")]
 async fn many_producers_and_competing_writers() {
     let dir = tempfile::tempdir().unwrap();
-    for ds in datasets(&dir, "stress").await {
+    for ds in databases(&dir, "stress").await {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut writers = Vec::new();
         for w in 0..4 {
             let (ds, stop) = (ds.clone(), stop.clone());
             writers.push(tokio::spawn(async move {
-                let mut writer = Writer::new(ds, format!("writer-{w}"));
+                let mut ingestor = Ingestor::new(ds, format!("ingestor-{w}"));
                 let mut committed = 0;
                 while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    match writer.run_once().await {
-                        Ok(WriterStep::Committed { batches, .. }) => committed += batches,
+                    match ingestor.run_once().await {
+                        Ok(IngestStep::Committed { change_sets, .. }) => committed += change_sets,
                         Ok(_) => tokio::time::sleep(Duration::from_millis(20)).await,
                         Err(Error::Conflict(_)) => {}
                         Err(e) => panic!("{e}"),
                     }
                 }
-                writer.release().await.unwrap();
+                ingestor.release().await.unwrap();
                 committed
             }));
         }
@@ -207,7 +207,7 @@ async fn many_producers_and_competing_writers() {
             let ds = ds.clone();
             producers.push(tokio::spawn(async move {
                 for n in 0..10u64 {
-                    let mut batch = Batch::new();
+                    let mut batch = ChangeSet::new();
                     batch.upsert(
                         "i",
                         [
@@ -222,7 +222,7 @@ async fn many_producers_and_competing_writers() {
         for p in producers {
             p.await.unwrap();
         }
-        while ds.pending_batches().await.unwrap() > 0 {
+        while ds.pending_change_sets().await.unwrap() > 0 {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -248,8 +248,8 @@ async fn many_producers_and_competing_writers() {
 #[tokio::test(flavor = "multi_thread")]
 async fn corrupt_batches_are_set_aside() {
     let dir = tempfile::tempdir().unwrap();
-    for ds in datasets(&dir, "corrupt").await {
-        let mut good = Batch::new();
+    for ds in databases(&dir, "corrupt").await {
+        let mut good = ChangeSet::new();
         good.upsert("i", [doc(1, "kept")]);
         let id = ds.submit(good).await.unwrap();
         let key = format!("_inbox/{id}.batch");
@@ -261,15 +261,15 @@ async fn corrupt_batches_are_set_aside() {
             .await
             .unwrap();
 
-        let mut writer = Writer::new(ds.clone(), "w");
+        let mut ingestor = Ingestor::new(ds.clone(), "w");
         assert!(matches!(
-            writer.run_once().await.unwrap(),
-            WriterStep::Committed { batches: 1, .. }
+            ingestor.run_once().await.unwrap(),
+            IngestStep::Committed { change_sets: 1, .. }
         ));
         assert_eq!(text_of(&ds, "i", 1).await.as_deref(), Some("kept"));
-        assert_eq!(ds.pending_batches().await.unwrap(), 0);
+        assert_eq!(ds.pending_change_sets().await.unwrap(), 0);
         assert_eq!(ds.store().list("_rejected").await.unwrap().len(), 1);
-        writer.release().await.unwrap();
+        ingestor.release().await.unwrap();
         wipe(&ds).await;
     }
 }

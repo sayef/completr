@@ -17,10 +17,10 @@ pub struct IndexConfig {
     /// Results computed per cached short query; requests are served by truncating them.
     pub short_query_limit: usize,
     pub short_query_cache_entries: usize,
-    /// On replacing an index, the follower recomputes this many of the old index's most-served
+    /// On replacing an index, the replica recomputes this many of the old index's most-served
     /// short queries on the new one, so the cache stays warm across updates.
     pub carry_short_queries: usize,
-    /// Map every page of new segments before the follower publishes them.
+    /// Map every page of new segments before the replica publishes them.
     pub warm_on_load: bool,
     /// Threads per vector query: 1 runs inline on the caller's thread (best under concurrent
     /// load), 0 uses rayon's global pool, more uses a shared pool of that size.
@@ -303,7 +303,7 @@ impl Index {
     /// Computes and caches results for `queries`, e.g. those of the index this one replaces.
     pub fn prefill_short_queries(&self, queries: &[String]) {
         for query in queries {
-            self.autocomplete(query, 0);
+            self.complete(query, 0);
         }
     }
 
@@ -314,7 +314,7 @@ impl Index {
 
     /// The `k` live documents whose embeddings score highest against `query` (approximate inner
     /// product, cosine for normalised vectors), best first.
-    pub fn vector_search(&self, query: &[f32], k: usize) -> Result<Vec<crate::Hit>, Error> {
+    pub fn vector_search(&self, query: &[f32], k: usize) -> Result<Vec<crate::Suggestion>, Error> {
         let Some(dim) = self.vector_dim else {
             return Ok(Vec::new());
         };
@@ -331,7 +331,7 @@ impl Index {
                 Err(Error::input("query vector is not finite"))
             };
         }
-        let mut hits: Vec<crate::Hit> = Vec::new();
+        let mut hits: Vec<crate::Suggestion> = Vec::new();
         for ((seg, mask), &base) in self
             .segments
             .iter()
@@ -346,7 +346,7 @@ impl Index {
             }
             for (local, score) in vectors.search(query, k, mask, self.config.vector_threads)? {
                 let id = self.ids[base as usize + local as usize];
-                hits.push(crate::Hit {
+                hits.push(crate::Suggestion {
                     id,
                     score: f64::from(score),
                     kind: crate::MatchKind::Semantic,

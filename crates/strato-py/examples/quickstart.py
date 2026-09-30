@@ -13,7 +13,7 @@ docs = [
 index = Index([Segment.build(docs)])
 
 for query in ["mach", "ML", "vison", "science"]:
-    print(f"{query:>8} ->", [(h.id, h.kind, round(h.score, 3)) for h in index.autocomplete(query, limit=3)])
+    print(f"{query:>8} ->", [(h.id, h.kind, round(h.score, 3)) for h in index.complete(query, limit=3)])
 
 # Embeddings from any model: one float32 row per document.
 vectors = np.random.default_rng(0).standard_normal((3, 64), dtype=np.float32)
@@ -25,4 +25,4 @@ for hit in semantic.hybrid_search("machine", vectors[2], limit=3, fusion="rrf"):
 # Layers: a tenant's index overrides the shared one per id.
 engine = Engine()
 engine.publish({"shared": index, "acme": Index([Segment.build([(2, "Machine Vision Systems", 1.0, [])])])})
-print([(h.id, h.layer) for h in engine.autocomplete("machine", ["shared", "acme"])])
+print([(h.id, h.layer) for h in engine.complete("machine", ["shared", "acme"])])

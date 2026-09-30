@@ -1,6 +1,7 @@
 # Architecture
 
-This document describes how strato stores, searches and updates indexes. For usage, see the
+This document describes how strato stores, searches and updates indexes. strato is serverless: the engine
+runs inside each application process, and the only shared component is the store. For usage, see the
 [README](../README.md).
 
 ## Model
@@ -11,7 +12,7 @@ This document describes how strato stores, searches and updates indexes. For usa
 | `Segment` | Immutable, self-contained set of documents and deletions, one file |
 | `Index` | Segments ordered oldest to newest. A newer copy of an id supersedes older ones, and a segment's deletes hide ids in older segments |
 | `Engine` | Indexes by name, replaced atomically; searches run over a list of names as override layers |
-| `Dataset` | Versioned manifests of named indexes in an object store |
+| `Database` | Versioned manifests of named indexes in an object store |
 
 The library has no notion of tenants, languages or domains. Callers express those as index names, for
 example `tenant/language`, and as layer lists.
@@ -65,7 +66,7 @@ in a nested trie, which is smaller but slower.
 
 1. **Normalise** the query: Unicode lowercase and trim; words split on Unicode whitespace.
 2. **Short queries** (up to `short_query_chars`, default 3) are answered from a per-index cache of
-   `short_query_limit` results, computed on first use. A follower recomputes the old index's most-served
+   `short_query_limit` results, computed on first use. A replica recomputes the old index's most-served
    entries on the new index before publishing it.
 3. **Candidates**, merged across segments at the primitive level:
    - exact and prefix matches from a cursor merge over the title dictionaries;
@@ -98,16 +99,16 @@ id, and merge by the same order.
 - **Hybrid search** takes `candidates` hits from each side and fuses them with reciprocal rank fusion, a
   weighted sum, or lexical-first ordering, with ties broken by id.
 
-## Datasets
+## Databases
 
-A dataset is a prefix in an object store. The layout follows [Lance](https://github.com/lancedb/lance):
+A database is a prefix in an object store. The layout follows [Lance](https://github.com/lancedb/lance):
 
 ```
 _versions/00000000000000000001.json    manifest: indexes -> segments, metadata, parent version
 segments/<uuid>.seg                    immutable segment files
 _locks/<name>/<generation>             lease generations
-_inbox/<batch id>.batch                submitted batches
-_rejected/<batch id>.batch             batches that could not be decoded
+_inbox/<id>.batch                      submitted change sets
+_rejected/<id>.batch                   change sets that could not be decoded
 ```
 
 - **Commits.** A commit writes manifest `N + 1` create-only (`If-None-Match: *` on S3, exclusive create
@@ -124,27 +125,27 @@ _rejected/<batch id>.batch             batches that could not be decoded
 - **Leases** are advisory, expiring locks. Every acquire or renew creates the next generation file
   create-only, so leases work on every backend, and the generation serves as a fencing token.
 
-### Single writer
+### Single ingestor
 
 Many writers committing directly contend on the manifest. Instead:
 
-1. Any process builds its changes into segments and writes them create-only to `_inbox/` as a batch.
-   Batch ids are monotonic within a process, so a process's batches apply in submission order.
-2. Every process may run a `Writer`, and only the one holding the `writer` lease acts. It folds pending
-   batches into one segment per index and commits them as one version.
-3. The commit is fenced by the lease generation, and it records the applied batch ids. A writer that lost
-   its lease cannot commit, and a batch left over after a crash is never applied twice.
-4. After committing, the writer compacts the indexes it touched.
+1. Any process builds its changes into segments and writes them create-only to `_inbox/` as a change set.
+   Change-set ids are monotonic within a process, so a process's change sets apply in submission order.
+2. Every process may run an `Ingestor`, and only the one holding the `ingestor` lease acts. It folds
+   pending change sets into one segment per index and commits them as one version.
+3. The commit is fenced by the lease generation, and it records the applied change-set ids. An ingestor
+   that lost its lease cannot commit, and a change set left over after a crash is never applied twice.
+4. After committing, the ingestor compacts the indexes it touched.
 
-### Followers
+### Replicas
 
-A `Follower` polls for newer manifests. It lists only keys after its current version, downloads only
+A `Replica` polls for newer manifests. It lists only keys after its current version, downloads only
 segments it does not hold, rebuilds only the changed indexes, and publishes them to an `Engine`.
 
 With `group_separator`, it publishes one group of indexes at a time and releases replaced segments before
-loading the next group. Serving memory therefore holds at most one group twice, never the whole dataset.
+loading the next group. Serving memory therefore holds at most one group twice, never the whole database.
 
-Build and compaction peaks belong to the writer, so run writers outside serving processes.
+Build and compaction peaks belong to the ingestor, so run ingestors outside serving processes.
 
 ## Storage backends
 

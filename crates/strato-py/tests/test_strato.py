@@ -15,18 +15,18 @@ DOCS = [
 
 def test_autocomplete_kinds():
     index = Index([Segment.build(DOCS)], max_score=1000.0)
-    hits = index.autocomplete("machine", 10)
+    hits = index.complete("machine", 10)
     assert [h.id for h in hits] == [1, 2]
-    assert index.autocomplete("machine learning")[0].kind == "exact"
-    assert index.autocomplete("ml")[0].id == 1
-    assert index.autocomplete("ml")[0].kind == "abbreviation"
-    assert index.autocomplete("machne lerning")[0].kind == "fuzzy"
+    assert index.complete("machine learning")[0].kind == "exact"
+    assert index.complete("ml")[0].id == 1
+    assert index.complete("ml")[0].kind == "abbreviation"
+    assert index.complete("machne lerning")[0].kind == "fuzzy"
 
 
 def test_search_aliases_skips_abbreviations():
     index = Index([Segment.build(DOCS)], max_score=1000.0)
-    assert [h.id for h in index.search_aliases("data")] == [3]
-    assert index.search_aliases("ml") == []
+    assert [h.id for h in index.complete_aliases("data")] == [3]
+    assert index.complete_aliases("ml") == []
 
 
 def test_newer_segments_supersede_and_delete():
@@ -34,8 +34,8 @@ def test_newer_segments_supersede_and_delete():
     delta = Segment.build([(2, "Computer Vision", 0.2, [])], deletes=[4])
     index = Index([base, delta], max_score=1000.0)
     assert len(index) == 3
-    assert [h.id for h in index.autocomplete("machine")] == [1]
-    assert 4 not in [h.id for h in index.autocomplete("datadog")]
+    assert [h.id for h in index.complete("machine")] == [1]
+    assert 4 not in [h.id for h in index.complete("datadog")]
     assert index.get(2)[1] == "Computer Vision"
     compacted = index.compact()
     assert sorted(compacted.ids()) == [1, 2, 3] and compacted.deletes() == []
@@ -60,9 +60,9 @@ def test_engine_layers_override_by_id():
             "acme": Index([Segment.build([(2, "Machine Vision Systems", 1.0, [])])], max_score=1000.0),
         }
     )
-    hits = engine.autocomplete("machine", ["default", "acme"])
+    hits = engine.complete("machine", ["default", "acme"])
     assert {(h.id, h.layer) for h in hits} == {(1, "default"), (2, "acme")}
-    assert [h.id for h in engine.autocomplete("machine", ["default", "missing"])] == [1, 2]
+    assert [h.id for h in engine.complete("machine", ["default", "missing"])] == [1, 2]
     engine.publish({"acme": None})
     assert engine.names() == ["default"]
 
@@ -95,9 +95,9 @@ def test_compact_keys_give_the_same_results():
     compact_segment = Segment.build(DOCS, compact_keys=True)
     compact = Index([compact_segment], max_score=1000.0)
     for query in ["machine", "mach", "ml", "data", "machne lerning", "vision"]:
-        assert [(h.id, h.score, h.kind) for h in compact.autocomplete(query)] == [
-            (h.id, h.score, h.kind) for h in regular.autocomplete(query)
+        assert [(h.id, h.score, h.kind) for h in compact.complete(query)] == [
+            (h.id, h.score, h.kind) for h in regular.complete(query)
         ]
-        assert [(h.id, h.score) for h in compact.search_aliases(query)] == [
-            (h.id, h.score) for h in regular.search_aliases(query)
+        assert [(h.id, h.score) for h in compact.complete_aliases(query)] == [
+            (h.id, h.score) for h in regular.complete_aliases(query)
         ]

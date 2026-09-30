@@ -17,7 +17,7 @@ fn main() -> Result<(), strato::Error> {
 
     for query in ["mach", "ML", "vison", "science"] {
         let hits: Vec<_> = index
-            .autocomplete(query, 3)
+            .complete(query, 3)
             .iter()
             .map(|h| format!("{} {} {:.3}", h.id, h.kind.as_str(), h.score))
             .collect();
@@ -37,7 +37,7 @@ fn main() -> Result<(), strato::Error> {
             )?)),
         ),
     ]);
-    for hit in engine.autocomplete(&["shared", "acme"], "machine", 3) {
+    for hit in engine.complete(&["shared", "acme"], "machine", 3) {
         println!("{} from layer {}", hit.hit.id, hit.layer);
     }
     Ok(())

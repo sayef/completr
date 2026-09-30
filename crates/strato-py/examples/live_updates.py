@@ -3,27 +3,27 @@
 import sys
 import tempfile
 
-from strato import Batch, Dataset, Engine, Follower, Writer
+from strato import ChangeSet, Database, Engine, Replica, Ingestor
 
 url = sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp()  # or s3://bucket/prefix, gs://..., az://...
-dataset = Dataset(url)
+database = Database(url)
 
-txn = dataset.begin()
+txn = database.begin()
 txn.append("products", [(i, f"product {i}", 0.5, []) for i in range(10_000)])
 txn.commit()
 
 engine = Engine()
-follower = Follower(dataset, engine)
-follower.sync()
+replica = Replica(database, engine)
+replica.sync()
 
-batch = Batch()
-batch.upsert("products", [(10_000, "wireless keyboard", 0.9, [])])
-batch.delete("products", [42])
-dataset.submit(batch)
+changes = ChangeSet()
+changes.upsert("products", [(10_000, "wireless keyboard", 0.9, [])])
+changes.delete("products", [42])
+database.submit(changes)
 
-writer = Writer(dataset, "writer-1")
-print(writer.run_once())
-writer.release()
+ingestor = Ingestor(database, "ingestor-1")
+print(ingestor.run_once())
+ingestor.release()
 
-follower.sync()
-print([(h.id, h.kind) for h in engine.autocomplete("wirel", ["products"])])
+replica.sync()
+print([(h.id, h.kind) for h in engine.complete("wirel", ["products"])])

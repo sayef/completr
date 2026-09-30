@@ -194,16 +194,16 @@ fn main() {
     let layered = Index::new(vec![base.clone(), delta], config).unwrap();
     let cached = Index::new(vec![base], IndexConfig::default()).unwrap();
     println!("| Query | Count | p50 | p99 | max |\n|---|---|---|---|---|");
-    latency("Typed prefixes", &typed, |q| drop(one.autocomplete(q, 10)));
+    latency("Typed prefixes", &typed, |q| drop(one.complete(q, 10)));
     latency("Typed prefixes, short-query cache", &typed, |q| {
-        drop(cached.autocomplete(q, 10))
+        drop(cached.complete(q, 10))
     });
     latency("Typed prefixes, base + delta", &typed, |q| {
-        drop(layered.autocomplete(q, 10))
+        drop(layered.complete(q, 10))
     });
-    latency("One-edit typos", &typos, |q| drop(one.autocomplete(q, 10)));
+    latency("One-edit typos", &typos, |q| drop(one.complete(q, 10)));
     latency("Synonym aliases", &typed, |q| {
-        drop(one.search_aliases(q, 10))
+        drop(one.complete_aliases(q, 10))
     });
     if with_vectors {
         let vectors: Vec<Vec<f32>> = (0..1000).map(|_| unit_vector(&mut rng, dim)).collect();

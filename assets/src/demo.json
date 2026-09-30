@@ -1,0 +1,82 @@
+[
+ {
+  "query": "mach",
+  "caption": "prefix completion",
+  "hits": [
+   [
+    "Machine Learning",
+    "prefix",
+    0.6
+   ],
+   [
+    "Machine Vision",
+    "prefix",
+    0.4
+   ],
+   [
+    "Machine Translation",
+    "prefix",
+    0.37
+   ]
+  ]
+ },
+ {
+  "query": "nlp",
+  "caption": "abbreviations",
+  "hits": [
+   [
+    "Natural Language Processing",
+    "abbreviation",
+    0.54
+   ]
+  ]
+ },
+ {
+  "query": "machne lerning",
+  "caption": "spelling correction",
+  "hits": [
+   [
+    "Machine Learning",
+    "fuzzy",
+    0.04
+   ]
+  ]
+ },
+ {
+  "query": "datascience",
+  "caption": "word decomposition",
+  "hits": [
+   [
+    "Data Science",
+    "exact",
+    0.96
+   ]
+  ]
+ },
+ {
+  "query": "science",
+  "caption": "infix matches",
+  "hits": [
+   [
+    "Data Science",
+    "infix",
+    0.35
+   ],
+   [
+    "Computer Science",
+    "infix",
+    0.31
+   ],
+   [
+    "Political Science",
+    "infix",
+    0.19
+   ],
+   [
+    "Materials Science",
+    "infix",
+    0.18
+   ]
+  ]
+ }
+]

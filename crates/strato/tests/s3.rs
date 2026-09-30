@@ -41,7 +41,7 @@ fn s3_round_trip() {
     )
     .unwrap();
     assert_eq!(index.len(), 1999);
-    assert_eq!(index.autocomplete("rust prog", 5)[0].id, 5);
+    assert_eq!(index.complete("rust prog", 5)[0].id, 5);
 
     assert!(store
         .put_if_absent("_versions/000000000001.json", b"{\"version\":1}".to_vec())
