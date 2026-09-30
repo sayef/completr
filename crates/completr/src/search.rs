@@ -121,6 +121,8 @@ struct Merged {
     from_prefix: bool,
     fuzzy_distance: usize,
     fuzzy_rank: Option<usize>,
+    /// The corrected query's own score for the document.
+    fuzzy_score: f64,
     is_abbreviation: bool,
     is_exact: bool,
 }
@@ -435,11 +437,13 @@ impl Index {
     }
 
     /// Phrase corrections: per-word fixes, and splits of a run-together word.
+    /// With `stuck`, the word being typed is corrected too: the query as typed matched nothing.
     fn lookup_compound(
         &self,
         memo: &Memo,
         phrase: &str,
         max_results: usize,
+        stuck: bool,
     ) -> Vec<(String, usize)> {
         if !self.has_words || phrase.is_empty() {
             return Vec::new();
@@ -461,11 +465,22 @@ impl Index {
             // Short words are not indexed, so a correction would replace a real word; the word
             // being typed stays while an indexed word starts with it.
             let typing = last && self.has_prefix(Field::Word, word);
-            if text::char_len(word) < min_chars || typing {
+            let prefix = last && text::char_len(word) >= 3;
+            if text::char_len(word) < min_chars || typing && !stuck {
                 corrected.push(word.to_owned());
                 continue;
             }
-            let prefix = last && text::char_len(word) >= 3;
+            if typing {
+                // Its corrections are tried beside it, as short prefixes find few candidates.
+                corrected.push(word.to_owned());
+                alternatives.extend(
+                    self.fuzzy_search(memo, word, 3, prefix)
+                        .into_iter()
+                        .filter(|(_, d, _)| *d > 0)
+                        .map(|(alt, d, _)| (i, alt, d)),
+                );
+                continue;
+            }
             let found = self.fuzzy_search(memo, word, 3, prefix);
             match found.first() {
                 Some((best, distance, _)) if *distance > 0 => {
@@ -533,13 +548,19 @@ impl Index {
         results
     }
 
-    fn fix_spell(&self, memo: &Memo, query: &str, max_results: usize) -> Vec<(String, usize)> {
+    fn fix_spell(
+        &self,
+        memo: &Memo,
+        query: &str,
+        max_results: usize,
+        stuck: bool,
+    ) -> Vec<(String, usize)> {
         if query.is_empty() {
             return Vec::new();
         }
         let lower = text::lower(query);
         let mut phrases: Vec<(String, usize)> = self
-            .lookup_compound(memo, &lower, 3)
+            .lookup_compound(memo, &lower, 3, stuck)
             .into_iter()
             .filter(|(p, _)| *p != lower)
             .collect();
@@ -650,11 +671,16 @@ impl Index {
             .map(|(doc, _)| doc)
             .collect();
 
-        let mut fuzzy_matches: FxHashMap<u32, (usize, usize)> = FxHashMap::default();
+        let mut fuzzy_matches: FxHashMap<u32, (usize, usize, f64)> = FxHashMap::default();
         if prefix_matches.len() < max_results && depth < 2 {
             let mut last_distance = 0;
             for (rank, (phrase, distance)) in self
-                .fix_spell(memo, query, fetch_prefix)
+                .fix_spell(
+                    memo,
+                    query,
+                    fetch_prefix,
+                    prefix_matches.is_empty() && infix_matches.is_empty(),
+                )
                 .into_iter()
                 .enumerate()
             {
@@ -666,9 +692,9 @@ impl Index {
                 for hit in self.raw_autocomplete(memo, &phrase, max_results * 2, 2) {
                     let better = fuzzy_matches
                         .get(&hit.doc)
-                        .is_none_or(|&(d, r)| distance < d || (distance == d && rank < r));
+                        .is_none_or(|&(d, r, _)| distance < d || (distance == d && rank < r));
                     if better {
-                        fuzzy_matches.insert(hit.doc, (distance, rank));
+                        fuzzy_matches.insert(hit.doc, (distance, rank, hit.score));
                     }
                 }
             }
@@ -676,12 +702,13 @@ impl Index {
 
         let exact = self.get(Field::Title, q).first().map(|&(doc, _)| doc);
         let mut merged: FxHashMap<u32, Merged> = FxHashMap::default();
-        for (&doc, &(distance, rank)) in &fuzzy_matches {
+        for (&doc, &(distance, rank, score)) in &fuzzy_matches {
             merged.insert(
                 doc,
                 Merged {
                     fuzzy_distance: distance,
                     fuzzy_rank: Some(rank),
+                    fuzzy_score: score,
                     ..Merged::default()
                 },
             );
@@ -734,6 +761,7 @@ impl Index {
                     base + m
                         .fuzzy_rank
                         .map_or(0.0, |rank| (5.0 - rank as f64).max(0.0))
+                        + 40.0 * m.fuzzy_score
                 } else if m.is_exact {
                     150.0
                 } else if m.from_prefix {
@@ -805,7 +833,9 @@ impl Index {
                 )
             });
             if !has_direct {
-                if let Some((phrase, _)) = self.lookup_compound(memo, q, 3).into_iter().next() {
+                if let Some((phrase, _)) =
+                    self.lookup_compound(memo, q, 3, false).into_iter().next()
+                {
                     if phrase != q {
                         return self.raw_autocomplete(memo, &phrase, max_results, 1);
                     }
