@@ -73,8 +73,8 @@ fn corpus(rng: &mut Rng) -> Vec<Document> {
 fn exercise(index: &Index, rng: &mut Rng) {
     for _ in 0..8 {
         let q = random_text(rng, 12);
-        index.autocomplete(&q, 10);
-        index.search_aliases(&q, 10);
+        index.complete(&q, 10);
+        index.complete_aliases(&q, 10);
     }
     let _ = index.vector_search(&[0.5; 8], 5);
     for id in 0..20 {
@@ -198,13 +198,13 @@ fn random_queries_are_deterministic() {
     let segmented = Index::new(parts, IndexConfig::default()).unwrap();
     let bits = |index: &Index, q: &str| -> Vec<(u64, u64, &'static str)> {
         let mut out: Vec<_> = index
-            .autocomplete(q, 10)
+            .complete(q, 10)
             .into_iter()
             .map(|h| (h.id, h.score.to_bits(), h.kind.as_str()))
             .collect();
         out.extend(
             index
-                .search_aliases(q, 10)
+                .complete_aliases(q, 10)
                 .into_iter()
                 .map(|h| (h.id, h.score.to_bits(), "alias")),
         );

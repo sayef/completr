@@ -4,12 +4,12 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use strato::{
-    CleanupPolicy, CompactionPolicy, Dataset, Document, Engine, Error, Follower, Index,
-    IndexConfig, Segment, BASE_LEVEL,
+    CleanupPolicy, CompactionPolicy, Database, Document, Engine, Error, Index, IndexConfig,
+    Replica, Segment, BASE_LEVEL,
 };
 
-/// A fresh dataset per backend: memory, a temp dir, and S3 when `STRATO_TEST_S3_URL` is set.
-async fn datasets(dir: &tempfile::TempDir, name: &str) -> Vec<Dataset> {
+/// A fresh database per backend: memory, a temp dir, and S3 when `STRATO_TEST_S3_URL` is set.
+async fn databases(dir: &tempfile::TempDir, name: &str) -> Vec<Database> {
     let run = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -24,7 +24,7 @@ async fn datasets(dir: &tempfile::TempDir, name: &str) -> Vec<Dataset> {
     let mut out = Vec::new();
     for url in urls {
         out.push(
-            Dataset::open(&url, Vec::<(String, String)>::new())
+            Database::open(&url, Vec::<(String, String)>::new())
                 .await
                 .unwrap(),
         );
@@ -32,9 +32,9 @@ async fn datasets(dir: &tempfile::TempDir, name: &str) -> Vec<Dataset> {
     out
 }
 
-async fn wipe(dataset: &Dataset) {
-    for key in dataset.store().list("").await.unwrap() {
-        dataset.store().delete(&key).await.unwrap();
+async fn wipe(database: &Database) {
+    for key in database.store().list("").await.unwrap() {
+        database.store().delete(&key).await.unwrap();
     }
 }
 
@@ -67,7 +67,7 @@ fn results(index: &Index) -> Vec<Vec<(u64, u64, &'static str)>> {
         .into_iter()
         .map(|q| {
             index
-                .autocomplete(q, 20)
+                .complete(q, 20)
                 .into_iter()
                 .map(|h| (h.id, h.score.to_bits(), h.kind.as_str()))
                 .collect()
@@ -78,7 +78,7 @@ fn results(index: &Index) -> Vec<Vec<(u64, u64, &'static str)>> {
 #[tokio::test(flavor = "multi_thread")]
 async fn commits_rebase_and_conflict() {
     let dir = tempfile::tempdir().unwrap();
-    for ds in datasets(&dir, "commits").await {
+    for ds in databases(&dir, "commits").await {
         let mut t = ds.begin().await.unwrap();
         t.append_documents("a", docs(0..100, "v"), [])
             .unwrap()
@@ -131,7 +131,7 @@ async fn commits_rebase_and_conflict() {
 #[tokio::test(flavor = "multi_thread")]
 async fn compaction_preserves_results() {
     let dir = tempfile::tempdir().unwrap();
-    for ds in datasets(&dir, "compaction").await {
+    for ds in databases(&dir, "compaction").await {
         let mut t = ds.begin().await.unwrap();
         t.append_documents("a", docs(0..400, "base"), [])
             .unwrap()
@@ -233,7 +233,7 @@ async fn compaction_preserves_results() {
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_writers_and_compactor_converge() {
     let dir = tempfile::tempdir().unwrap();
-    for ds in datasets(&dir, "concurrent").await {
+    for ds in databases(&dir, "concurrent").await {
         let mut t = ds.begin().await.unwrap();
         t.append_documents("a", docs(0..200, "base"), [])
             .unwrap()
@@ -307,7 +307,7 @@ async fn concurrent_writers_and_compactor_converge() {
 #[tokio::test(flavor = "multi_thread")]
 async fn leases_exclude_and_expire() {
     let dir = tempfile::tempdir().unwrap();
-    for ds in datasets(&dir, "leases").await {
+    for ds in databases(&dir, "leases").await {
         let hour = Duration::from_secs(3600);
         let mut a = ds
             .acquire_lease("writer", "a", hour)
@@ -343,19 +343,19 @@ async fn leases_exclude_and_expire() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn follower_loads_only_changes() {
+async fn replica_loads_only_changes() {
     let dir = tempfile::tempdir().unwrap();
-    for ds in datasets(&dir, "follower").await {
+    for ds in databases(&dir, "replica").await {
         let engine = Engine::new();
-        let follower = Follower::new(ds.clone(), IndexConfig::default());
-        assert_eq!(follower.sync(&engine).await.unwrap(), None);
+        let replica = Replica::new(ds.clone(), IndexConfig::default());
+        assert_eq!(replica.sync(&engine).await.unwrap(), None);
 
         let mut t = ds.begin().await.unwrap();
         t.append_documents("base/en", docs(0..50, "d"), []).unwrap();
         t.append_documents("acme/en", docs(0..5, "acme"), [])
             .unwrap();
         t.commit().await.unwrap();
-        assert_eq!(follower.sync(&engine).await.unwrap(), Some(1));
+        assert_eq!(replica.sync(&engine).await.unwrap(), Some(1));
         assert_eq!(engine.names(), ["acme/en", "base/en"]);
         let default_before = engine.get("base/en").unwrap();
 
@@ -363,7 +363,7 @@ async fn follower_loads_only_changes() {
         t.append_documents("acme/en", docs(5..8, "acme"), [])
             .unwrap();
         t.commit().await.unwrap();
-        assert_eq!(follower.sync(&engine).await.unwrap(), Some(2));
+        assert_eq!(replica.sync(&engine).await.unwrap(), Some(2));
         assert!(Arc::ptr_eq(
             &default_before,
             &engine.get("base/en").unwrap()
@@ -373,9 +373,9 @@ async fn follower_loads_only_changes() {
         let mut t = ds.begin().await.unwrap();
         t.drop_index("acme/en");
         t.commit().await.unwrap();
-        assert_eq!(follower.sync(&engine).await.unwrap(), Some(3));
+        assert_eq!(replica.sync(&engine).await.unwrap(), Some(3));
         assert_eq!(engine.names(), ["base/en"]);
-        assert_eq!(follower.sync(&engine).await.unwrap(), None);
+        assert_eq!(replica.sync(&engine).await.unwrap(), None);
         wipe(&ds).await;
     }
 }

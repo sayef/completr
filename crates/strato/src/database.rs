@@ -1,4 +1,4 @@
-//! Versioned datasets: named indexes over segment files, committed optimistically through
+//! Versioned databases: named indexes over segment files, committed optimistically through
 //! create-only manifest writes, with rebase on conflict, compaction, cleanup and leases.
 
 use std::collections::BTreeMap;
@@ -36,7 +36,7 @@ pub struct IndexEntry {
     pub segments: Vec<SegmentRef>,
 }
 
-/// The full state of a dataset at one version. Version 0 is the empty dataset and has no file.
+/// The full state of a database at one version. Version 0 is the empty database and has no file.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
     pub version: u64,
@@ -76,12 +76,12 @@ fn parse_version(key: &str) -> Option<u64> {
 
 /// Named indexes stored under one store prefix.
 #[derive(Clone, Debug)]
-pub struct Dataset {
+pub struct Database {
     store: Store,
     segment_config: SegmentConfig,
 }
 
-impl Dataset {
+impl Database {
     pub fn new(store: Store) -> Self {
         Self {
             store,
@@ -89,7 +89,7 @@ impl Dataset {
         }
     }
 
-    /// Build settings for segments this dataset writes from documents.
+    /// Build settings for segments this database writes from documents.
     pub fn with_segment_config(mut self, config: SegmentConfig) -> Self {
         self.segment_config = config;
         self
@@ -172,7 +172,7 @@ impl Dataset {
     /// A transaction against `read`; commits made since are rebased over where that is safe.
     pub fn transaction(&self, read: Manifest) -> Transaction {
         Transaction {
-            dataset: self.clone(),
+            database: self.clone(),
             read,
             ops: Vec::new(),
             strict: false,
@@ -520,7 +520,7 @@ impl Op {
 /// writer wins per document id); overwrites, and everything in strict mode, fail with
 /// [`Error::Conflict`] if an index they touch changed.
 pub struct Transaction {
-    dataset: Dataset,
+    database: Database,
     read: Manifest,
     ops: Vec<Op>,
     strict: bool,
@@ -547,7 +547,7 @@ impl Transaction {
         documents: impl IntoIterator<Item = Document>,
         deletes: impl IntoIterator<Item = u64>,
     ) -> Result<&mut Self, Error> {
-        let config = self.dataset.segment_config;
+        let config = self.database.segment_config;
         Ok(self.append(index, Segment::build_with(config, documents, deletes)?))
     }
 
@@ -631,7 +631,7 @@ impl Transaction {
                 }
             }
         }
-        let store = &self.dataset.store;
+        let store = &self.database.store;
         let mut refs = Vec::with_capacity(self.ops.len());
         for op in &self.ops {
             let Some(segment) = op.segment() else {
@@ -662,8 +662,8 @@ impl Transaction {
             if attempt > 0 {
                 backoff(attempt).await;
             }
-            if let Some(version) = self.dataset.latest_version_after(latest.version).await? {
-                latest = self.dataset.manifest(version).await?;
+            if let Some(version) = self.database.latest_version_after(latest.version).await? {
+                latest = self.database.manifest(version).await?;
             }
             self.check_conflicts(&latest)?;
             let next = self.apply(&latest, &refs)?;
@@ -939,27 +939,27 @@ impl Lease {
     }
 }
 
-/// Keeps an [`Engine`] on the latest version of a dataset, loading only segments it lacks and
+/// Keeps an [`Engine`] on the latest version of a database, loading only segments it lacks and
 /// republishing only indexes that changed.
-pub struct Follower {
-    dataset: Dataset,
+pub struct Replica {
+    database: Database,
     config: IndexConfig,
     group: Arc<dyn Fn(&str) -> String + Send + Sync>,
-    state: tokio::sync::Mutex<FollowerState>,
+    state: tokio::sync::Mutex<ReplicaState>,
 }
 
 #[derive(Default)]
-struct FollowerState {
+struct ReplicaState {
     version: u64,
     loaded: FxHashMap<String, (Vec<String>, f64)>,
     segments: FxHashMap<String, Arc<Segment>>,
 }
 
-impl Follower {
+impl Replica {
     /// `config` applies to every index; each index's `max_score` comes from the manifest.
-    pub fn new(dataset: Dataset, config: IndexConfig) -> Self {
+    pub fn new(database: Database, config: IndexConfig) -> Self {
         Self {
-            dataset,
+            database,
             config,
             group: Arc::new(str::to_owned),
             state: tokio::sync::Mutex::default(),
@@ -991,10 +991,10 @@ impl Follower {
     /// Publishes the latest version into `engine`; returns it if it is new.
     pub async fn sync(&self, engine: &Engine) -> Result<Option<u64>, Error> {
         let mut state = self.state.lock().await;
-        let Some(version) = self.dataset.latest_version_after(state.version).await? else {
+        let Some(version) = self.database.latest_version_after(state.version).await? else {
             return Ok(None);
         };
-        let manifest = self.dataset.manifest(version).await?;
+        let manifest = self.database.manifest(version).await?;
 
         // Removals first, so their memory is free before anything new loads.
         let removed: Vec<String> = state
@@ -1039,7 +1039,7 @@ impl Follower {
             }
             for (reference, segment) in missing
                 .iter()
-                .zip(self.dataset.load_segments(&missing).await?)
+                .zip(self.database.load_segments(&missing).await?)
             {
                 state.segments.insert(reference.id.clone(), segment);
             }
@@ -1088,14 +1088,14 @@ impl Follower {
             .values()
             .flat_map(|e| e.segments.iter().map(|s| s.key.as_str()))
             .collect();
-        self.dataset.store.prune_cache(keys)?;
+        self.database.store.prune_cache(keys)?;
         state.version = version;
         Ok(Some(version))
     }
 }
 
 /// Drops loaded segments that no current index uses.
-fn release_unreferenced(state: &mut FollowerState) {
+fn release_unreferenced(state: &mut ReplicaState) {
     let referenced: std::collections::HashSet<&String> =
         state.loaded.values().flat_map(|(ids, _)| ids).collect();
     state.segments.retain(|id, _| referenced.contains(id));

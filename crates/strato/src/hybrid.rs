@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 
 use rustc_hash::FxHashMap;
 
-use crate::{Error, Hit, Index, MatchKind};
+use crate::{Error, Index, MatchKind, Suggestion};
 
 /// How lexical and semantic results are combined.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -54,7 +54,7 @@ impl HybridOptions {
 /// A fused result. `kind` is the lexical match kind when the document matched lexically,
 /// otherwise [`MatchKind::Semantic`].
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct HybridHit {
+pub struct HybridSuggestion {
     pub id: u64,
     pub score: f64,
     pub kind: MatchKind,
@@ -66,13 +66,13 @@ pub struct HybridHit {
 
 /// Fuses ranked lexical and semantic lists of `(hit, layer)`, best first, ties by id.
 pub(crate) fn fuse(
-    lexical: &[(Hit, usize)],
-    semantic: &[(Hit, usize)],
+    lexical: &[(Suggestion, usize)],
+    semantic: &[(Suggestion, usize)],
     limit: usize,
     fusion: Fusion,
-) -> Vec<HybridHit> {
+) -> Vec<HybridSuggestion> {
     struct Entry {
-        hit: HybridHit,
+        hit: HybridSuggestion,
         lexical_rank: Option<usize>,
         semantic_rank: Option<usize>,
     }
@@ -81,7 +81,7 @@ pub(crate) fn fuse(
     for (rank, (hit, layer)) in lexical.iter().enumerate() {
         position.insert(hit.id, entries.len());
         entries.push(Entry {
-            hit: HybridHit {
+            hit: HybridSuggestion {
                 id: hit.id,
                 score: 0.0,
                 kind: hit.kind,
@@ -102,7 +102,7 @@ pub(crate) fn fuse(
             None => {
                 position.insert(hit.id, entries.len());
                 entries.push(Entry {
-                    hit: HybridHit {
+                    hit: HybridSuggestion {
                         id: hit.id,
                         score: 0.0,
                         kind: MatchKind::Semantic,
@@ -133,7 +133,7 @@ pub(crate) fn fuse(
             },
         };
     }
-    let mut hits: Vec<HybridHit> = entries.into_iter().map(|e| e.hit).collect();
+    let mut hits: Vec<HybridSuggestion> = entries.into_iter().map(|e| e.hit).collect();
     hits.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
@@ -152,15 +152,12 @@ impl Index {
         vector: &[f32],
         limit: usize,
         options: HybridOptions,
-    ) -> Result<Vec<HybridHit>, Error> {
+    ) -> Result<Vec<HybridSuggestion>, Error> {
         options.validate()?;
         let n = options.candidates(limit);
-        let lexical: Vec<(Hit, usize)> = self
-            .autocomplete(text, n)
-            .into_iter()
-            .map(|h| (h, 0))
-            .collect();
-        let semantic: Vec<(Hit, usize)> = self
+        let lexical: Vec<(Suggestion, usize)> =
+            self.complete(text, n).into_iter().map(|h| (h, 0)).collect();
+        let semantic: Vec<(Suggestion, usize)> = self
             .vector_search(vector, n)?
             .into_iter()
             .map(|h| (h, 0))
@@ -173,8 +170,8 @@ impl Index {
 mod tests {
     use super::*;
 
-    fn hit(id: u64, score: f64, kind: MatchKind) -> (Hit, usize) {
-        (Hit { id, score, kind }, 0)
+    fn hit(id: u64, score: f64, kind: MatchKind) -> (Suggestion, usize) {
+        (Suggestion { id, score, kind }, 0)
     }
 
     #[test]

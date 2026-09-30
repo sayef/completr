@@ -1,4 +1,4 @@
-//! Queries from many threads while a writer commits and compacts and a follower swaps indexes.
+//! Queries from many threads while a ingestor commits and compacts and a replica swaps indexes.
 //! Every sampled result must be reproduced exactly on the same snapshot and on a fresh index.
 #![cfg(feature = "store")]
 
@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use strato::{
-    Batch, Dataset, Document, Engine, Follower, Fusion, HybridOptions, Index, IndexConfig, Writer,
+    ChangeSet, Database, Document, Engine, Fusion, HybridOptions, Index, IndexConfig, Ingestor,
+    Replica,
 };
 
 const DIM: usize = 16;
@@ -63,12 +64,12 @@ type Sample = (Arc<Index>, Query, Bits);
 fn run(index: &Index, query: &Query) -> Bits {
     match query {
         Query::Complete(q) => index
-            .autocomplete(q, 10)
+            .complete(q, 10)
             .into_iter()
             .map(|h| (h.id, h.score.to_bits(), h.kind.as_str()))
             .collect(),
         Query::Aliases(q) => index
-            .search_aliases(q, 10)
+            .complete_aliases(q, 10)
             .into_iter()
             .map(|h| (h.id, h.score.to_bits(), "alias"))
             .collect(),
@@ -99,7 +100,7 @@ fn run(index: &Index, query: &Query) -> Bits {
 fn queries_stay_deterministic_under_concurrent_updates() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let ds = runtime
-        .block_on(Dataset::open(
+        .block_on(Database::open(
             "memory:///concurrency",
             Vec::<(String, String)>::new(),
         ))
@@ -114,8 +115,8 @@ fn queries_stay_deterministic_under_concurrent_updates() {
         t.commit().await.unwrap();
     });
     let engine = Arc::new(Engine::new());
-    let follower = Follower::new(ds.clone(), IndexConfig::default());
-    runtime.block_on(follower.sync(&engine)).unwrap();
+    let replica = Replica::new(ds.clone(), IndexConfig::default());
+    runtime.block_on(replica.sync(&engine)).unwrap();
 
     let stop = Arc::new(AtomicBool::new(false));
     let queries = Arc::new(AtomicU64::new(0));
@@ -147,7 +148,7 @@ fn queries_stay_deterministic_under_concurrent_updates() {
                     let result = run(&snapshot, &query);
                     local.push(started.elapsed().as_secs_f64() * 1000.0);
                     // Layered reads go through the engine's own snapshot and must not fail either.
-                    let _ = engine.autocomplete(&["i", "missing"], "da", 5);
+                    let _ = engine.complete(&["i", "missing"], "da", 5);
                     if rng.next().is_multiple_of(20) {
                         samples.lock().unwrap().push((snapshot, query, result));
                     }
@@ -160,11 +161,11 @@ fn queries_stay_deterministic_under_concurrent_updates() {
 
     let started = Instant::now();
     let versions = runtime.block_on(async {
-        let mut writer = Writer::new(ds.clone(), "writer");
+        let mut ingestor = Ingestor::new(ds.clone(), "ingestor");
         let mut rng = Rng(7);
         let mut next_id = 10_000;
         for round in 0..150u64 {
-            let mut batch = Batch::new();
+            let mut batch = ChangeSet::new();
             let upserts: Vec<Document> = (0..10)
                 .map(|i| {
                     if i % 2 == 0 {
@@ -177,13 +178,13 @@ fn queries_stay_deterministic_under_concurrent_updates() {
                 .collect();
             batch.upsert("i", upserts).delete("i", [rng.next() % 5000]);
             ds.submit(batch).await.unwrap();
-            writer.run_once().await.unwrap();
+            ingestor.run_once().await.unwrap();
             if round % 2 == 0 {
-                follower.sync(&engine).await.unwrap();
+                replica.sync(&engine).await.unwrap();
             }
         }
-        follower.sync(&engine).await.unwrap();
-        follower.version().await
+        replica.sync(&engine).await.unwrap();
+        replica.version().await
     });
     std::thread::sleep(Duration::from_millis(200));
     stop.store(true, Ordering::Relaxed);

@@ -275,9 +275,9 @@ fn layers_override_by_id() {
 
 #[cfg(feature = "store")]
 #[tokio::test(flavor = "multi_thread")]
-async fn dataset_compaction_keeps_vectors() {
+async fn database_compaction_keeps_vectors() {
     let (docs, centres) = corpus(800, 5);
-    let ds = strato::Dataset::open("memory:///vectors", Vec::<(String, String)>::new())
+    let ds = strato::Database::open("memory:///vectors", Vec::<(String, String)>::new())
         .await
         .unwrap();
     let mut t = ds.begin().await.unwrap();
@@ -325,7 +325,7 @@ async fn dataset_compaction_keeps_vectors() {
     assert_eq!(after, before);
 
     let engine = Engine::new();
-    strato::Follower::new(ds.clone(), IndexConfig::default())
+    strato::Replica::new(ds.clone(), IndexConfig::default())
         .sync(&engine)
         .await
         .unwrap();

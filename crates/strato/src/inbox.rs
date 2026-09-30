@@ -1,5 +1,5 @@
-//! Single-writer ingestion: any process submits batches to an inbox in the store, and the one
-//! process holding the writer lease folds them into a single commit per round.
+//! Serverless ingestion: any process submits change sets to an inbox in the store, and the one
+//! process holding the ingestor lease folds them into a single commit per round.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -7,24 +7,24 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::dataset::claimed;
-use crate::{CompactionPolicy, Dataset, Document, Error, Index, IndexConfig, Lease, Segment};
+use crate::database::claimed;
+use crate::{CompactionPolicy, Database, Document, Error, Index, IndexConfig, Lease, Segment};
 
 const INBOX: &str = "_inbox";
 const REJECTED: &str = "_rejected";
 const MAGIC: &[u8; 8] = b"STRATOIB";
-const WRITER_LEASE: &str = "writer";
+const INGESTOR_LEASE: &str = "ingestor";
 const APPLIED: &str = "strato.inbox.applied";
-const GENERATION: &str = "strato.writer.generation";
+const GENERATION: &str = "strato.ingestor.generation";
 
 /// Changes to one or more indexes, applied together and in submission order relative to
-/// other batches. Later batches win per document id.
+/// other change sets. Later change sets win per document id.
 #[derive(Default)]
-pub struct Batch {
+pub struct ChangeSet {
     changes: BTreeMap<String, (Vec<Document>, Vec<u64>)>,
 }
 
-impl Batch {
+impl ChangeSet {
     pub fn new() -> Self {
         Self::default()
     }
@@ -113,16 +113,16 @@ fn batch_id() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static LAST_MS: AtomicU64 = AtomicU64::new(0);
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    let now = crate::dataset::now_ms();
+    let now = crate::database::now_ms();
     let ms = LAST_MS.fetch_max(now, Ordering::SeqCst).max(now);
     let sequence = SEQUENCE.fetch_add(1, Ordering::SeqCst);
     format!("{ms:016}-{sequence:016}-{}", uuid::Uuid::new_v4().simple())
 }
 
-impl Dataset {
-    /// Queues `batch` for the writer; returns its id. Any process may submit. A process's
-    /// batches apply in the order it submitted them; across processes, in order of arrival.
-    pub async fn submit(&self, batch: Batch) -> Result<String, Error> {
+impl Database {
+    /// Queues `batch` for the ingestor; returns its id. Any process may submit. A process's
+    /// change sets apply in the order it submitted them; across processes, in order of arrival.
+    pub async fn submit(&self, batch: ChangeSet) -> Result<String, Error> {
         if batch.is_empty() {
             return Err(Error::input("empty batch"));
         }
@@ -144,56 +144,56 @@ impl Dataset {
     }
 
     /// Batches waiting in the inbox.
-    pub async fn pending_batches(&self) -> Result<usize, Error> {
+    pub async fn pending_change_sets(&self) -> Result<usize, Error> {
         Ok(self.store().list_objects(INBOX).await?.len())
     }
 }
 
-/// What one writer round did.
+/// What one ingestor round did.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum WriterStep {
-    /// Another process holds the writer lease.
-    NotLeader,
+pub enum IngestStep {
+    /// Another process holds the ingestor lease.
+    Standby,
     /// The inbox was empty.
     Idle,
-    /// Batches were committed as one version.
+    /// Change sets were committed as one version.
     Committed {
         version: u64,
-        batches: usize,
+        change_sets: usize,
         documents: usize,
     },
 }
 
-/// Drains the inbox while holding the writer lease; run one per process, and whichever holds
-/// the lease writes. Commits are fenced by the lease generation.
-pub struct Writer {
-    dataset: Dataset,
+/// Drains the inbox while holding the ingestor lease; run one per process, and whichever holds
+/// the lease ingests. Commits are fenced by the lease generation.
+pub struct Ingestor {
+    database: Database,
     owner: String,
     lease: Option<Lease>,
     renewed: Instant,
     /// Lease lifetime; the lease is renewed after a third of it.
     pub lease_ttl: Duration,
-    /// Batches folded into one commit at most.
-    pub max_batches: usize,
+    /// Change sets folded into one commit at most.
+    pub max_change_sets: usize,
     /// After each commit, compact the indexes it touched until nothing is due; `None` leaves
-    /// compaction to the caller. Keeps compaction on the writer, off serving processes.
+    /// compaction to the caller. Keeps compaction on the ingestor, off serving processes.
     pub compaction: Option<CompactionPolicy>,
 }
 
-impl Writer {
-    pub fn new(dataset: Dataset, owner: impl Into<String>) -> Self {
+impl Ingestor {
+    pub fn new(database: Database, owner: impl Into<String>) -> Self {
         Self {
-            dataset,
+            database,
             owner: owner.into(),
             lease: None,
             renewed: Instant::now(),
             lease_ttl: Duration::from_secs(30),
-            max_batches: 1000,
+            max_change_sets: 1000,
             compaction: Some(CompactionPolicy::default()),
         }
     }
 
-    pub fn is_leader(&self) -> bool {
+    pub fn is_active(&self) -> bool {
         self.lease.is_some()
     }
 
@@ -209,8 +209,8 @@ impl Writer {
             Some(_) => {}
             None => {
                 self.lease = self
-                    .dataset
-                    .acquire_lease(WRITER_LEASE, &self.owner, self.lease_ttl)
+                    .database
+                    .acquire_lease(INGESTOR_LEASE, &self.owner, self.lease_ttl)
                     .await?;
                 self.renewed = Instant::now();
             }
@@ -218,13 +218,13 @@ impl Writer {
         Ok(self.lease.as_ref().map(Lease::generation))
     }
 
-    /// One round: take or keep the lease, fold pending batches into one commit, and delete them.
-    pub async fn run_once(&mut self) -> Result<WriterStep, Error> {
+    /// One round: take or keep the lease, fold pending change sets into one commit, and delete them.
+    pub async fn run_once(&mut self) -> Result<IngestStep, Error> {
         let Some(generation) = self.ensure_lease().await? else {
-            return Ok(WriterStep::NotLeader);
+            return Ok(IngestStep::Standby);
         };
-        let store = self.dataset.store().clone();
-        let read = self.dataset.latest().await?;
+        let store = self.database.store().clone();
+        let read = self.database.latest().await?;
         let applied = claimed(&read, APPLIED);
 
         let mut objects = store.list_objects(INBOX).await?;
@@ -241,9 +241,10 @@ impl Writer {
         store
             .delete_many(done.iter().map(|(_, key)| key.as_str()))
             .await?;
-        let pending: Vec<(String, String)> = pending.into_iter().take(self.max_batches).collect();
+        let pending: Vec<(String, String)> =
+            pending.into_iter().take(self.max_change_sets).collect();
         if pending.is_empty() {
-            return Ok(WriterStep::Idle);
+            return Ok(IngestStep::Idle);
         }
 
         let loads = pending
@@ -270,7 +271,7 @@ impl Writer {
         }
         let pending = accepted;
         if pending.is_empty() {
-            return Ok(WriterStep::Idle);
+            return Ok(IngestStep::Idle);
         }
         let mut per_index: BTreeMap<String, Vec<Arc<Segment>>> = BTreeMap::new();
         let mut documents = 0;
@@ -281,7 +282,7 @@ impl Writer {
             }
         }
         let touched: Vec<String> = per_index.keys().cloned().collect();
-        let mut txn = self.dataset.transaction(read);
+        let mut txn = self.database.transaction(read);
         for (index, segments) in per_index {
             let segment = if segments.len() == 1 {
                 Arc::try_unwrap(segments.into_iter().next().unwrap())
@@ -317,16 +318,16 @@ impl Writer {
         let mut version = manifest.version;
         if let Some(policy) = &self.compaction {
             for index in &touched {
-                match self.dataset.compact_all(index, policy).await {
+                match self.database.compact_all(index, policy).await {
                     Ok(Some(compacted)) => version = compacted.version,
                     Ok(None) | Err(Error::Conflict(_)) => {}
                     Err(e) => return Err(e),
                 }
             }
         }
-        Ok(WriterStep::Committed {
+        Ok(IngestStep::Committed {
             version,
-            batches: pending.len(),
+            change_sets: pending.len(),
             documents,
         })
     }

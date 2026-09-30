@@ -1,5 +1,6 @@
-//! Layered autocompletion over immutable, memory-mapped segments. With the `store` feature,
-//! [`Dataset`] adds versioned storage on local disk, S3, GCS or Azure.
+//! Serverless autocompletion: exact, prefix, infix, abbreviation, spelling-tolerant, word-decomposing
+//! and semantic completions over immutable, memory-mapped segments. With the `store` feature,
+//! [`Database`] adds versioned storage on local disk, S3, GCS or Azure.
 //!
 //! ```
 //! use std::sync::Arc;
@@ -10,14 +11,14 @@
 //!     Document::new(2, "Machine Vision", 0.4),
 //! ];
 //! let index = Index::new(vec![Arc::new(Segment::build(docs, [])?)], IndexConfig::default())?;
-//! let hits = index.autocomplete("ml", 10);
+//! let hits = index.complete("ml", 10);
 //! assert_eq!((hits[0].id, hits[0].kind), (1, MatchKind::Abbreviation));
 //! # Ok::<(), strato::Error>(())
 //! ```
 
 mod codec;
 #[cfg(feature = "store")]
-mod dataset;
+mod database;
 mod dict;
 mod document;
 mod engine;
@@ -35,19 +36,19 @@ mod trie;
 mod vectors;
 
 #[cfg(feature = "store")]
-pub use dataset::{
-    CleanupPolicy, CleanupStats, CompactionPolicy, Dataset, Follower, IndexEntry, Lease, Manifest,
+pub use database::{
+    CleanupPolicy, CleanupStats, CompactionPolicy, Database, IndexEntry, Lease, Manifest, Replica,
     SegmentRef, Transaction, BASE_LEVEL,
 };
 #[doc(hidden)]
 pub use dict::Dictionary;
 pub use document::{Alias, AliasKind, Document};
-pub use engine::{layered_autocomplete, layered_search_aliases, Engine, LayeredHit};
-pub use hybrid::{Fusion, HybridHit, HybridOptions};
+pub use engine::{layered_autocomplete, layered_search_aliases, Engine, LayeredSuggestion};
+pub use hybrid::{Fusion, HybridOptions, HybridSuggestion};
 #[cfg(feature = "store")]
-pub use inbox::{Batch, Writer, WriterStep};
+pub use inbox::{ChangeSet, IngestStep, Ingestor};
 pub use index::{Index, IndexConfig};
-pub use search::{AliasHit, Hit, MatchKind};
+pub use search::{AliasSuggestion, MatchKind, Suggestion};
 #[doc(hidden)]
 pub use segment::Layout;
 pub use segment::{Segment, SegmentConfig};

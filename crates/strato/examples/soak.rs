@@ -1,13 +1,15 @@
-//! Memory under frequent updates: soak <dataset url> <index> <iterations>
+//! Memory under frequent updates: soak <database url> <index> <iterations>
 //!
-//! Each iteration submits a batch, runs a writer round, syncs a follower and queries, with
+//! Each iteration submits a batch, runs a ingestor round, syncs a replica and queries, with
 //! compaction and cleanup on a schedule. Live heap is counted exactly by the allocator below.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::time::{Duration, Instant};
 
-use strato::{Batch, CleanupPolicy, Dataset, Document, Engine, Follower, IndexConfig, Writer};
+use strato::{
+    ChangeSet, CleanupPolicy, Database, Document, Engine, IndexConfig, Ingestor, Replica,
+};
 
 struct Counting;
 
@@ -103,14 +105,14 @@ async fn main() {
     let (url, name, iterations) = (&args[1], &args[2], args[3].parse::<usize>().unwrap());
     // "write": submit and write only; "serve": sync and query only; default: both in one process.
     let mode = args.get(4).map_or("both", String::as_str);
-    let ds = Dataset::open(url, Vec::<(String, String)>::new())
+    let ds = Database::open(url, Vec::<(String, String)>::new())
         .await
         .unwrap();
     let engine = Engine::new();
-    let follower = Follower::new(ds.clone(), IndexConfig::default());
-    follower.sync(&engine).await.unwrap();
+    let replica = Replica::new(ds.clone(), IndexConfig::default());
+    replica.sync(&engine).await.unwrap();
     let docs: Vec<Document> = engine.get(name).unwrap().documents().collect();
-    let mut writer = Writer::new(ds.clone(), "soak");
+    let mut ingestor = Ingestor::new(ds.clone(), "soak");
     let mut state = 99u64;
     let mut next = move || {
         state ^= state << 13;
@@ -139,10 +141,10 @@ async fn main() {
     );
     if mode == "serve" {
         for i in 0..=iterations {
-            follower.sync(&engine).await.unwrap();
+            replica.sync(&engine).await.unwrap();
             let index = engine.get(name).unwrap();
             for q in &queries {
-                std::hint::black_box(index.autocomplete(q, 10));
+                std::hint::black_box(index.complete(q, 10));
             }
             drop(index);
             if i % 50 == 0 {
@@ -152,7 +154,7 @@ async fn main() {
                     "{i:>6} {:>9.1} {:>8.1} {malloc:>11.1} {mapped:>11.1} {maps:>9} {segments:>9} {:>9}",
                     mb(LIVE.load(Ordering::Relaxed)),
                     rss_mb(),
-                    follower.version().await
+                    replica.version().await
                 );
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -160,7 +162,7 @@ async fn main() {
         return;
     }
     for i in 0..=iterations {
-        let mut batch = Batch::new();
+        let mut batch = ChangeSet::new();
         let upserts: Vec<Document> = (0..20)
             .map(|_| {
                 let doc = &docs[(next() % docs.len() as u64) as usize];
@@ -172,12 +174,12 @@ async fn main() {
             .collect();
         batch.upsert(name, upserts);
         ds.submit(batch).await.unwrap();
-        writer.run_once().await.unwrap();
+        ingestor.run_once().await.unwrap();
         if mode == "both" {
-            follower.sync(&engine).await.unwrap();
+            replica.sync(&engine).await.unwrap();
             let index = engine.get(name).unwrap();
             for q in &queries {
-                std::hint::black_box(index.autocomplete(q, 10));
+                std::hint::black_box(index.complete(q, 10));
             }
             drop(index);
         }
