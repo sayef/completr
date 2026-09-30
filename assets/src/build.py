@@ -95,6 +95,19 @@ for theme in THEMES:
     body = f'{icon(16, 24)}\n{mark}\n<path d="{tag}" fill="{THEMES[theme]["tagline"]}"/>'
     (OUT / f"banner-{theme}.svg").write_text(svg(width, 176, body, f"strato: {TAGLINE.lower()}"))
 
+# Wordmark alone, and icon plus wordmark, for places where the banner's tagline does not fit.
+for theme in THEMES:
+    size, pad = 96, 6
+    baseline = pad + size * 0.78
+    mark, mark_w = wordmark(pad, baseline, size, theme)
+    height = int(baseline + size * 0.12 + pad)
+    (OUT / f"wordmark-{theme}.svg").write_text(svg(int(mark_w + 2 * pad), height, mark, "strato"))
+    size = 64
+    baseline = 48 + size * 0.78 / 2
+    mark, mark_w = wordmark(120, baseline, size, theme)
+    body = f"{icon(0, 0, 96)}\n{mark}"
+    (OUT / f"lockup-{theme}.svg").write_text(svg(int(120 + mark_w + 8), 96, body, "strato"))
+
 mark, mark_w = wordmark(0, 0, 150, "dark")
 tag, tag_w = text_path(MEDIUM, TAGLINE, 0, 0, 36)
 kinds, kinds_w = text_path(MEDIUM, "exact · prefix · infix · abbreviation · spelling · decomposition · semantic", 0, 0, 23)
