@@ -14,9 +14,15 @@ const ALIGN: usize = 8;
 #[derive(Clone)]
 pub(crate) struct Bytes {
     owner: Arc<dyn AsRef<[u8]> + Send + Sync>,
-    start: usize,
-    end: usize,
+    /// The range within `owner`'s bytes, which never move or change.
+    ptr: *const u8,
+    len: usize,
 }
+
+// SAFETY: `ptr` points into the immutable bytes of `owner`, which is `Send + Sync`.
+unsafe impl Send for Bytes {}
+// SAFETY: as above.
+unsafe impl Sync for Bytes {}
 
 /// A byte buffer whose start is 8-byte aligned.
 struct Aligned {
@@ -33,12 +39,9 @@ impl AsRef<[u8]> for Aligned {
 
 impl Bytes {
     pub(crate) fn new(owner: Arc<dyn AsRef<[u8]> + Send + Sync>) -> Self {
-        let end = (*owner).as_ref().len();
-        Self {
-            owner,
-            start: 0,
-            end,
-        }
+        let data = (*owner).as_ref();
+        let (ptr, len) = (data.as_ptr(), data.len());
+        Self { owner, ptr, len }
     }
 
     /// Keeps `data` if it is aligned, else copies it into an aligned buffer.
@@ -62,10 +65,11 @@ impl Bytes {
     }
 
     fn slice(&self, start: usize, end: usize) -> Self {
+        let part = &self.as_ref()[start..end];
         Self {
             owner: self.owner.clone(),
-            start: self.start + start,
-            end: self.start + end,
+            ptr: part.as_ptr(),
+            len: part.len(),
         }
     }
 }
@@ -84,8 +88,10 @@ impl Bytes {
 }
 
 impl AsRef<[u8]> for Bytes {
+    #[inline]
     fn as_ref(&self) -> &[u8] {
-        &(*self.owner).as_ref()[self.start..self.end]
+        // SAFETY: `ptr` and `len` came from a slice of `owner`, which this keeps alive.
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }
 }
 

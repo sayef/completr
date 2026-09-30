@@ -389,26 +389,27 @@ impl StrColumn {
         Ok(())
     }
 
-    fn read(r: &mut Reader) -> Result<Self, Error> {
+    fn read(r: &mut Reader, full: bool) -> Result<Self, Error> {
         let data = r.bytes()?;
         let offsets = r.column::<u32>()?;
-        let text = std::str::from_utf8(data.as_ref())
-            .map_err(|_| Error::Corrupt("invalid utf-8".into()))?;
         let o = offsets.as_slice();
-        let valid = o.first() == Some(&0)
-            && o.last().map(|&l| l as usize) == Some(text.len())
-            && o.windows(2)
-                .all(|w| w[0] <= w[1] && text.is_char_boundary(w[1] as usize));
+        let valid = std::str::from_utf8(data.as_ref()).is_ok()
+            && o.first() == Some(&0)
+            && o.last().map(|&l| l as usize) == Some(data.as_ref().len())
+            && (!full || o.windows(2).all(|w| w[0] <= w[1]));
         valid
             .then_some(Self { data, offsets })
             .ok_or_else(|| Error::Corrupt("invalid text column".into()))
     }
 
+    /// The `i`th string; empty if its offsets are out of range or split a char.
     fn get(&self, i: usize) -> &str {
+        // SAFETY: the whole column was validated as UTF-8 when read.
+        let text = unsafe { std::str::from_utf8_unchecked(self.data.as_ref()) };
         let o = self.offsets.as_slice();
-        // SAFETY: validated as UTF-8 with offsets on char boundaries when read.
-        unsafe {
-            std::str::from_utf8_unchecked(&self.data.as_ref()[o[i] as usize..o[i + 1] as usize])
+        match (o.get(i), o.get(i + 1)) {
+            (Some(&start), Some(&end)) => text.get(start as usize..end as usize).unwrap_or(""),
+            _ => "",
         }
     }
 }
@@ -1048,12 +1049,14 @@ impl Segment {
         self.weights.as_slice()
     }
 
-    pub(crate) fn text_lens(&self) -> &[u16] {
-        self.text_lens.as_slice()
-    }
-
-    pub(crate) fn single_word(&self) -> &[u8] {
-        self.single_word.as_slice()
+    /// Ids, weights, text lengths and single-word flags.
+    pub(crate) fn columns(&self) -> (Column<u64>, Column<f32>, Column<u16>, Column<u8>) {
+        (
+            self.ids.clone(),
+            self.weights.clone(),
+            self.text_lens.clone(),
+            self.single_word.clone(),
+        )
     }
 
     pub(crate) fn word_text(&self, ordinal: u32) -> &str {
@@ -1165,7 +1168,7 @@ impl Segment {
         let titles = Keyed::read(&mut r, layout.titles, false, local_bound, full)?;
         let words = Keyed::read(&mut r, layout.words, true, local_bound, full)?;
         let word_freqs: Column<u32> = r.column()?;
-        let word_texts = StrColumn::read(&mut r)?;
+        let word_texts = StrColumn::read(&mut r, full)?;
         let aliases = Keyed::read(
             &mut r,
             layout.aliases,
