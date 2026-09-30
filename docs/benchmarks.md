@@ -2,7 +2,7 @@
 
 strato compared with Typesense, Meilisearch and tantivy as autocompletion engines, on 124,440 Hacker News
 story titles ranked by points. Every engine indexes the same documents and answers the same queries. To
-reproduce, see [`bench/README.md`](../bench/README.md), which also describes every measurement and setting
+reproduce, see [`bench/README.md`](https://github.com/sayef/strato/blob/main/bench/README.md), which also describes every measurement and setting
 in detail.
 
 Results are measured on HN titles fetched from Meilisearch's public benchmark bucket.
@@ -34,7 +34,7 @@ Results are measured on HN titles fetched from Meilisearch's public benchmark bu
 | Machine | Apple M1 Pro, 10 cores, 16 GiB RAM, macOS 26.7, Python 3.12.11 |
 | Engines | strato 0.1.0; tantivy-py 0.26.2; Typesense 30.2; Meilisearch 1.54.2 (official release binaries) |
 | Corpus | 124,440 deduplicated HN story titles, points as popularity |
-| Queries | Limit 10; the fixed-seed sample in [`bench/samples.json`](../bench/samples.json) |
+| Queries | Limit 10; the fixed-seed sample in [`bench/samples.json`](https://github.com/sayef/strato/blob/main/bench/samples.json) |
 
 Each competitor uses the recommended way to rank by popularity: Typesense with `score` as
 `default_sorting_field`, Meilisearch with the custom ranking rule `score:desc` after the default rules.
@@ -135,8 +135,8 @@ are 300 drawn uniformly. The typo'd variants have one edit in the first word of 
 | Meilisearch | 0.798 | **0.030** | 0.181 | 0.331 | 0.438 | 7.6 | **0.762** | 0.144 | **0.369** | 0.950 |
 | Meilisearch, popfirst | 0.731 | 0.013 | 0.070 | 0.134 | 0.214 | 10.2 | 0.699 | 0.064 | 0.185 | 0.936 |
 
-All metrics, including S@10 and characters saved, are in [`bench/results/results.md`](../bench/results/results.md),
-and the raw numbers in [`bench/results/`](../bench/results/).
+All metrics, including S@10 and characters saved, are in [`bench/results/results.md`](https://github.com/sayef/strato/blob/main/bench/results/results.md),
+and the raw numbers in [`bench/results/`](https://github.com/sayef/strato/tree/main/bench/results).
 
 ## Caveats
 
