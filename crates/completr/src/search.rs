@@ -316,23 +316,32 @@ impl Index {
                 docs
             }
             _ => {
-                let mut sets: Vec<FxHashSet<u32>> = words
+                let mut lists: Vec<Vec<u32>> = words
                     .iter()
                     .map(|word| {
-                        let mut set = FxHashSet::default();
-                        self.scan(Field::Word, word, usize::MAX, |_, doc, _| {
-                            set.insert(doc);
-                        });
-                        set
+                        let mut docs = Vec::new();
+                        self.scan(Field::Word, word, usize::MAX, |_, doc, _| docs.push(doc));
+                        docs
                     })
                     .collect();
-                sets.sort_by_key(|s| s.len());
-                let (first, rest) = sets.split_first().unwrap();
-                first
-                    .iter()
-                    .copied()
-                    .filter(|doc| rest.iter().all(|s| s.contains(doc)))
-                    .collect()
+                lists.sort_by_key(Vec::len);
+                let mut docs = std::mem::take(&mut lists[0]);
+                docs.sort_unstable();
+                docs.dedup();
+                let mut marks = vec![0u64; self.ids.len().div_ceil(64)];
+                for list in &lists[1..] {
+                    if docs.is_empty() {
+                        break;
+                    }
+                    for &doc in list {
+                        marks[doc as usize / 64] |= 1 << (doc % 64);
+                    }
+                    docs.retain(|&doc| marks[doc as usize / 64] >> (doc % 64) & 1 == 1);
+                    for &doc in list {
+                        marks[doc as usize / 64] = 0;
+                    }
+                }
+                docs
             }
         };
         if short.is_empty() {
