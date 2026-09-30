@@ -37,16 +37,16 @@ jobs:
           fi
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
           git worktree add "$RUNNER_TEMP/base" "$BASE_SHA"
-          if [ ! -f "$RUNNER_TEMP/base/crates/strato/benches/search.rs" ]; then
+          if [ ! -f "$RUNNER_TEMP/base/crates/completr/benches/search.rs" ]; then
             echo "The base commit has no benchmarks."
             exit 0
           fi
           cd "$RUNNER_TEMP/base"
-          cargo bench -p strato --bench search -- --save-baseline base
+          cargo bench -p completr --bench search -- --save-baseline base
 
       - name: Benchmark the head commit
         continue-on-error: true
-        run: cargo bench -p strato --bench search -- --save-baseline head
+        run: cargo bench -p completr --bench search -- --save-baseline head
 
       - name: Write the comparison to the job summary
         if: always()

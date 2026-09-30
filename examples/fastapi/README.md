@@ -1,16 +1,16 @@
 # FastAPI example
 
-A completion API over a strato database. The app opens the database with `strato.connect_async`, serves
+A completion API over a completr database. The app opens the database with `completr.connect_async`, serves
 `GET /complete` from `AsyncDatabase.engine()`, and runs `await engine.sync()` every few seconds in a
 background task, so new versions appear without a restart.
 
 ```sh
 pip install -r requirements.txt
 
-# Load some documents (or use `strato ./completions import products products.jsonl`).
+# Load some documents (or use `completr ./completions import products products.jsonl`).
 python -c '
-import strato
-db = strato.connect("./completions")
+import completr
+db = completr.connect("./completions")
 txn = db.begin()
 txn.append("products", [
     {"id": "kb-1", "text": "Wireless Keyboard", "popularity": 0.9, "contexts": ["peripherals"]},
@@ -19,7 +19,7 @@ txn.append("products", [
 txn.commit()
 '
 
-STRATO_URL=./completions uvicorn app:app
+COMPLETR_URL=./completions uvicorn app:app
 curl 'http://127.0.0.1:8000/complete?q=wirel&limit=5'
 ```
 
@@ -32,12 +32,12 @@ curl 'http://127.0.0.1:8000/complete?q=wirel&limit=5'
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `STRATO_URL` | `./completions` | Database URL: a local path, `s3://`, `gs://` or `az://`. |
-| `STRATO_INDEX` | `products` | Index to complete from. |
-| `STRATO_CACHE_DIR` | none | Local directory for downloaded segments. |
-| `STRATO_SYNC_SECONDS` | `5` | Seconds between syncs. |
+| `COMPLETR_URL` | `./completions` | Database URL: a local path, `s3://`, `gs://` or `az://`. |
+| `COMPLETR_INDEX` | `products` | Index to complete from. |
+| `COMPLETR_CACHE_DIR` | none | Local directory for downloaded segments. |
+| `COMPLETR_SYNC_SECONDS` | `5` | Seconds between syncs. |
 
 `/complete` takes `q`, `limit` (1 to 50) and repeated `contexts` parameters. Updates come from other
 processes: submit change sets with `db.submit(...)` and run an ingestor outside the API processes, for
-example `strato ./completions ingest`. See the
-[serverless deployment guide](https://sayef.github.io/strato/guides/serverless/).
+example `completr ./completions ingest`. See the
+[serverless deployment guide](https://sayef.github.io/completr/guides/serverless/).

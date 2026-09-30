@@ -1,6 +1,6 @@
 # Concepts
 
-strato has a small model: documents are built into immutable segments, segments form indexes, engines
+completr has a small model: documents are built into immutable segments, segments form indexes, engines
 serve indexes by name, and a database stores versions of them in a bucket or directory. This page
 introduces each part. [Architecture](architecture.md) has the full detail.
 
@@ -19,11 +19,11 @@ flowchart LR
     W -- "commit" --> M
     W -- "write, compact" --> S
     W -. "lease, fencing" .-> L
-    M -- "new versions" --> F1["Your app + strato<br/>Replica, Engine"]
+    M -- "new versions" --> F1["Your app + completr<br/>Replica, Engine"]
     S -- "changed segments" --> F1
-    M --> F2["Your app + strato"]
+    M --> F2["Your app + completr"]
     S --> F2
-    M --> F3["Your app + strato"]
+    M --> F3["Your app + completr"]
     S --> F3
 ```
 
@@ -41,7 +41,7 @@ flowchart LR
 
 A document is what users complete to: an id, one text, a popularity weight, and optionally synonyms,
 abbreviations, context tags and an embedding. Ids are integers or strings; a string id is hashed to a
-stable 64-bit id (`strato.key_id`) and returned as given. See [Documents](guides/documents.md).
+stable 64-bit id (`completr.key_id`) and returned as given. See [Documents](guides/documents.md).
 
 ## Segments
 
@@ -68,7 +68,7 @@ The library has no notion of tenants, languages or domains. You express those as
 ## Databases
 
 A `Database` is a prefix in an object store, or a local directory, holding versioned **manifests** that map
-index names to segment files. `strato.connect(url)` opens one. Transactions commit atomically by writing
+index names to segment files. `completr.connect(url)` opens one. Transactions commit atomically by writing
 the next manifest create-only; a commit that loses a race rebases, or fails with `ConflictError` in strict
 mode. Old versions and unreferenced segments are removed by `cleanup`.
 

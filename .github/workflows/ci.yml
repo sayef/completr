@@ -21,7 +21,7 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets --features strato/aws-credentials,strato/gcp,strato/azure -- -D warnings
+      - run: cargo clippy --workspace --all-targets --features completr/aws-credentials,completr/gcp,completr/azure -- -D warnings
 
   deny:
     runs-on: ubuntu-latest
@@ -38,7 +38,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.94.1
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --workspace --all-targets --features strato/store
+      - run: cargo check --workspace --all-targets --features completr/store
 
   test:
     strategy:
@@ -50,9 +50,9 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --release -p strato
-      - run: cargo test --release -p strato --features store
-      - run: cargo test --release -p strato --doc --features store
+      - run: cargo test --release -p completr
+      - run: cargo test --release -p completr --features store
+      - run: cargo test --release -p completr --doc --features store
 
   python:
     strategy:
@@ -70,6 +70,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: pip install maturin pytest numpy
       - run: maturin build --release -o dist
-      - run: pip install --no-index --find-links dist strato
-      - run: pytest crates/strato-py/tests
-      - run: python crates/strato-py/examples/quickstart.py && python crates/strato-py/examples/live_updates.py
+      - run: pip install --no-index --find-links dist completr
+      - run: pytest crates/completr-py/tests
+      - run: python crates/completr-py/examples/quickstart.py && python crates/completr-py/examples/live_updates.py

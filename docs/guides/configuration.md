@@ -1,12 +1,12 @@
 # Configuration
 
-strato's defaults suit most autocompletion workloads. This page lists every setting, where it is passed,
+completr's defaults suit most autocompletion workloads. This page lists every setting, where it is passed,
 and its default.
 
 ## Build options
 
 Build options decide what a segment stores. All segments of one index must share them. In a database, pass
-them to `strato.connect(...)`; they apply to every segment that connection builds.
+them to `completr.connect(...)`; they apply to every segment that connection builds.
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -17,8 +17,8 @@ them to `strato.connect(...)`; they apply to every segment that connection build
 | `compact_keys` | `False` | Store keys in nested tries: about 25 % smaller keys, with lookups about 1.8 times and prefix scans about 4 times slower. |
 | `build_threads` | 1 | Threads for building. 1 has the lowest peak memory; 0 uses all cores. |
 
-Passed to: `Segment.build`, `Index.from_documents` (all but `compact_keys`), `strato.connect`,
-`strato.connect_async` and `Database(...)`.
+Passed to: `Segment.build`, `Index.from_documents` (all but `compact_keys`), `completr.connect`,
+`completr.connect_async` and `Database(...)`.
 
 ## Index options
 
@@ -58,8 +58,8 @@ Passed to: `Index(...)`, `Index.from_documents` (`max_score`, `popularity_weight
 
 | Setting | Passed to | Meaning |
 |---|---|---|
-| `options` | `strato.connect`, `Database`, `Store` | `object_store` configuration keys, such as `aws_region`, `aws_endpoint` or `google_service_account`. They override the environment. |
-| `cache_dir` | `strato.connect`, `Database`, `Store` | Local directory for downloaded segments, memory-mapped. No effect on local databases. |
+| `options` | `completr.connect`, `Database`, `Store` | `object_store` configuration keys, such as `aws_region`, `aws_endpoint` or `google_service_account`. They override the environment. |
+| `cache_dir` | `completr.connect`, `Database`, `Store` | Local directory for downloaded segments, memory-mapped. No effect on local databases. |
 
 ## Maintenance options
 
@@ -80,9 +80,9 @@ Passed to: `Index(...)`, `Index.from_documents` (`max_score`, `popularity_weight
 ```python
 import tempfile
 
-import strato
+import completr
 
-db = strato.connect(tempfile.mkdtemp(), vector_bits=3, build_threads=0)
+db = completr.connect(tempfile.mkdtemp(), vector_bits=3, build_threads=0)
 txn = db.begin()
 txn.append("products", [{"id": "kb-1", "text": "Wireless Keyboard", "popularity": 0.9}])
 txn.commit()
@@ -101,7 +101,7 @@ In Rust, `BuildOptions`, `IndexOptions`, `SearchOptions`, `HybridOptions`, `Comp
 
 ```rust
 use std::time::Duration;
-use strato::{BuildOptions, CleanupPolicy, CompactionPolicy, IndexOptions, SearchOptions};
+use completr::{BuildOptions, CleanupPolicy, CompactionPolicy, IndexOptions, SearchOptions};
 
 let build = BuildOptions::default().vector_bits(3).build_threads(0);
 let index = IndexOptions::default().max_score(742.0).popularity_weight(0.6);

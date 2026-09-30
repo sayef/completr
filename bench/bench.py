@@ -97,7 +97,7 @@ def run(a):
     res = {"engine": a.engine, "variant": a.variant, "date": datetime.date.today().isoformat(), "machine": machine()}
     try:
         if e.in_process:
-            if a.engine == "strato":
+            if a.engine == "completr":
                 res["build_8_threads"] = sub("build", a.engine, "8")
             res["build"] = sub("build", a.engine, a.variant)
             res["memory"] = sub("mem", a.engine, a.variant)

@@ -1,8 +1,8 @@
-"""Computes the demo scenes with strato itself; writes demo.json next to this file."""
+"""Computes the demo scenes with completr itself; writes demo.json next to this file."""
 
 import json
 from pathlib import Path
-from strato import Index
+from completr import Index
 
 titles = [
     ("Machine Learning", 0.95, [("ML", True)]), ("Machine Vision", 0.55, []), ("Machine Translation", 0.5, [("MT", True)]),

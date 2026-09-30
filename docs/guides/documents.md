@@ -1,7 +1,7 @@
 # Documents
 
 A document is one completion target: an id, one text, a popularity weight, and optional aliases, context
-tags and an embedding. strato does not have multi-field schemas.
+tags and an embedding. completr does not have multi-field schemas.
 
 ## Fields
 
@@ -20,7 +20,7 @@ Only `id` and `text` are required. A repeated id within one build keeps its last
 === "Python"
 
     ```python
-    from strato import Index
+    from completr import Index
 
     docs = [
         {
@@ -40,7 +40,7 @@ Only `id` and `text` are required. A repeated id within one build keeps its last
 === "Rust"
 
     ```rust
-    use strato::{Document, Index};
+    use completr::{Document, Index};
 
     let index = Index::from_documents([
         Document::keyed("ml", "Machine Learning", 0.9)
@@ -58,11 +58,11 @@ A string id is hashed with `key_id` to a 64-bit id. The index stores the string 
 return it, so you rarely need the number. Deletes accept the same string.
 
 ```python
-import strato
+import completr
 
-print(strato.key_id("ml"))                     # the stable 64-bit id behind "ml"
+print(completr.key_id("ml"))                     # the stable 64-bit id behind "ml"
 print(index.complete("mach")[0].id)            # 'ml', as given
-print(index.get(strato.key_id("ml")).id)       # 'ml' as well
+print(index.get(completr.key_id("ml")).id)       # 'ml' as well
 ```
 
 In Rust, `Document::keyed(key, text, popularity)` sets a string key, and `Suggestion::key` returns it next
@@ -83,7 +83,7 @@ Everything that takes documents in Python (`Index.from_documents`, `Segment.buil
 === "Document"
 
     ```python
-    from strato import Document
+    from completr import Document
 
     Index.from_documents([Document("ds", "Data Science", 0.7, synonyms=["data analytics"])])
     ```
@@ -117,7 +117,7 @@ Everything that takes documents in Python (`Index.from_documents`, `Segment.buil
 
 Table columns use the field names above. List columns (`synonyms`, `abbreviations`, `contexts`) may hold
 nulls or `NaN`, which count as empty. The tables are converted row by row, so pandas, polars and pyarrow
-are optional dependencies that strato does not install.
+are optional dependencies that completr does not install.
 
 `Document` objects expose the fields as read-only properties, and `to_dict()` returns the dict form:
 
@@ -150,7 +150,7 @@ Unknown fields raise `InvalidInputError` (a `ValueError`), so a typo never silen
 applies to table columns.
 
 ```python
-from strato import InvalidInputError
+from completr import InvalidInputError
 
 try:
     Index.from_documents([{"id": 1, "text": "Data Science", "popularty": 0.7}])

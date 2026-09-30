@@ -9,7 +9,7 @@
 | `social-preview.svg`, `social-preview.png` | 1280 × 640 repository preview for GitHub and link cards |
 | `demo.svg` | Animated demo of real completions |
 
-The wordmark shows the name being completed: `str` typed, a cursor, and `ato` as the suggestion. Keep the
+The wordmark shows the name being completed: `compl` typed, a cursor, and `etr` as the suggestion. Keep the
 cursor cyan (`#22D3EE`) and the completion lighter than the typed part. Text is converted to outlines from
 [Inter](https://rsms.me/inter/) (SIL Open Font License), so the files need no fonts.
 

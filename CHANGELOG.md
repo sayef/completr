@@ -6,17 +6,23 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The project is renamed from strato to completr: crates `completr`, `completr-cli` and `completr-py`, the
+  Python package `completr`, the `completr` command, `COMPLETR_*` environment variables, and new segment
+  and inbox file markers, so files written under the old name must be rebuilt.
+
 ### Added
 
 - Suggestions carry the document's text, string key and highlight ranges.
 - String ids: `Document::keyed` and `key_id` in Rust; `id` may be a `str` in Python.
 - Context filters: tag documents with `contexts` and pass `contexts` to any request.
-- Python: documents as dicts, `strato.Document`, or pandas, polars and Arrow tables; `strato.connect`,
+- Python: documents as dicts, `completr.Document`, or pandas, polars and Arrow tables; `completr.connect`,
   `Database.engine()` with `Engine.sync()`, `Database.open_index`, `Index.from_documents`, an asyncio API
-  (`connect_async`) and an exception hierarchy under `StratoError`.
-- The `strato` command-line tool (`strato-cli`): inspect, import, complete, compact, cleanup and ingest.
+  (`connect_async`) and an exception hierarchy under `CompletrError`.
+- The `completr` command-line tool (`completr-cli`): inspect, import, complete, compact, cleanup and ingest.
 - `tracing` events for commits, replica syncs, ingest rounds, compaction, cleanup and segment builds; in
-  Python they reach the `logging` module under loggers named `strato.*`.
+  Python they reach the `logging` module under loggers named `completr.*`.
 - Rust: `SearchOptions` and `complete_with`, `complete_aliases_with`, `vector_search_with`;
   `Index::from_documents` and `Index::document_by_key`.
 

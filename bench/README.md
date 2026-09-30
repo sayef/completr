@@ -1,6 +1,6 @@
 # Competitor benchmark
 
-This harness compares strato with [Typesense](https://typesense.org), [Meilisearch](https://www.meilisearch.com)
+This harness compares completr with [Typesense](https://typesense.org), [Meilisearch](https://www.meilisearch.com)
 and [tantivy](https://github.com/quickwit-oss/tantivy) (through tantivy-py) as autocompletion engines. Every
 engine indexes the same documents and answers the same queries. The latest results are in
 [`docs/benchmarks.md`](../docs/benchmarks.md) and [`results/results.md`](results/results.md).
@@ -12,11 +12,11 @@ really sends and whether the wanted suggestion appears early.
 
 | Measurement | How |
 |---|---|
-| Indexing | Wall time to build the index from all documents; strato also with `build_threads=8` |
-| Size | Bytes on disk of the index (strato: the segment file; others: their data directory) |
+| Indexing | Wall time to build the index from all documents; completr also with `build_threads=8` |
+| Size | Bytes on disk of the index (completr: the segment file; others: their data directory) |
 | Memory | In-process engines: RSS growth of a fresh process after opening the index, then after 5,000 prefix queries. Servers: RSS of the server process after indexing and after all queries |
-| Open or restart | strato and tantivy: time to open the index. Servers: time from a restart to the first hit |
-| Latency | One client, limit 10, after a warm-up. In-process time for strato and tantivy; round-trip time over localhost HTTP and the engine-reported time (`search_time_ms`, `processingTimeMs`) for the servers |
+| Open or restart | completr and tantivy: time to open the index. Servers: time from a restart to the first hit |
+| Latency | One client, limit 10, after a warm-up. In-process time for completr and tantivy; round-trip time over localhost HTTP and the engine-reported time (`search_time_ms`, `processingTimeMs`) for the servers |
 | Throughput | 8 closed-loop clients for 10 s on the prefix set: threads for in-process engines, processes for servers |
 | Quality | Each target title is typed one character at a time, and the target's rank in the top 10 is recorded after every keystroke |
 
@@ -64,7 +64,7 @@ else is tuned. All engines return 10 results.
 
 | Engine | Version | Settings |
 |---|---|---|
-| strato | the installed package | One segment built with default options; `Index` with default options. Popularity is `log1p(points) / log1p(max points)` |
+| completr | the installed package | One segment built with default options; `Index` with default options. Popularity is `log1p(points) / log1p(max points)` |
 | tantivy | tantivy-py 0.26.2 | See below |
 | Typesense | 30.2 | `title` string and `score` int32 with `default_sorting_field: score`; search with `query_by=title` and the defaults for prefix search and typo tolerance |
 | Typesense, `buckets` | 30.2 | As above, plus `sort_by=_text_match(buckets: 10):desc,score:desc`, which gives points more weight |
@@ -73,7 +73,7 @@ else is tuned. All engines return 10 results.
 
 Typesense and Meilisearch run as local servers on 127.0.0.1 with their default configuration, from the
 official release binaries. Meilisearch checksums are the GitHub release asset digests; Typesense publishes
-none, so `fetch.py` pins the SHA-256 of the archives as downloaded on 2026-09-30. strato and tantivy run in the benchmark process.
+none, so `fetch.py` pins the SHA-256 of the archives as downloaded on 2026-09-30. completr and tantivy run in the benchmark process.
 
 **tantivy autocomplete emulation.** tantivy is a search library without an autocomplete mode, so the adapter
 builds one: the `title` field uses the default tokenizer, every complete token must match as a term and
@@ -88,7 +88,7 @@ and macOS (arm64 or x86_64) or Linux (x86_64 or arm64).
 
 ```sh
 python -m venv .venv
-.venv/bin/pip install -r bench/requirements.txt   # or install a local strato wheel instead of the PyPI one
+.venv/bin/pip install -r bench/requirements.txt   # or install a local completr wheel instead of the PyPI one
 PYTHON=.venv/bin/python bench/run.sh
 ```
 
@@ -99,7 +99,7 @@ runs every engine, writes `results/<engine>.json` and renders `results/results.m
 ```sh
 cd bench
 python fetch.py                                       # dataset and binaries
-python bench.py run strato --throughput               # one engine
+python bench.py run completr --throughput               # one engine
 python bench.py run typesense --variant buckets       # a variant
 python report.py
 ```
@@ -109,7 +109,7 @@ timings. Servers are stopped at the end of each run; the index data stays in `be
 
 ## Caveats
 
-- **In-process against network.** strato and tantivy run in the benchmark process, whereas Typesense and
+- **In-process against network.** completr and tantivy run in the benchmark process, whereas Typesense and
   Meilisearch answer over HTTP on localhost. Round trips add about 1 ms, which favours the in-process
   engines. The engine-reported times of the servers exclude it, but Typesense and Meilisearch report whole
   milliseconds only.
@@ -124,6 +124,6 @@ timings. Servers are stopped at the end of each run; the index data stays in `be
 - **Synthetic queries.** Typos are random edits, not real user misspellings, and targets are typed from
   their first character. The quality metrics reward the target's rank only; other good suggestions count
   for nothing.
-- **Memory measurement.** In-process figures are RSS growth, which counts the touched pages of strato's
+- **Memory measurement.** In-process figures are RSS growth, which counts the touched pages of completr's
   memory-mapped segment. Server figures are the whole server process.
 - **tantivy is emulated.** Its results reflect the adapter described above as much as tantivy itself.

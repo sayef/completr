@@ -3,7 +3,7 @@ requires = ["maturin>=1.8,<2"]
 build-backend = "maturin"
 
 [project]
-name = "strato"
+name = "completr"
 description = "Serverless autocompletion engine for Rust and Python: exact, prefix, infix, abbreviation, spelling-tolerant, word-decomposing and semantic completions from object storage"
 readme = "README.md"
 license = "MIT"
@@ -26,13 +26,13 @@ classifiers = [
 dynamic = ["version"]
 
 [project.urls]
-Homepage = "https://github.com/sayef/strato"
-Documentation = "https://github.com/sayef/strato#readme"
-Changelog = "https://github.com/sayef/strato/blob/main/CHANGELOG.md"
-Issues = "https://github.com/sayef/strato/issues"
+Homepage = "https://github.com/sayef/completr"
+Documentation = "https://github.com/sayef/completr#readme"
+Changelog = "https://github.com/sayef/completr/blob/main/CHANGELOG.md"
+Issues = "https://github.com/sayef/completr/issues"
 
 [tool.maturin]
-manifest-path = "crates/strato-py/Cargo.toml"
-python-source = "crates/strato-py/python"
-module-name = "strato.strato"
+manifest-path = "crates/completr-py/Cargo.toml"
+python-source = "crates/completr-py/python"
+module-name = "completr.completr"
 features = ["pyo3/extension-module"]

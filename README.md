@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.svg">
-    <img alt="strato: serverless autocompletion for Rust and Python" src="assets/banner-light.svg" width="620">
+    <img alt="completr: serverless autocompletion for Rust and Python" src="assets/banner-light.svg" width="620">
   </picture>
 </p>
 
@@ -13,28 +13,28 @@
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
-  <a href="https://sayef.github.io/strato/">Docs</a> ·
-  <a href="https://docs.rs/strato">Rust docs</a> ·
-  <a href="https://sayef.github.io/strato/reference/python/">Python API</a> ·
+  <a href="https://sayef.github.io/completr/">Docs</a> ·
+  <a href="https://docs.rs/completr">Rust docs</a> ·
+  <a href="https://sayef.github.io/completr/reference/python/">Python API</a> ·
   <a href="docs/architecture.md">Architecture</a> ·
   <a href="#benchmarks">Benchmarks</a> ·
   <a href="CHANGELOG.md">Changelog</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/sayef/strato/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/sayef/strato/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://crates.io/crates/strato"><img alt="crates.io" src="https://img.shields.io/crates/v/strato.svg"></a>
-  <a href="https://docs.rs/strato"><img alt="docs.rs" src="https://img.shields.io/docsrs/strato"></a>
-  <a href="https://pypi.org/project/strato/"><img alt="PyPI" src="https://img.shields.io/pypi/v/strato.svg"></a>
+  <a href="https://github.com/sayef/completr/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/sayef/completr/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://crates.io/crates/completr"><img alt="crates.io" src="https://img.shields.io/crates/v/completr.svg"></a>
+  <a href="https://docs.rs/completr"><img alt="docs.rs" src="https://img.shields.io/docsrs/completr"></a>
+  <a href="https://pypi.org/project/completr/"><img alt="PyPI" src="https://img.shields.io/pypi/v/completr.svg"></a>
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-blue">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green.svg"></a>
 </p>
 
 <p align="center">
-  <img src="assets/demo.svg" alt="strato completing queries: prefix, abbreviation, spelling correction, word decomposition and infix" width="600">
+  <img src="assets/demo.svg" alt="completr completing queries: prefix, abbreviation, spelling correction, word decomposition and infix" width="600">
 </p>
 
-strato is a **serverless autocompletion engine**. In the spirit of [LanceDB](https://github.com/lancedb/lancedb),
+completr is a **serverless autocompletion engine**. In the spirit of [LanceDB](https://github.com/lancedb/lancedb),
 it is a library, not a service: your application embeds it (Rust, or Python through first-class bindings),
 and an object-store bucket or a local directory is the database. There is no cluster to deploy, scale,
 upgrade or keep alive. Every process that serves completions reads the index straight from storage, and
@@ -73,11 +73,11 @@ flowchart LR
     W -- "commit" --> M
     W -- "write, compact" --> S
     W -. "lease, fencing" .-> L
-    M -- "new versions" --> F1["Your app + strato<br/>Replica, Engine"]
+    M -- "new versions" --> F1["Your app + completr<br/>Replica, Engine"]
     S -- "changed segments" --> F1
-    M --> F2["Your app + strato"]
+    M --> F2["Your app + completr"]
     S --> F2
-    M --> F3["Your app + strato"]
+    M --> F3["Your app + completr"]
     S --> F3
 ```
 
@@ -135,9 +135,9 @@ flowchart LR
 - **Credentials like `boto3`**: environment, profiles, SSO, web identity, ECS and IMDS.
 
 **Developer experience**
-- Documents as dicts, `strato.Document` objects, or pandas, polars and Arrow tables, with int or string ids.
-- `strato.connect(url)`, an asyncio API, typed stubs and a clear exception hierarchy.
-- A `strato` command-line tool, and `tracing` events that also reach Python's `logging`.
+- Documents as dicts, `completr.Document` objects, or pandas, polars and Arrow tables, with int or string ids.
+- `completr.connect(url)`, an asyncio API, typed stubs and a clear exception hierarchy.
+- A `completr` command-line tool, and `tracing` events that also reach Python's `logging`.
 
 ## What it completes
 
@@ -155,13 +155,13 @@ Real results from the index behind the demo above (25 short titles with populari
 ## Installation
 
 ```sh
-pip install strato
+pip install completr
 ```
 
 ```sh
-cargo add strato                                        # engine
-cargo add strato --features store                       # plus databases on local disk and in memory
-cargo add strato --features aws-credentials,gcp,azure   # plus S3, GCS and Azure
+cargo add completr                                        # engine
+cargo add completr --features store                       # plus databases on local disk and in memory
+cargo add completr --features aws-credentials,gcp,azure   # plus S3, GCS and Azure
 ```
 
 | Cargo feature | Adds |
@@ -178,14 +178,14 @@ searches and builds.
 ### Python
 
 ```python
-from strato import Index
+from completr import Index
 
 docs = [
     {"id": "ml", "text": "Machine Learning", "popularity": 0.9, "abbreviations": ["ML"]},
     {"id": "mv", "text": "Machine Vision", "popularity": 0.4},
     {"id": "ds", "text": "Data Science", "popularity": 0.7, "synonyms": ["data analytics"]},
 ]
-index = Index.from_documents(docs)   # also accepts strato.Document objects, pandas, polars or Arrow tables
+index = Index.from_documents(docs)   # also accepts completr.Document objects, pandas, polars or Arrow tables
 
 for query in ["mach", "ML", "vison", "science"]:
     print(query, [(s.text, s.kind, round(s.score, 3)) for s in index.complete(query, limit=3)])
@@ -209,7 +209,7 @@ top = index.complete("mach")[0]
 ### Rust
 
 ```rust
-use strato::{Document, Index};
+use completr::{Document, Index};
 
 let index = Index::from_documents([
     Document::keyed("ml", "Machine Learning", 0.9).with_abbreviation("ML"),
@@ -222,8 +222,8 @@ for s in index.complete("mach", 10) {
 }
 ```
 
-Runnable versions: [`quickstart.rs`](crates/strato/examples/quickstart.rs) and
-[`quickstart.py`](crates/strato-py/examples/quickstart.py).
+Runnable versions: [`quickstart.rs`](crates/completr/examples/quickstart.rs) and
+[`quickstart.py`](crates/completr-py/examples/quickstart.py).
 
 ## Guides
 
@@ -258,7 +258,7 @@ later layers override earlier ones per document id, so a tenant's edits, deletio
 the shared data.
 
 ```python
-from strato import Engine
+from completr import Engine
 
 engine = Engine()
 engine.publish({"shared": shared_index, "acme": acme_index})
@@ -268,7 +268,7 @@ engine.publish({"acme": None})                             # remove a layer
 
 ### Semantic and hybrid completion
 
-Documents can carry embeddings from any model. strato quantises them with
+Documents can carry embeddings from any model. completr quantises them with
 [TurboQuant](https://crates.io/crates/turbovec) (4 bits by default, 2 or 3 optional) and searches them with
 deleted and filtered-out documents masked out.
 
@@ -290,13 +290,13 @@ A hybrid suggestion keeps its lexical match kind when it matched lexically, and 
 
 ### Serverless databases and live updates
 
-`strato.connect` opens a versioned database of named indexes in a directory or bucket. Transactions commit
+`completr.connect` opens a versioned database of named indexes in a directory or bucket. Transactions commit
 atomically, and concurrent commits either rebase or, in strict mode, fail with `ConflictError`.
 
 ```python
-import strato
+import completr
 
-db = strato.connect("s3://my-bucket/completions")   # or a local path, gs://..., az://..., memory:///...
+db = completr.connect("s3://my-bucket/completions")   # or a local path, gs://..., az://..., memory:///...
 
 txn = db.begin()
 txn.append("products", [{"id": f"p{i}", "text": f"product {i}"} for i in range(10_000)])
@@ -307,17 +307,17 @@ engine = db.engine()
 engine.sync()                                        # call periodically, e.g. every few seconds
 
 # Any process: submit changes.
-changes = strato.ChangeSet()
+changes = completr.ChangeSet()
 changes.upsert("products", [{"id": "kb-1", "text": "Wireless Keyboard", "popularity": 0.9}])
 changes.delete("products", ["p42"])
 db.submit(changes)
 
 # One process at a time commits them (lease-elected), then compacts.
-strato.Ingestor(db, "ingestor-1").run_once()         # call in a loop
+completr.Ingestor(db, "ingestor-1").run_once()         # call in a loop
 ```
 
-Runnable: [`live_updates.py`](crates/strato-py/examples/live_updates.py) and
-[`live_updates.rs`](crates/strato/examples/live_updates.rs).
+Runnable: [`live_updates.py`](crates/completr-py/examples/live_updates.py) and
+[`live_updates.rs`](crates/completr/examples/live_updates.rs).
 
 - **Snapshots**: `db.open_index("products")` returns one version of one index, for scripts and tests.
 - **Compaction**: `db.compact(index)` merges delta segments tier by tier, and rebuilds the base when too
@@ -330,11 +330,11 @@ Runnable: [`live_updates.py`](crates/strato-py/examples/live_updates.py) and
 
 ### asyncio
 
-`strato.connect_async` returns the same database with awaitable storage operations, for FastAPI and other
+`completr.connect_async` returns the same database with awaitable storage operations, for FastAPI and other
 asyncio services. Completions stay synchronous: they take well under a millisecond.
 
 ```python
-db = await strato.connect_async("s3://my-bucket/completions")
+db = await completr.connect_async("s3://my-bucket/completions")
 engine = await db.engine()
 await engine.sync()
 engine.complete("wirel", ["products"])
@@ -342,25 +342,25 @@ engine.complete("wirel", ["products"])
 
 ### Command line
 
-The `strato` tool operates a database from a terminal or a cron job. Every command takes the database URL
-first (or `STRATO_URL`).
+The `completr` tool operates a database from a terminal or a cron job. Every command takes the database URL
+first (or `COMPLETR_URL`).
 
 ```sh
-cargo install strato-cli
+cargo install completr-cli
 
-strato s3://my-bucket/completions import products products.jsonl   # JSON Lines documents
-strato s3://my-bucket/completions complete products "wirel" --contexts peripherals
-strato s3://my-bucket/completions inspect                          # versions, indexes, sizes
-strato s3://my-bucket/completions compact products
-strato s3://my-bucket/completions cleanup --keep-versions 10
-strato s3://my-bucket/completions ingest --interval 1               # run an ingestor
+completr s3://my-bucket/completions import products products.jsonl   # JSON Lines documents
+completr s3://my-bucket/completions complete products "wirel" --contexts peripherals
+completr s3://my-bucket/completions inspect                          # versions, indexes, sizes
+completr s3://my-bucket/completions compact products
+completr s3://my-bucket/completions cleanup --keep-versions 10
+completr s3://my-bucket/completions ingest --interval 1               # run an ingestor
 ```
 
-Engine events are logged to stderr; set `STRATO_LOG=strato=debug` for more.
+Engine events are logged to stderr; set `COMPLETR_LOG=completr=debug` for more.
 
 ### Errors
 
-Every error derives from `strato.StratoError`: `ConflictError`, `CorruptionError`, `NotFoundError`,
+Every error derives from `completr.CompletrError`: `ConflictError`, `CorruptionError`, `NotFoundError`,
 `InvalidInputError` (also a `ValueError`) and `StorageError` (also an `OSError`).
 
 ### Configuration
@@ -381,7 +381,7 @@ In Rust, `BuildOptions`, `IndexOptions`, `SearchOptions`, `HybridOptions`, `Comp
 
 ## Benchmarks
 
-**Against other engines.** On 124,440 Hacker News titles, typed character by character, strato ranks the
+**Against other engines.** On 124,440 Hacker News titles, typed character by character, completr ranks the
 wanted title best while typing cleanly (MRR 0.861, against 0.846 for Meilisearch, 0.804 for tantivy and
 0.784 for Typesense), and on par with the best when the title contains a typo (0.806, against 0.804 for
 Meilisearch). It answers in 0.26 ms at the median, in process. Full tables, settings and caveats are in
@@ -391,7 +391,7 @@ Meilisearch). It answers in 0.26 ms at the median, in process. Full tables, sett
 
 A synthetic corpus of 200,000 documents (1 to 4 words from a 30,000-word vocabulary, Zipf-distributed), on
 one core of an Apple M1 Pro. Reproduce with
-`cargo run --release -p strato --example bench -- 200000 --vectors`.
+`cargo run --release -p completr --example bench -- 200000 --vectors`.
 
 | Step | Result |
 |---|---|
@@ -425,13 +425,13 @@ cache serves them, and replicas carry its hottest entries across index versions.
   group. In a soak test over thousands of versions, serving memory stayed flat.
 
 ```sh
-cargo test --release -p strato --features store          # unit, database, concurrency and fuzz tests
-STRATO_FUZZ_ITERS=1000000 cargo test --release -p strato --features store --test fuzz
+cargo test --release -p completr --features store          # unit, database, concurrency and fuzz tests
+COMPLETR_FUZZ_ITERS=1000000 cargo test --release -p completr --features store --test fuzz
 ```
 
 ## Non-features
 
-strato does one job. It deliberately does not include:
+completr does one job. It deliberately does not include:
 - a server or HTTP API; it is serverless by design, so expose it through your own API if you need one;
 - full-text search over long documents, filtering or faceting;
 - multi-field schemas; each document has one text, plus aliases and an optional embedding;
@@ -441,16 +441,16 @@ strato does one job. It deliberately does not include:
 ## FAQ
 
 **What does "serverless" mean here?**
-The same as for LanceDB: there is no strato server. The engine is a library in your process, and the
+The same as for LanceDB: there is no completr server. The engine is a library in your process, and the
 database is a set of files in a bucket or directory. Your application is still deployed however you like,
-on containers, VMs or functions; strato adds no extra service to it.
+on containers, VMs or functions; completr adds no extra service to it.
 
-**How does strato differ from Elasticsearch, OpenSearch, Typesense or Meilisearch?**
+**How does completr differ from Elasticsearch, OpenSearch, Typesense or Meilisearch?**
 Those are search servers for documents with many fields, filters and facets: you run and scale a cluster,
-and every query crosses the network. strato is serverless and does autocompletion only: it runs inside
+and every query crosses the network. completr is serverless and does autocompletion only: it runs inside
 your process, and ranks the match kinds a completion box needs (abbreviations, spelling correction, word
 decomposition) together with popularity. Many applications use both: a search server for the results page,
-strato for the box.
+completr for the box.
 
 **How do several writers avoid conflicts without a server?**
 Through the store. Commits create the next manifest create-only, so exactly one writer wins each version
@@ -460,7 +460,7 @@ token, so an ingestor that lost its lease cannot commit.
 
 **How does it differ from an FST or trie library?**
 [`fst`](https://crates.io/crates/fst) and [marisa-trie](https://github.com/s-yata/marisa-trie) are
-excellent key dictionaries, and strato uses the same ideas internally. On top of them it adds scoring,
+excellent key dictionaries, and completr uses the same ideas internally. On top of them it adds scoring,
 typo tolerance, abbreviations, semantic search, updates without rebuilding, and storage.
 
 **Which languages does it support?**
@@ -474,8 +474,8 @@ vector at 4 bits. Hundreds of thousands to a few million documents per index fit
 machine.
 
 **Why the name?**
-*Strato* is Italian for *layer*, from the Latin *stratum*. Indexes are stacks of immutable segments in
-storage, and searches stack override layers: completions are served from strata.
+*completr* is said "completer": it completes what people type, and the missing vowel is a nod to
+search-engine names such as Solr. Its wordmark shows the name being completed as you type it.
 
 ## How it works
 
@@ -488,7 +488,7 @@ protocol.
 
 ## Status
 
-strato is young. The on-disk format is versioned and checked on load, but it and the API may still change
+completr is young. The on-disk format is versioned and checked on load, but it and the API may still change
 before 1.0. Feedback and issues are very welcome.
 
 ## Contributing
@@ -498,7 +498,7 @@ Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) and th
 
 ## Acknowledgements
 
-strato builds on excellent work: [`fst`](https://github.com/BurntSushi/fst) by Andrew Gallant,
+completr builds on excellent work: [`fst`](https://github.com/BurntSushi/fst) by Andrew Gallant,
 [`rapidfuzz`](https://github.com/rapidfuzz/rapidfuzz-rs), [`turbovec`](https://crates.io/crates/turbovec),
 [`object_store`](https://github.com/apache/arrow-rs-object-store), [`zstd`](https://github.com/gyscos/zstd-rs)
 and [PyO3](https://github.com/PyO3/pyo3). Its trie design is inspired by
