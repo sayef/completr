@@ -303,7 +303,7 @@ impl Store {
         let path = cache.join(format!("{}.{tag}", key.trim_matches('/')));
         if path.is_file() {
             let size_ok = size.is_none_or(|s| std::fs::metadata(&path).is_ok_and(|m| m.len() == s));
-            match Segment::open(&path) {
+            match Segment::open(&path).and_then(|s| s.verify().map(|()| s)) {
                 Ok(segment) if size_ok => return Ok(segment),
                 _ => std::fs::remove_file(&path)?,
             }
@@ -324,7 +324,9 @@ impl Store {
             let _ = std::fs::remove_file(&partial);
             return Err(e);
         }
-        Segment::open(&path)
+        let segment = Segment::open(&path)?;
+        segment.verify()?;
+        Ok(segment)
     }
 
     /// Deletes cached files except those of `keep`; returns how many it deleted. Mapped files

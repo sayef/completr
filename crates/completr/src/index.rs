@@ -129,9 +129,6 @@ pub struct Index {
     /// Cached short-query results with how often each was served.
     pub(crate) short_cache: Mutex<FxHashMap<String, ShortEntry>>,
     pub(crate) recursion_cache: Mutex<FxHashMap<RecursionKey, Arc<[RawHit]>>>,
-    /// Bloom filters over the fuzzy variants of all but the largest segment, whose lookups
-    /// mostly miss.
-    variant_filters: Vec<Option<VariantFilter>>,
     /// Per segment with vectors, which of its slots are live.
     vector_masks: Vec<Option<Vec<bool>>>,
     vector_dim: Option<usize>,
@@ -222,14 +219,6 @@ impl Index {
             })
             .collect();
 
-        let largest = (0..segments.len()).max_by_key(|&i| segments[i].variants.map.len());
-        let variant_filters = segments
-            .iter()
-            .enumerate()
-            .map(|(i, seg)| {
-                (segments.len() > 1 && Some(i) != largest).then(|| VariantFilter::build(seg))
-            })
-            .collect();
         let mut hidden_word_freqs: FxHashMap<String, u32> = FxHashMap::default();
         for (i, seg) in segments.iter().enumerate() {
             let base = offsets[i] as usize;
@@ -261,7 +250,6 @@ impl Index {
             hidden_word_freqs,
             short_cache: Mutex::default(),
             recursion_cache: Mutex::default(),
-            variant_filters,
             vector_masks,
             vector_dim: vector_shape.map(|(dim, _)| dim),
             config,
@@ -502,34 +490,30 @@ impl Index {
             .collect())
     }
 
-    /// The 99th percentile of exact-match scores over distinct texts, the lowest id per text.
+    /// The 99th percentile of exact-match scores over live documents.
     pub fn estimate_max_score(&self) -> f64 {
         let factor = self.config.popularity_weight * 10.0;
-        let mut scores = Vec::new();
-        let mut last_key: Vec<u8> = Vec::new();
-        self.scan(Field::Title, "", usize::MAX, |key, doc, _| {
-            if key == last_key.as_slice() {
-                return;
-            }
-            last_key = key.to_vec();
-            let text = &key[..key.len() - 1];
-            let mut score = 150.0 - char_count(text) as f64 * 0.1;
-            if !text.contains(&b' ') {
-                score += 25.0;
-            }
-            let weight = self.weights[doc as usize] as f64;
-            score *= if weight > 0.0 {
-                1.0 + weight * factor
-            } else {
-                1.0 + 0.33 * factor
-            };
-            scores.push(score);
-        });
+        let mut scores: Vec<f64> = (0..self.ids.len())
+            .filter(|&d| self.live[d])
+            .map(|d| {
+                let mut score = 150.0 - f64::from(self.text_lens[d]) * 0.1;
+                if self.single_word[d] == 1 {
+                    score += 25.0;
+                }
+                let weight = f64::from(self.weights[d]);
+                score
+                    * if weight > 0.0 {
+                        1.0 + weight * factor
+                    } else {
+                        1.0 + 0.33 * factor
+                    }
+            })
+            .collect();
         if scores.is_empty() {
             return 750.0;
         }
-        scores.sort_by(f64::total_cmp);
-        scores[scores.len() * 99 / 100]
+        let at = scores.len() * 99 / 100;
+        *scores.select_nth_unstable_by(at, f64::total_cmp).1
     }
 
     fn keyed(seg: &Segment, field: Field) -> &Keyed {
@@ -642,83 +626,46 @@ impl Index {
     /// Dictionary words sharing a delete variant with the query, with their live frequency.
     ///
     /// A word is found in every segment that holds it, so its per-segment frequencies come with it.
-    pub(crate) fn fuzzy_candidates(&self, variants: &FxHashSet<String>) -> FxHashMap<&str, u32> {
-        let mut words: FxHashMap<&str, u32> = FxHashMap::default();
-        let mut seen: FxHashSet<u32> = FxHashSet::default();
-        for (seg, filter) in self.segments.iter().zip(&self.variant_filters) {
-            seen.clear();
+    pub(crate) fn fuzzy_candidates(&self, variants: &FxHashSet<String>) -> Vec<(&str, u32)> {
+        let config = self.segment_config;
+        let (d, pc) = (config.max_edit_distance, config.fuzzy_prefix_chars as usize);
+        let mut found: Vec<(&str, u32)> = Vec::new();
+        let mut hits: Vec<u32> = Vec::new();
+        for seg in &self.segments {
+            hits.clear();
+            let word_count = seg.word_count();
             for variant in variants {
-                if filter
-                    .as_ref()
-                    .is_some_and(|f| !f.may_contain(variant.as_bytes()))
-                {
-                    continue;
-                }
-                let Some(ordinals) = seg.variants.get(variant.as_bytes()) else {
-                    continue;
-                };
-                for &ordinal in ordinals.as_slice() {
-                    if seen.insert(ordinal) {
-                        *words.entry(seg.word_text(ordinal)).or_default() +=
-                            seg.word_freq_at(ordinal);
-                    }
-                }
+                // A bucket also holds the words of other variants.
+                hits.extend(seg.variants.get(variant.as_bytes()).filter(|&ordinal| {
+                    ordinal < word_count
+                        && crate::fuzzy::is_variant(variant, seg.word_text(ordinal), d, pc)
+                }));
             }
+            hits.sort_unstable();
+            hits.dedup();
+            found.extend(
+                hits.iter()
+                    .map(|&o| (seg.word_text(o), seg.word_freq_at(o))),
+            );
+        }
+        if self.segments.len() > 1 {
+            let mut merged: FxHashMap<&str, u32> = FxHashMap::default();
+            for (word, freq) in found.drain(..) {
+                *merged.entry(word).or_default() += freq;
+            }
+            found.extend(merged);
         }
         if !self.hidden_word_freqs.is_empty() {
-            for (word, freq) in words.iter_mut() {
+            for (word, freq) in found.iter_mut() {
                 *freq =
                     freq.saturating_sub(self.hidden_word_freqs.get(*word).copied().unwrap_or(0));
             }
         }
-        words
+        found
     }
 }
 
 /// Chars in UTF-8 bytes.
 pub(crate) fn char_count(bytes: &[u8]) -> usize {
     bytes.iter().filter(|&&b| b & 0xc0 != 0x80).count()
-}
-
-/// A Bloom filter over a segment's fuzzy variant keys, about 1 % false positives.
-struct VariantFilter {
-    bits: Vec<u64>,
-    mask: u64,
-}
-
-impl VariantFilter {
-    fn hashes(key: &[u8]) -> (u64, u64) {
-        use std::hash::Hasher;
-        let mut hasher = rustc_hash::FxHasher::default();
-        hasher.write(key);
-        let h = hasher.finish().wrapping_mul(0x9e37_79b9_7f4a_7c15);
-        (h, h.rotate_left(32) | 1)
-    }
-
-    fn build(segment: &Segment) -> Self {
-        let slots = (segment.variants.map.len() * 10)
-            .next_power_of_two()
-            .max(64);
-        let mut filter = Self {
-            bits: vec![0; slots / 64],
-            mask: slots as u64 - 1,
-        };
-        let mut cursor = segment.variants.map.cursor(b"");
-        while cursor.advance() {
-            let (h1, h2) = Self::hashes(cursor.key());
-            for i in 0..3u64 {
-                let bit = h1.wrapping_add(i.wrapping_mul(h2)) & filter.mask;
-                filter.bits[(bit / 64) as usize] |= 1 << (bit % 64);
-            }
-        }
-        filter
-    }
-
-    fn may_contain(&self, key: &[u8]) -> bool {
-        let (h1, h2) = Self::hashes(key);
-        (0..3u64).all(|i| {
-            let bit = h1.wrapping_add(i.wrapping_mul(h2)) & self.mask;
-            self.bits[(bit / 64) as usize] >> (bit % 64) & 1 == 1
-        })
-    }
 }
