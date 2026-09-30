@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::codec::{Column, Pod};
 use crate::search::{CachedHit, RawHit};
 use crate::segment::{term_key, Keyed};
 use crate::{BuildOptions, Document, Error, Segment};
@@ -118,10 +119,10 @@ pub struct Index {
     pub(crate) segment_config: BuildOptions,
     segments: Vec<Arc<Segment>>,
     offsets: Vec<u32>,
-    pub(crate) ids: Vec<u64>,
-    pub(crate) weights: Vec<f32>,
-    pub(crate) text_lens: Vec<u16>,
-    pub(crate) single_word: Vec<u8>,
+    pub(crate) ids: DocColumn<u64>,
+    pub(crate) weights: DocColumn<f32>,
+    pub(crate) text_lens: DocColumn<u16>,
+    pub(crate) single_word: DocColumn<u8>,
     live: Vec<bool>,
     live_count: usize,
     hidden_word_freqs: FxHashMap<String, u32>,
@@ -151,19 +152,15 @@ impl Index {
         }
 
         let mut offsets = Vec::with_capacity(segments.len());
-        let (mut ids, mut weights, mut text_lens, mut single_word) = (
-            Vec::with_capacity(total),
-            Vec::with_capacity(total),
-            Vec::with_capacity(total),
-            Vec::with_capacity(total),
-        );
+        let mut base = 0;
         for seg in &segments {
-            offsets.push(ids.len() as u32);
-            ids.extend_from_slice(seg.ids());
-            weights.extend_from_slice(seg.weights());
-            text_lens.extend_from_slice(seg.text_lens());
-            single_word.extend_from_slice(seg.single_word());
+            offsets.push(base);
+            base += seg.len() as u32;
         }
+        let ids = DocColumn::of(&segments, |s| s.columns().0);
+        let weights = DocColumn::of(&segments, |s| s.columns().1);
+        let text_lens = DocColumn::of(&segments, |s| s.columns().2);
+        let single_word = DocColumn::of(&segments, |s| s.columns().3);
 
         let mut live = vec![true; total];
         // Superseding ids with their key; deletes carry none.
@@ -487,27 +484,49 @@ impl Index {
     /// The 99th percentile of exact-match scores over live documents.
     pub fn estimate_max_score(&self) -> f64 {
         let factor = self.config.popularity_weight * 10.0;
-        let mut scores: Vec<f64> = (0..self.ids.len())
-            .filter(|&d| self.live[d])
-            .map(|d| {
-                let mut score = 150.0 - f64::from(self.text_lens[d]) * 0.1;
-                if self.single_word[d] == 1 {
-                    score += 25.0;
-                }
-                let weight = f64::from(self.weights[d]);
-                score
-                    * if weight > 0.0 {
+        let (lens, single, weights) = (&*self.text_lens, &*self.single_word, &*self.weights);
+        let scores = || {
+            lens.iter()
+                .zip(single)
+                .zip(weights)
+                .zip(&self.live)
+                .filter(|(_, &live)| live)
+                .map(move |(((&len, &single), &weight), _)| {
+                    let base = 150.0 - f64::from(len) * 0.1 + if single == 1 { 25.0 } else { 0.0 };
+                    let weight = f64::from(weight);
+                    base * if weight > 0.0 {
                         1.0 + weight * factor
                     } else {
                         1.0 + 0.33 * factor
                     }
-            })
-            .collect();
-        if scores.is_empty() {
+                })
+                .filter(|s| s.is_finite())
+        };
+        let (count, lo, hi) = scores().fold((0, f64::MAX, f64::MIN), |(n, lo, hi), s| {
+            (n + 1, lo.min(s), hi.max(s))
+        });
+        if count == 0 {
             return 750.0;
         }
-        let at = scores.len() * 99 / 100;
-        *scores.select_nth_unstable_by(at, f64::total_cmp).1
+        // Exact, without sorting: count scores into bins, then select within the one holding it.
+        const BINS: usize = 4096;
+        let bin =
+            |s: f64| ((s - lo) / (hi - lo).max(f64::MIN_POSITIVE) * (BINS - 1) as f64) as usize;
+        let mut counts = [0usize; BINS];
+        scores().for_each(|s| counts[bin(s)] += 1);
+        let mut rank = count * 99 / 100;
+        let target = counts
+            .iter()
+            .position(|&c| {
+                let inside = rank < c;
+                if !inside {
+                    rank -= c;
+                }
+                inside
+            })
+            .unwrap_or(BINS - 1);
+        let mut within: Vec<f64> = scores().filter(|&s| bin(s) == target).collect();
+        *within.select_nth_unstable_by(rank, f64::total_cmp).1
     }
 
     fn keyed(seg: &Segment, field: Field) -> &Keyed {
@@ -676,4 +695,35 @@ impl Index {
 /// Chars in UTF-8 bytes.
 pub(crate) fn char_count(bytes: &[u8]) -> usize {
     bytes.iter().filter(|&&b| b & 0xc0 != 0x80).count()
+}
+
+/// A per-document column: a lone segment's own, or the segments' concatenated.
+pub(crate) enum DocColumn<T> {
+    Mapped(Column<T>),
+    Owned(Vec<T>),
+}
+
+impl<T: Pod> DocColumn<T> {
+    fn of(segments: &[Arc<Segment>], column: impl Fn(&Segment) -> Column<T>) -> Self {
+        match segments {
+            [one] => Self::Mapped(column(one)),
+            _ => Self::Owned(
+                segments
+                    .iter()
+                    .flat_map(|s| column(s).as_slice().to_vec())
+                    .collect(),
+            ),
+        }
+    }
+}
+
+impl<T: Pod> std::ops::Deref for DocColumn<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &[T] {
+        match self {
+            Self::Mapped(column) => column.as_slice(),
+            Self::Owned(values) => values,
+        }
+    }
 }
