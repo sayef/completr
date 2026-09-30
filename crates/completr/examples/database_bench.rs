@@ -804,12 +804,7 @@ fn build_segment(
             words: Trie,
             ..Layout::default()
         },
-        Ok("compact") => Layout {
-            titles: completr::Dictionary::CompactTrie,
-            words: completr::Dictionary::CompactTrie,
-            aliases: completr::Dictionary::CompactTrie,
-            ..Layout::default()
-        },
+        Ok("compact") => Layout::uniform(completr::Dictionary::CompactTrie),
         Ok("default") | Err(_) => Layout::default(),
         Ok(other) => panic!("unknown layout {other}"),
     };

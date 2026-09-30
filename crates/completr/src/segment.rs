@@ -7,11 +7,12 @@ use rustc_hash::FxHashMap;
 
 use crate::codec::{Bytes, Column, Reader, Writer};
 use crate::dict::{Dict, Dictionary};
+use crate::trie::Packed;
 use crate::vectors::{CarriedCodes, Row, Vectors};
 use crate::{fuzzy, text, Alias, AliasKind, Document, Error};
 
 const MAGIC: &[u8; 8] = b"COMPLETR";
-const VERSION: u64 = 9;
+const VERSION: u64 = 10;
 const DOCS_PER_BLOCK: usize = 128;
 const ZSTD_LEVEL: i32 = 3;
 
@@ -84,18 +85,16 @@ pub struct Layout {
     pub titles: Dictionary,
     pub words: Dictionary,
     pub aliases: Dictionary,
-    pub variants: Dictionary,
 }
 
 impl Default for Layout {
-    /// Tries for the scan-heavy titles and aliases, FSTs for words and the lookup-only fuzzy
-    /// variants: the fastest and next-smallest layout in our benchmarks.
+    /// Tries for the scan-heavy titles and aliases, an FST for words: the fastest and
+    /// next-smallest layout in our benchmarks.
     fn default() -> Self {
         Self {
             titles: Dictionary::Trie,
             words: Dictionary::Fst,
             aliases: Dictionary::Trie,
-            variants: Dictionary::Fst,
         }
     }
 }
@@ -106,7 +105,6 @@ impl Layout {
             titles: dictionary,
             words: dictionary,
             aliases: dictionary,
-            variants: dictionary,
         }
     }
 }
@@ -209,7 +207,13 @@ impl Keyed {
         Ok(())
     }
 
-    fn read(r: &mut Reader, kind: Dictionary, ordinal: bool, bound: u32) -> Result<Self, Error> {
+    fn read(
+        r: &mut Reader,
+        kind: Dictionary,
+        ordinal: bool,
+        bound: u32,
+        full: bool,
+    ) -> Result<Self, Error> {
         let map = Dict::read(r, kind)?;
         let offsets = if ordinal {
             Some(r.column::<u32>()?)
@@ -217,13 +221,13 @@ impl Keyed {
             None
         };
         let values = r.column::<u32>()?;
-        let mut valid = values.as_slice().iter().all(|&v| v < bound);
+        let mut valid = !full || values.as_slice().iter().all(|&v| v < bound);
         if let Some(offsets) = &offsets {
             let o = offsets.as_slice();
             valid &= o.len() == map.len() + 1
                 && o.first() == Some(&0)
                 && o.last().map(|&l| l as usize) == Some(values.len())
-                && o.windows(2).all(|w| w[0] <= w[1]);
+                && (!full || o.windows(2).all(|w| w[0] <= w[1]));
         }
         valid
             .then_some(Self {
@@ -271,6 +275,87 @@ impl Keyed {
 
     fn size(&self) -> usize {
         self.map.size() + self.offsets.as_ref().map_or(0, |o| o.len() * 4) + self.values.len() * 4
+    }
+}
+
+/// Delete variants hashed into buckets of word ordinals, each with a fingerprint of its variant;
+/// a bucket can still hold words of other variants, which the caller discards.
+pub(crate) struct Variants {
+    buckets: u64,
+    offsets: Packed,
+    words: Packed,
+}
+
+impl Variants {
+    const FINGERPRINT_BITS: u32 = 6;
+
+    /// About eight words per bucket at the default settings.
+    fn buckets_for(words: usize) -> u64 {
+        (words as u64 * 3).max(1)
+    }
+
+    /// The bucket in the high bits, and the fingerprint in the low ones.
+    fn slot(variant: &[u8], buckets: u64) -> (u64, u64) {
+        let h = xxhash_rust::xxh3::xxh3_64(variant);
+        let bucket = ((u128::from(h) * u128::from(buckets)) >> 64) as u64;
+        (bucket, h & ((1 << Self::FINGERPRINT_BITS) - 1))
+    }
+
+    /// An entry of `ordinal` under `variant`, sorting by bucket.
+    fn entry(variant: &[u8], buckets: u64, ordinal: u32) -> u64 {
+        let (bucket, fingerprint) = Self::slot(variant, buckets);
+        bucket << 32 | u64::from(ordinal) << Self::FINGERPRINT_BITS | fingerprint
+    }
+
+    /// Writes `entries`, sorted and unique values from [`Variants::entry`].
+    fn write(w: &mut Writer, buckets: u64, entries: &[u64]) {
+        let mut offsets = vec![0u64; buckets as usize + 1];
+        for &e in entries {
+            offsets[(e >> 32) as usize + 1] += 1;
+        }
+        for i in 1..offsets.len() {
+            offsets[i] += offsets[i - 1];
+        }
+        w.u64(buckets);
+        Packed::write(w, &offsets);
+        Packed::write(
+            w,
+            &entries.iter().map(|&e| e & 0xffff_ffff).collect::<Vec<_>>(),
+        );
+    }
+
+    fn read(r: &mut Reader, word_bound: u32, full: bool) -> Result<Self, Error> {
+        let buckets = r.u64()?;
+        let offsets = Packed::read(r)?;
+        let words = Packed::read(r)?;
+        let valid = offsets.len as u64 == buckets.saturating_add(1)
+            && (!full
+                || (0..words.len)
+                    .all(|i| words.get(i) >> Self::FINGERPRINT_BITS < u64::from(word_bound))
+                    && (1..offsets.len).all(|i| offsets.get(i - 1) <= offsets.get(i))
+                    && offsets.get(offsets.len - 1) == words.len as u64);
+        valid
+            .then_some(Self {
+                buckets,
+                offsets,
+                words,
+            })
+            .ok_or_else(|| Error::Corrupt("invalid variants".into()))
+    }
+
+    /// Ordinals of the words in `variant`'s bucket with its fingerprint.
+    pub(crate) fn get(&self, variant: &[u8]) -> impl Iterator<Item = u32> + '_ {
+        let (bucket, fingerprint) = Self::slot(variant, self.buckets);
+        let start = self.offsets.get(bucket as usize) as usize;
+        let end = (self.offsets.get(bucket as usize + 1) as usize).min(self.words.len);
+        (start.min(end)..end)
+            .map(|i| self.words.get(i))
+            .filter(move |&v| v & ((1 << Self::FINGERPRINT_BITS) - 1) == fingerprint)
+            .map(|v| (v >> Self::FINGERPRINT_BITS) as u32)
+    }
+
+    fn size(&self) -> usize {
+        8 + self.offsets.size() + self.words.size()
     }
 }
 
@@ -599,7 +684,7 @@ pub struct Segment {
     /// Postings are `local << 1 | kind`.
     pub(crate) aliases: Keyed,
     /// Delete variant to word ordinals.
-    pub(crate) variants: Keyed,
+    pub(crate) variants: Variants,
     pub(crate) vectors: Option<Vectors>,
     texts: FsstColumn,
     /// Empty for documents without a key.
@@ -757,36 +842,31 @@ impl Segment {
         }
         let words = sorted_words;
         let doc_word_ords: Vec<u32> = doc_word_ids.iter().map(|&id| remap[id as usize]).collect();
-        // Variants go straight into per-thread arenas, never one allocation per key.
-        let variant_keys = words
+        if words.len() >> (32 - Variants::FINGERPRINT_BITS) != 0 {
+            return Err(Error::input("too many distinct words for one segment"));
+        }
+        let buckets = Variants::buckets_for(words.len());
+        let mut variant_entries: Vec<u64> = words
             .par_iter()
             .enumerate()
-            .fold(
-                KeyArena::default,
-                |mut arena, (ordinal, (_, word, _, _))| {
-                    for variant in fuzzy::delete_variants(
-                        word,
-                        config.max_edit_distance,
-                        config.fuzzy_prefix_chars as usize,
-                    ) {
-                        arena.push_raw(variant.as_bytes(), ordinal as u32);
-                    }
-                    arena
-                },
-            )
-            .reduce(KeyArena::default, KeyArena::merge);
+            .flat_map_iter(|(ordinal, (_, word, _, _))| {
+                fuzzy::delete_variants(
+                    word,
+                    config.max_edit_distance,
+                    config.fuzzy_prefix_chars as usize,
+                )
+                .into_iter()
+                .map(move |v| Variants::entry(v.as_bytes(), buckets, ordinal as u32))
+            })
+            .collect();
+        variant_entries.par_sort_unstable();
+        variant_entries.dedup();
 
         let mut w = Writer::default();
         w.raw(MAGIC);
         w.u64(VERSION);
         let layout = if config.compact_keys {
-            use Dictionary::CompactTrie;
-            Layout {
-                titles: CompactTrie,
-                words: CompactTrie,
-                aliases: CompactTrie,
-                ..config.layout
-            }
+            Layout::uniform(Dictionary::CompactTrie)
         } else {
             config.layout
         };
@@ -800,7 +880,6 @@ impl Segment {
             layout.titles.code(),
             layout.words.code(),
             layout.aliases.code(),
-            layout.variants.code(),
         ]);
         w.column(&docs.iter().map(|d| d.id).collect::<Vec<_>>());
         w.column(&docs.iter().map(|d| d.popularity).collect::<Vec<_>>());
@@ -842,7 +921,10 @@ impl Segment {
                 Ok(())
             }),
             Box::new(move |w| Keyed::write_packed(w, layout.aliases, alias_keys)),
-            Box::new(move |w| Keyed::write_packed(w, layout.variants, variant_keys)),
+            Box::new(move |w| {
+                Variants::write(w, buckets, &variant_entries);
+                Ok(())
+            }),
             Box::new(move |w| Vectors::write(w, dim, config.vector_bits, rows_ref)),
             Box::new(move |w| {
                 FsstColumn::write(w, docs_ref.iter().map(|d| d.text.as_str()))?;
@@ -872,7 +954,7 @@ impl Segment {
             ms = started.elapsed().as_millis() as u64,
             "built segment"
         );
-        Self::decode(Bytes::from_vec(w.buf))
+        Self::decode(Bytes::from_vec(w.buf), true)
     }
 
     pub fn config(&self) -> BuildOptions {
@@ -918,8 +1000,7 @@ impl Segment {
             ),
             ("aliases keys", self.aliases.map.size()),
             ("aliases postings", self.aliases.values.len() * 4),
-            ("variants keys", self.variants.map.size()),
-            ("variants postings", self.variants.values.len() * 4),
+            ("variants", self.variants.size()),
             ("vectors", self.vectors.as_ref().map_or(0, Vectors::size)),
         ]
     }
@@ -981,7 +1062,8 @@ impl Segment {
     /// Ordinals of the indexed words of `local`, repeats included.
     pub(crate) fn doc_words(&self, local: usize) -> &[u32] {
         let o = self.doc_word_offsets.as_slice();
-        &self.doc_word_ords.as_slice()[o[local] as usize..o[local + 1] as usize]
+        let range = o[local] as usize..o[local + 1] as usize;
+        self.doc_word_ords.as_slice().get(range).unwrap_or(&[])
     }
 
     pub(crate) fn weights(&self) -> &[f32] {
@@ -998,6 +1080,10 @@ impl Segment {
 
     pub(crate) fn word_text(&self, ordinal: u32) -> &str {
         self.word_texts.get(ordinal as usize)
+    }
+
+    pub(crate) fn word_count(&self) -> u32 {
+        self.word_freqs.len() as u32
     }
 
     pub(crate) fn word_freq_at(&self, ordinal: u32) -> u32 {
@@ -1018,17 +1104,24 @@ impl Segment {
     }
 
     pub fn from_bytes(data: Vec<u8>) -> Result<Self, Error> {
-        Self::decode(Bytes::from_vec(data))
+        Self::decode(Bytes::from_vec(data), true)
     }
 
     /// Opens a segment file, memory-mapped and read in place.
+    /// Maps a segment file, checking only its structure; [`Segment::verify`] checks the rest.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
         let file = File::open(path)?;
         // SAFETY: segment files are immutable once written; truncating one while it is open is unsupported.
         let map = unsafe { memmap2::Mmap::map(&file)? };
+        // Lookups jump around the file; read-ahead would only fill memory.
         #[cfg(unix)]
-        let _ = map.advise(memmap2::Advice::WillNeed);
-        Self::decode(Bytes::new(Arc::new(map)))
+        let _ = map.advise(memmap2::Advice::Random);
+        Self::decode(Bytes::new(Arc::new(map)), false)
+    }
+
+    /// Checks the checksum and every section, as [`Segment::from_bytes`] does.
+    pub fn verify(&self) -> Result<(), Error> {
+        Self::decode(self.data.clone(), true).map(drop)
     }
 
     /// Maps every page of the segment in advance, so first queries do not pay page faults.
@@ -1044,13 +1137,14 @@ impl Segment {
         Ok(())
     }
 
-    fn decode(data: Bytes) -> Result<Self, Error> {
+    /// With `full`, also checks the checksum and every value, which reads the whole segment.
+    fn decode(data: Bytes, full: bool) -> Result<Self, Error> {
         let bytes = data.as_ref();
         let body = bytes
             .len()
             .checked_sub(8)
             .ok_or_else(|| Error::Corrupt("truncated segment".into()))?;
-        if xxhash_rust::xxh3::xxh3_64(&bytes[..body]).to_le_bytes() != bytes[body..] {
+        if full && xxhash_rust::xxh3::xxh3_64(&bytes[..body]).to_le_bytes() != bytes[body..] {
             return Err(Error::Corrupt("segment checksum mismatch".into()));
         }
         let mut r = Reader::new(data.clone())?;
@@ -1070,7 +1164,6 @@ impl Segment {
             titles: code()?,
             words: code()?,
             aliases: code()?,
-            variants: code()?,
         };
         let compact_keys = layout.aliases == Dictionary::CompactTrie;
         let config = BuildOptions {
@@ -1091,8 +1184,8 @@ impl Segment {
         let single_word = r.column()?;
         let deletes = r.column()?;
         let docs = DocStore::read(&mut r, n)?;
-        let titles = Keyed::read(&mut r, layout.titles, false, local_bound)?;
-        let words = Keyed::read(&mut r, layout.words, true, local_bound)?;
+        let titles = Keyed::read(&mut r, layout.titles, false, local_bound, full)?;
+        let words = Keyed::read(&mut r, layout.words, true, local_bound, full)?;
         let word_freqs: Column<u32> = r.column()?;
         let word_texts = StrColumn::read(&mut r)?;
         let doc_word_offsets: Column<u32> = r.column()?;
@@ -1101,19 +1194,26 @@ impl Segment {
         let forward_ok = o.len() == n + 1
             && o.first() == Some(&0)
             && o.last().map(|&l| l as usize) == Some(ords.len())
-            && o.windows(2).all(|w| w[0] <= w[1])
-            && ords.iter().all(|&w| (w as usize) < word_freqs.len());
+            && (!full
+                || o.windows(2).all(|w| w[0] <= w[1])
+                    && ords.iter().all(|&w| (w as usize) < word_freqs.len()));
         if !forward_ok {
             return Err(Error::Corrupt("invalid forward index".into()));
         }
-        let aliases = Keyed::read(&mut r, layout.aliases, false, local_bound.saturating_mul(2))?;
+        let aliases = Keyed::read(
+            &mut r,
+            layout.aliases,
+            false,
+            local_bound.saturating_mul(2),
+            full,
+        )?;
         let word_bound =
             u32::try_from(word_freqs.len()).map_err(|_| Error::Corrupt("too many words".into()))?;
-        let variants = Keyed::read(&mut r, layout.variants, false, word_bound)?;
+        let variants = Variants::read(&mut r, word_bound, full)?;
         let vectors = Vectors::read(&mut r, n)?;
         let texts = FsstColumn::read(&mut r, n)?;
         let keys = FsstColumn::read(&mut r, n)?;
-        let contexts = Keyed::read(&mut r, Dictionary::Fst, false, local_bound)?;
+        let contexts = Keyed::read(&mut r, Dictionary::Fst, false, local_bound, full)?;
         r.align()?;
         r.u64()?;
         r.finish()?;
@@ -1140,10 +1240,11 @@ impl Segment {
             contexts,
         };
         let valid = segment.weights.len() == n
-            && segment.weights().iter().all(|w| w.is_finite())
             && segment.text_lens.len() == n
             && segment.single_word.len() == n
-            && segment.ids().windows(2).all(|w| w[0] < w[1])
+            && (!full
+                || segment.weights().iter().all(|w| w.is_finite())
+                    && segment.ids().windows(2).all(|w| w[0] < w[1]))
             && segment.word_freqs.len() == segment.words.map.len()
             && segment.word_texts.offsets.len() == segment.words.map.len() + 1;
         valid
@@ -1176,21 +1277,6 @@ impl KeyArena {
         self.bytes.push(TERMINATOR);
         self.entries.push((start, text.len() as u32 + 1, value));
         Ok(())
-    }
-
-    /// Adds `key` as is.
-    fn push_raw(&mut self, key: &[u8], value: u32) {
-        self.entries
-            .push((self.bytes.len() as u32, key.len() as u32, value));
-        self.bytes.extend_from_slice(key);
-    }
-
-    fn merge(mut self, other: KeyArena) -> KeyArena {
-        let shift = self.bytes.len() as u32;
-        self.bytes.extend_from_slice(&other.bytes);
-        self.entries
-            .extend(other.entries.into_iter().map(|(s, l, v)| (s + shift, l, v)));
-        self
     }
 
     fn key(&self, entry: usize) -> &[u8] {
@@ -1261,6 +1347,17 @@ mod tests {
         let mut truncated = seg.to_bytes();
         truncated.truncate(truncated.len() - 9);
         assert!(Segment::from_bytes(truncated).is_err());
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.seg");
+        let mut bytes = seg.to_bytes();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(Segment::from_bytes(bytes).is_err());
+        assert!(Segment::open(&path).unwrap().verify().is_err());
+        seg.save(&path).unwrap();
+        Segment::open(&path).unwrap().verify().unwrap();
     }
 
     #[test]

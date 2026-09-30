@@ -34,6 +34,26 @@ pub(crate) fn delete_variants(
         .collect()
 }
 
+/// Whether `variant` is one of `word`'s [`delete_variants`]: a subsequence of its first
+/// `prefix_length` chars missing at most `max_distance` of them, and not empty unless they are.
+pub(crate) fn is_variant(
+    variant: &str,
+    word: &str,
+    max_distance: u8,
+    prefix_length: usize,
+) -> bool {
+    let mut rest = variant.chars().peekable();
+    let (mut len, mut kept) = (0usize, 0usize);
+    for c in word.chars().take(prefix_length) {
+        len += 1;
+        if rest.peek() == Some(&c) {
+            rest.next();
+            kept += 1;
+        }
+    }
+    rest.peek().is_none() && len - kept <= max_distance as usize && (kept > 0 || len == 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -50,6 +70,39 @@ mod tests {
         assert_eq!(got, ["a", "ab", "abc", "ac", "b", "bc", "c"]);
         assert!(delete_variants("machinery", 1, 7).contains("machine"));
         assert_eq!(delete_variants("a", 2, 7).len(), 1);
+    }
+
+    #[test]
+    fn is_variant_matches_variant_sets() {
+        let words = [
+            "",
+            "a",
+            "ab",
+            "ba",
+            "abc",
+            "cab",
+            "kitten",
+            "sitting",
+            "mitten",
+            "ärzte",
+            "arzt",
+            "aab",
+            "日本語",
+        ];
+        for q in words {
+            for d in 0..3 {
+                for pc in [2, 7] {
+                    let variants = delete_variants(q, d, pc);
+                    for v in words {
+                        let expected = variants.contains(v);
+                        assert_eq!(is_variant(v, q, d, pc), expected, "{v:?} {q:?} {d} {pc}");
+                    }
+                    for v in &variants {
+                        assert!(is_variant(v, q, d, pc), "{v:?} {q:?} {d} {pc}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

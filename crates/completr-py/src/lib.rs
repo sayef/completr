@@ -458,6 +458,11 @@ impl Segment {
         )))
     }
 
+    /// Checks the checksum and every section; `open` checks only the structure.
+    fn verify(&self, py: Python<'_>) -> PyResult<()> {
+        py.detach(|| self.0.verify()).map_err(to_py_err)
+    }
+
     #[staticmethod]
     fn from_bytes(py: Python<'_>, data: Vec<u8>) -> PyResult<Self> {
         Ok(Self(Arc::new(
