@@ -13,8 +13,9 @@
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
+  <a href="https://sayef.github.io/strato/">Docs</a> ·
   <a href="https://docs.rs/strato">Rust docs</a> ·
-  <a href="crates/strato-py/python/strato/__init__.pyi">Python API</a> ·
+  <a href="https://sayef.github.io/strato/reference/python/">Python API</a> ·
   <a href="docs/architecture.md">Architecture</a> ·
   <a href="#benchmarks">Benchmarks</a> ·
   <a href="CHANGELOG.md">Changelog</a>
@@ -50,7 +51,7 @@ fresh while your data changes.
 - [What it completes](#what-it-completes)
 - [Installation](#installation)
 - [Quick start](#quick-start)
-- [Guides](#guides): [layers](#layers), [semantic and hybrid completion](#semantic-and-hybrid-completion), [live updates](#databases-and-live-updates), [configuration](#configuration)
+- [Guides](#guides): [documents](#documents), [filtering](#filtering-by-context), [layers](#layers), [semantic and hybrid](#semantic-and-hybrid-completion), [live updates](#serverless-databases-and-live-updates), [asyncio](#asyncio), [command line](#command-line), [configuration](#configuration)
 - [Benchmarks](#benchmarks)
 - [Guarantees and testing](#guarantees-and-testing)
 - [Non-features](#non-features)
@@ -106,17 +107,18 @@ flowchart LR
 - **Semantic completion** from embeddings of any model, quantised to 2-4 bits.
 - **Hybrid completion** with reciprocal rank fusion, weighted blending or lexical-first ordering, chosen per
   request.
+- **Context filters**: restrict any request to documents tagged with a category, tenant or language.
 
 **Ranking**
 - **Popularity** through a per-document weight, combined with match kind, text length and whole-word
   bonuses.
-- Every hit reports its **match kind**, so your UI can explain or style results.
+- Every suggestion carries its **text, match kind and highlight ranges**, so your UI renders it directly.
 - **Deterministic**: identical inputs give bit-identical scores and order, with ties broken by id.
 
 **Serving**
 - **Fast**: p50 around 0.1 ms and p99 around 1 ms for typed queries on 200k documents, on one core.
 - **Zero-copy segments**: an aligned, checksummed binary format read in place through `mmap`. Opening a
-  19 MB segment takes about 6 ms.
+  20 MB segment takes about 5 ms. Texts are FSST-compressed and decoded one at a time.
 - **Compact dictionaries**: a purpose-built LOUDS trie for keys that are scanned, and
   [`fst`](https://crates.io/crates/fst) for keys that are looked up, chosen per key set.
 - **Override layers**: search a tenant's, a user's or an experiment's index on top of shared data, per
@@ -131,6 +133,11 @@ flowchart LR
 - **One ingestor, many replicas**: any process submits change sets, and a lease-elected `Ingestor`
   commits them in order. Replicas load only changed segments and switch versions atomically, without doubling memory.
 - **Credentials like `boto3`**: environment, profiles, SSO, web identity, ECS and IMDS.
+
+**Developer experience**
+- Documents as dicts, `strato.Document` objects, or pandas, polars and Arrow tables, with int or string ids.
+- `strato.connect(url)`, an asyncio API, typed stubs and a clear exception hierarchy.
+- A `strato` command-line tool, and `tracing` events that also reach Python's `logging`.
 
 ## What it completes
 
@@ -171,42 +178,47 @@ searches and builds.
 ### Python
 
 ```python
-from strato import Index, Segment
+from strato import Index
 
-# (id, text, popularity, [(alias, is_abbreviation)])
 docs = [
-    (1, "Machine Learning", 0.9, [("ML", True)]),
-    (2, "Machine Vision", 0.4, []),
-    (3, "Data Science", 0.7, [("data analytics", False)]),
+    {"id": "ml", "text": "Machine Learning", "popularity": 0.9, "abbreviations": ["ML"]},
+    {"id": "mv", "text": "Machine Vision", "popularity": 0.4},
+    {"id": "ds", "text": "Data Science", "popularity": 0.7, "synonyms": ["data analytics"]},
 ]
-index = Index([Segment.build(docs)])
+index = Index.from_documents(docs)   # also accepts strato.Document objects, pandas, polars or Arrow tables
 
 for query in ["mach", "ML", "vison", "science"]:
-    print(query, [(h.id, h.kind, round(h.score, 3)) for h in index.complete(query, limit=3)])
+    print(query, [(s.text, s.kind, round(s.score, 3)) for s in index.complete(query, limit=3)])
 ```
 
 ```text
-mach    [(1, 'prefix', 0.596), (2, 'prefix', 0.337)]
-ML      [(1, 'abbreviation', 0.596)]
-vison   [(2, 'fuzzy', 0.09)]
-science [(3, 'infix', 0.299)]
+mach    [('Machine Learning', 'prefix', 0.596), ('Machine Vision', 'prefix', 0.337)]
+ML      [('Machine Learning', 'abbreviation', 0.596)]
+vison   [('Machine Vision', 'fuzzy', 0.09)]
+science [('Data Science', 'infix', 0.299)]
+```
+
+Each suggestion carries its `id` (an int or the string you gave), `text`, `score`, `kind`, and
+`highlights`: character ranges of the text that matched, ready to render in bold.
+
+```python
+top = index.complete("mach")[0]
+[top.text[a:b] for a, b in top.highlights]   # ['Mach']
 ```
 
 ### Rust
 
 ```rust
-use std::sync::Arc;
-use strato::{AliasKind, Document, Index, IndexConfig, Segment};
+use strato::{Document, Index};
 
-let docs = vec![
-    Document::new(1, "Machine Learning", 0.9).with_alias("ML", AliasKind::Abbreviation),
-    Document::new(2, "Machine Vision", 0.4),
-    Document::new(3, "Data Science", 0.7).with_alias("data analytics", AliasKind::Synonym),
-];
-let index = Index::new(vec![Arc::new(Segment::build(docs, [])?)], IndexConfig::default())?;
+let index = Index::from_documents([
+    Document::keyed("ml", "Machine Learning", 0.9).with_abbreviation("ML"),
+    Document::keyed("mv", "Machine Vision", 0.4),
+    Document::keyed("ds", "Data Science", 0.7).with_synonym("data analytics"),
+])?;
 
-for hit in index.complete("mach", 10) {
-    println!("{} {} {:.3}", hit.id, hit.kind.as_str(), hit.score);
+for s in index.complete("mach", 10) {
+    println!("{} {} {:.3} {:?}", s.text, s.kind.as_str(), s.score, s.highlights);
 }
 ```
 
@@ -214,6 +226,30 @@ Runnable versions: [`quickstart.rs`](crates/strato/examples/quickstart.rs) and
 [`quickstart.py`](crates/strato-py/examples/quickstart.py).
 
 ## Guides
+
+### Documents
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | `int` or `str` | Your identifier. String ids are hashed to a stable 64-bit id and returned as given. |
+| `text` | `str` | What is completed and displayed. |
+| `popularity` | `float` | Usually in `[0, 1]`; more popular documents rank higher. |
+| `synonyms` | `list[str]` | Alternative names, searchable with `complete_aliases`. |
+| `abbreviations` | `list[str]` | Codes such as `ML`, matched exactly by `complete`. |
+| `contexts` | `list[str]` | Tags that requests can filter on, e.g. a category or tenant. |
+| `vector` | float array | Optional embedding; or pass `vectors=` for all documents at once. |
+
+Unknown fields raise `InvalidInputError`, so a typo never silently drops data.
+
+### Filtering by context
+
+Tag documents with `contexts` and restrict any request to them. Filtering happens while candidates are
+collected, so a filtered request still returns up to `limit` results.
+
+```python
+index.complete("mach", contexts=["books"])
+engine.complete("mach", ["shared", "acme"], contexts=["books", "courses"])   # any of the contexts
+```
 
 ### Layers
 
@@ -226,25 +262,22 @@ from strato import Engine
 
 engine = Engine()
 engine.publish({"shared": shared_index, "acme": acme_index})
-hits = engine.complete("machine", ["shared", "acme"], limit=10)   # hit.layer tells where it came from
-engine.publish({"acme": None})                                         # remove a layer
+engine.complete("machine", ["shared", "acme"], limit=10)   # suggestion.layer tells where it came from
+engine.publish({"acme": None})                             # remove a layer
 ```
 
 ### Semantic and hybrid completion
 
 Documents can carry embeddings from any model. strato quantises them with
 [TurboQuant](https://crates.io/crates/turbovec) (4 bits by default, 2 or 3 optional) and searches them with
-deleted documents masked out.
+deleted and filtered-out documents masked out.
 
 ```python
-import numpy as np
+vectors = embed([d["text"] for d in docs]).astype("float32")   # shape (n, dim)
+index = Index.from_documents(docs, vectors=vectors, vector_bits=4)
 
-vectors = embed([text for _, text, _, _ in docs]).astype(np.float32)   # shape (n, dim)
-index = Index([Segment.build(docs, vectors=vectors, vector_bits=4)])
-
-index.vector_search(embed(["deep learning"])[0], limit=10)             # kind == "semantic"
-index.hybrid_search("deep lea", embed(["deep lea"])[0], limit=10,
-                    fusion="rrf")                                      # or "weighted", "lexical_first"
+index.vector_search(embed(["deep learning"])[0], limit=10)   # kind == "semantic"
+index.hybrid_search("deep lea", embed(["deep lea"])[0], limit=10, fusion="rrf")
 ```
 
 | Fusion | Score |
@@ -253,64 +286,108 @@ index.hybrid_search("deep lea", embed(["deep lea"])[0], limit=10,
 | `weighted` | `(1 - w) * lexical + w * max(semantic, 0)`, set `semantic_weight` |
 | `lexical_first` | lexical hits in their order, then semantic-only hits |
 
-A hybrid hit keeps its lexical match kind when it matched lexically, and reports both source scores.
+A hybrid suggestion keeps its lexical match kind when it matched lexically, and reports both source scores.
 
-### Databases and live updates
+### Serverless databases and live updates
 
-A `Database` is a versioned collection of named indexes in a directory or bucket. Transactions commit
+`strato.connect` opens a versioned database of named indexes in a directory or bucket. Transactions commit
 atomically, and concurrent commits either rebase or, in strict mode, fail with `ConflictError`.
 
 ```python
-from strato import ChangeSet, Database, Engine, Replica, Ingestor
+import strato
 
-database = Database("s3://my-bucket/completions")    # or a local path, gs://..., az://..., memory:///...
+db = strato.connect("s3://my-bucket/completions")   # or a local path, gs://..., az://..., memory:///...
 
-txn = database.begin()
-txn.append("products", [(i, f"product {i}", 0.5, []) for i in range(10_000)])
+txn = db.begin()
+txn.append("products", [{"id": f"p{i}", "text": f"product {i}"} for i in range(10_000)])
 txn.commit()
 
-# Serving processes: load changed segments only, publish atomically.
-engine = Engine()
-replica = Replica(database, engine)
-replica.sync()                                     # call periodically
+# Serving processes: an engine that follows the database, loading only changed segments.
+engine = db.engine()
+engine.sync()                                        # call periodically, e.g. every few seconds
 
-# Any process: submit changes to the inbox.
-changes = ChangeSet()
-changes.upsert("products", [(10_000, "wireless keyboard", 0.9, [])])
-changes.delete("products", [42])
-database.submit(changes)
+# Any process: submit changes.
+changes = strato.ChangeSet()
+changes.upsert("products", [{"id": "kb-1", "text": "Wireless Keyboard", "popularity": 0.9}])
+changes.delete("products", ["p42"])
+db.submit(changes)
 
 # One process at a time commits them (lease-elected), then compacts.
-ingestor = Ingestor(database, "ingestor-1")
-ingestor.run_once()                                   # call in a loop
+strato.Ingestor(db, "ingestor-1").run_once()         # call in a loop
 ```
 
 Runnable: [`live_updates.py`](crates/strato-py/examples/live_updates.py) and
 [`live_updates.rs`](crates/strato/examples/live_updates.rs).
 
-- **Compaction**: `database.compact(index)` merges delta segments tier by tier, and rebuilds the base when
-  too many documents are superseded. The ingestor compacts automatically after committing.
-- **Cleanup**: `database.cleanup(keep_versions=10, older_than_seconds=3600)` deletes old manifests, and
-  segment files that no retained version references.
+- **Snapshots**: `db.open_index("products")` returns one version of one index, for scripts and tests.
+- **Compaction**: `db.compact(index)` merges delta segments tier by tier, and rebuilds the base when too
+  many documents are superseded. The ingestor compacts automatically after committing.
+- **Cleanup**: `db.cleanup(keep_versions=10, older_than_seconds=3600)` deletes old manifests, and segment
+  files that no retained version references.
 - **Credentials**: S3 uses the standard AWS chain. Override it with
   `options={"aws_access_key_id": ..., "aws_region": ...}`, and pass `cache_dir=...` to keep downloaded
   segments on local disk.
+
+### asyncio
+
+`strato.connect_async` returns the same database with awaitable storage operations, for FastAPI and other
+asyncio services. Completions stay synchronous: they take well under a millisecond.
+
+```python
+db = await strato.connect_async("s3://my-bucket/completions")
+engine = await db.engine()
+await engine.sync()
+engine.complete("wirel", ["products"])
+```
+
+### Command line
+
+The `strato` tool operates a database from a terminal or a cron job. Every command takes the database URL
+first (or `STRATO_URL`).
+
+```sh
+cargo install strato-cli
+
+strato s3://my-bucket/completions import products products.jsonl   # JSON Lines documents
+strato s3://my-bucket/completions complete products "wirel" --contexts peripherals
+strato s3://my-bucket/completions inspect                          # versions, indexes, sizes
+strato s3://my-bucket/completions compact products
+strato s3://my-bucket/completions cleanup --keep-versions 10
+strato s3://my-bucket/completions ingest --interval 1               # run an ingestor
+```
+
+Engine events are logged to stderr; set `STRATO_LOG=strato=debug` for more.
+
+### Errors
+
+Every error derives from `strato.StratoError`: `ConflictError`, `CorruptionError`, `NotFoundError`,
+`InvalidInputError` (also a `ValueError`) and `StorageError` (also an `OSError`).
 
 ### Configuration
 
 | Where | Settings |
 |---|---|
-| `Segment.build` / `Database(...)` | `min_word_chars`, `max_edit_distance`, `fuzzy_prefix_chars`, `vector_bits`, `compact_keys`, `build_threads` |
-| `Index(...)` / `Replica(...)` | `max_score`, `popularity_weight`, `short_query_chars`, `short_query_limit`, `short_query_cache_entries`, `vector_threads` |
-| `Engine(...)` | `overfetch` for layered searches |
-| `hybrid_search(...)` | `fusion`, `rrf_k`, `semantic_weight`, `candidates` |
-| `Database.compact(...)` | `fanout`, `max_segments`, `max_hidden_fraction` |
+| `Segment.build` / `Index.from_documents` / `connect(...)` | `min_word_chars`, `max_edit_distance`, `fuzzy_prefix_chars`, `vector_bits`, `compact_keys`, `build_threads` |
+| `Index(...)` / `db.open_index(...)` / `db.engine(...)` | `max_score`, `popularity_weight`, `short_query_chars`, `short_query_limit`, `short_query_cache_entries`, `vector_threads` |
+| `complete`, `complete_aliases`, `vector_search` | `limit`, `contexts` |
+| `hybrid_search` | `limit`, `fusion`, `rrf_k`, `semantic_weight`, `candidates`, `contexts` |
+| `db.engine(...)` / `Engine(...)` | `overfetch` for layered searches, `group_separator` to switch indexes group by group |
+| `db.compact(...)` | `fanout`, `max_segments`, `max_hidden_fraction` |
 | `Ingestor(...)` | `lease_ttl_seconds`, `max_change_sets`, `compact` |
 
-The Rust structs `SegmentConfig`, `IndexConfig`, `HybridOptions`, `CompactionPolicy` and `CleanupPolicy`
-expose the same settings.
+In Rust, `BuildOptions`, `IndexOptions`, `SearchOptions`, `HybridOptions`, `CompactionPolicy` and
+`CleanupPolicy` expose the same settings through chainable setters, e.g.
+`IndexOptions::default().max_score(742.0)`.
 
 ## Benchmarks
+
+**Against other engines.** On 124,440 Hacker News titles, typed character by character, strato ranks the
+wanted title best while typing cleanly (MRR 0.861, against 0.846 for Meilisearch, 0.804 for tantivy and
+0.784 for Typesense), and on par with the best when the title contains a typo (0.806, against 0.804 for
+Meilisearch). It answers in 0.26 ms at the median, in process. Full tables, settings and caveats are in
+[docs/benchmarks.md](docs/benchmarks.md); the harness is in [`bench/`](bench/).
+
+**On a synthetic corpus.**
 
 A synthetic corpus of 200,000 documents (1 to 4 words from a 30,000-word vocabulary, Zipf-distributed), on
 one core of an Apple M1 Pro. Reproduce with
@@ -318,9 +395,9 @@ one core of an Apple M1 Pro. Reproduce with
 
 | Step | Result |
 |---|---|
-| Build a segment | 452 ms, 18.8 MB (1.1 s, 46 MB with 256-d vectors) |
-| Open a segment (memory-mapped, checksum verified) | 5.6 ms |
-| Build a delta segment of 1,000 upserts | 12.5 ms |
+| Build a segment | 447 ms, 20.0 MB |
+| Open a segment (memory-mapped, checksum verified) | 5.5 ms |
+| Build a delta segment of 1,000 upserts | 13.6 ms |
 
 | Query, limit 10 | p50 | p99 |
 |---|---|---|

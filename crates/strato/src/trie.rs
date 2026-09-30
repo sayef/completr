@@ -216,9 +216,9 @@ impl Packed {
         let words = r.column()?;
         let bits = len
             .checked_mul(width as usize)
-            .ok_or_else(|| Error::Format("packed overflow".into()))?;
+            .ok_or_else(|| Error::Corrupt("packed overflow".into()))?;
         if !(1..=64).contains(&width) || words.len() != bits.div_ceil(64) {
-            return Err(Error::Format("invalid packed array".into()));
+            return Err(Error::Corrupt("invalid packed array".into()));
         }
         Ok(Self { words, width, len })
     }
@@ -431,7 +431,7 @@ impl Trie {
     }
 
     pub(crate) fn read(r: &mut Reader) -> Result<Self, Error> {
-        let bad = |what: &str| Error::Format(format!("invalid trie: {what}"));
+        let bad = |what: &str| Error::Corrupt(format!("invalid trie: {what}"));
         let nodes = usize::try_from(r.u64()?).map_err(|_| bad("size"))?;
         let keys = usize::try_from(r.u64()?).map_err(|_| bad("size"))?;
         let louds_bits = usize::try_from(r.u64()?).map_err(|_| bad("size"))?;

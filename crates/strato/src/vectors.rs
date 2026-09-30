@@ -133,11 +133,11 @@ impl Vectors {
         }
         let bits = r.u8()?;
         let dim = usize::try_from(r.u64()?)
-            .map_err(|_| Error::Format("vector dimension overflow".into()))?;
+            .map_err(|_| Error::Corrupt("vector dimension overflow".into()))?;
         let slot_locals: Column<u32> = r.column()?;
         let codes: Column<u8> = r.column()?;
         let scales: Column<f32> = r.column()?;
-        let bad = |what: &str| Error::Format(format!("invalid vectors: {what}"));
+        let bad = |what: &str| Error::Corrupt(format!("invalid vectors: {what}"));
         validate_bits(bits).map_err(|_| bad("bits"))?;
         validate_dim(dim).map_err(|_| bad("dimension"))?;
         let n = slot_locals.len();

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::database::claimed;
-use crate::{CompactionPolicy, Database, Document, Error, Index, IndexConfig, Lease, Segment};
+use crate::{CompactionPolicy, Database, Document, Error, Index, IndexOptions, Lease, Segment};
 
 const INBOX: &str = "_inbox";
 const REJECTED: &str = "_rejected";
@@ -84,7 +84,7 @@ fn encode(id: &str, parts: &[(String, Segment)]) -> Vec<u8> {
 }
 
 fn decode(data: &[u8]) -> Result<(String, Vec<(String, Segment)>), Error> {
-    let bad = || Error::Format("invalid inbox batch".into());
+    let bad = || Error::Corrupt("invalid inbox batch".into());
     if data.len() < 16 || &data[..8] != MAGIC {
         return Err(bad());
     }
@@ -127,7 +127,7 @@ impl Database {
             return Err(Error::input("empty batch"));
         }
         let id = batch_id();
-        let config = self.segment_config();
+        let config = self.build_options();
         let mut parts = Vec::with_capacity(batch.changes.len());
         for (index, (documents, deletes)) in batch.changes {
             parts.push((index, Segment::build_with(config, documents, deletes)?));
@@ -151,6 +151,7 @@ impl Database {
 
 /// What one ingestor round did.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum IngestStep {
     /// Another process holds the ingestor lease.
     Standby,
@@ -260,7 +261,7 @@ impl Ingestor {
                     accepted.push((id, key));
                 }
                 // An undecodable batch would block the inbox forever; it is set aside instead.
-                Err(Error::Format(_)) => {
+                Err(Error::Corrupt(_)) => {
                     store
                         .put(&format!("{REJECTED}/{id}.batch"), store.get(&key).await?)
                         .await?;
@@ -294,9 +295,9 @@ impl Ingestor {
                     .collect();
                 let view = Index::new(
                     segments,
-                    IndexConfig {
+                    IndexOptions {
                         max_score: Some(1.0),
-                        ..IndexConfig::default()
+                        ..IndexOptions::default()
                     },
                 )?;
                 view.merged_segment(deletes)?
@@ -316,6 +317,7 @@ impl Ingestor {
             .delete_many(pending.iter().map(|(_, key)| key.as_str()))
             .await?;
         let mut version = manifest.version;
+        tracing::info!(version, change_sets = pending.len(), documents, "ingested");
         if let Some(policy) = &self.compaction {
             for index in &touched {
                 match self.database.compact_all(index, policy).await {

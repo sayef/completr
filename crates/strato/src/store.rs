@@ -13,6 +13,7 @@ use url::Url;
 use crate::{Error, Segment};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ObjectInfo {
     pub key: String,
     pub size: u64,

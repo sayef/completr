@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use strato::{
-    CompactionPolicy, Database, Document, Engine, Error, Index, IndexConfig, Replica, Segment,
+    CompactionPolicy, Database, Document, Engine, Error, Index, IndexOptions, Replica, Segment,
 };
 
 struct Usage {
@@ -140,24 +140,20 @@ async fn load(corpus: &str, url: &str) {
             .as_array()
             .unwrap()
             .iter()
-            .map(|d| Document {
-                id: d[0].as_u64().unwrap(),
-                text: d[1].as_str().unwrap().to_owned(),
-                weight: d[2].as_f64().unwrap() as f32,
-                aliases: d[3]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|a| strato::Alias {
-                        text: a[0].as_str().unwrap().to_owned(),
-                        kind: if a[1].as_bool().unwrap() {
-                            strato::AliasKind::Abbreviation
-                        } else {
-                            strato::AliasKind::Synonym
-                        },
-                    })
-                    .collect(),
-                vector: None,
+            .map(|d| {
+                let doc = Document::new(
+                    d[0].as_u64().unwrap(),
+                    d[1].as_str().unwrap(),
+                    d[2].as_f64().unwrap() as f32,
+                );
+                d[3].as_array().unwrap().iter().fold(doc, |doc, a| {
+                    let kind = if a[1].as_bool().unwrap() {
+                        strato::AliasKind::Abbreviation
+                    } else {
+                        strato::AliasKind::Synonym
+                    };
+                    doc.with_alias(a[0].as_str().unwrap(), kind)
+                })
             })
             .collect();
         let n = docs.len();
@@ -190,7 +186,7 @@ async fn open_all(url: &str) {
     report("read manifest", usage);
     println!("  baseline rss {:.1} MB", rss_mb());
     let engine = Engine::new();
-    let replica = Replica::new(ds.clone(), IndexConfig::default());
+    let replica = Replica::new(ds.clone(), IndexOptions::default());
     let usage = start();
     let version = replica.sync(&engine).await.unwrap();
     report(&format!("cold load of all indexes (v{version:?})"), usage);
@@ -222,7 +218,7 @@ async fn rebuild(url: &str, name: &str) {
     let ds = open(url).await;
     let manifest = ds.latest().await.unwrap();
     let index = ds
-        .load_index(&manifest, name, IndexConfig::default())
+        .open_index(&manifest, name, IndexOptions::default())
         .await
         .unwrap();
     let docs: Vec<Document> = index.documents().collect();
@@ -243,10 +239,7 @@ async fn rebuild(url: &str, name: &str) {
     let usage = start();
     let index = Index::new(
         vec![Arc::new(segment)],
-        IndexConfig {
-            max_score: Some(1000.0),
-            ..IndexConfig::default()
-        },
+        IndexOptions::default().max_score(1000.0),
     )
     .unwrap();
     report("compose index", usage);
@@ -267,17 +260,19 @@ fn change_batch(
         match i % 4 {
             0 | 1 => {
                 let doc = &docs[rng.below(docs.len())];
-                upserts.push(Document {
-                    text: format!("{} {tag}", doc.text),
-                    ..doc.clone()
+                upserts.push({
+                    let mut d = doc.clone();
+                    d.text = format!("{} {tag}", doc.text);
+                    d
                 });
             }
             2 => {
                 let template = &docs[rng.below(docs.len())];
-                upserts.push(Document {
-                    id: *next_id,
-                    text: format!("{} {tag} new", template.text),
-                    ..template.clone()
+                upserts.push({
+                    let mut d = template.clone();
+                    d.id = *next_id;
+                    d.text = format!("{} {tag} new", template.text);
+                    d
                 });
                 *next_id += 1;
             }
@@ -290,7 +285,7 @@ fn change_batch(
 async fn incremental(url: &str, name: &str, sizes: &str) {
     let ds = open(url).await;
     let engine = Engine::new();
-    let replica = Replica::new(ds.clone(), IndexConfig::default());
+    let replica = Replica::new(ds.clone(), IndexOptions::default());
     replica.sync(&engine).await.unwrap();
     let base = engine.get(name).unwrap();
     let docs: Vec<Document> = base.documents().collect();
@@ -348,10 +343,7 @@ async fn carry(url: &str, name: &str) {
     let engine = Engine::new();
     let replica = Replica::new(
         ds.clone(),
-        IndexConfig {
-            carry_short_queries: carry,
-            ..IndexConfig::default()
-        },
+        IndexOptions::default().carry_short_queries(carry),
     );
     replica.sync(&engine).await.unwrap();
     let base = engine.get(name).unwrap();
@@ -417,7 +409,7 @@ async fn inbox(
 ) {
     let ds = open(url).await;
     let base = ds
-        .load_index(&ds.latest().await.unwrap(), name, IndexConfig::default())
+        .open_index(&ds.latest().await.unwrap(), name, IndexOptions::default())
         .await
         .unwrap();
     let docs = Arc::new(base.documents().collect::<Vec<_>>());
@@ -456,9 +448,10 @@ async fn inbox(
             for b in 0..batches {
                 let first = first_new + ((p * batches + b) * size) as u64;
                 let upserts: Vec<Document> = (0..size as u64)
-                    .map(|i| Document {
-                        id: first + i,
-                        ..docs[rng.below(docs.len())].clone()
+                    .map(|i| {
+                        let mut d = docs[rng.below(docs.len())].clone();
+                        d.id = first + i;
+                        d
                     })
                     .collect();
                 let mut batch = strato::ChangeSet::new();
@@ -507,7 +500,7 @@ async fn inbox(
         folded as f64 / commits.max(1) as f64
     );
     let index = ds
-        .load_index(&ds.latest().await.unwrap(), name, IndexConfig::default())
+        .open_index(&ds.latest().await.unwrap(), name, IndexOptions::default())
         .await
         .unwrap();
     let missing = (0..(total * size) as u64)
@@ -521,7 +514,7 @@ async fn compact(url: &str, name: &str) {
     let before = ds.latest().await.unwrap();
     let segments = before.indexes[name].segments.len();
     let reference = ds
-        .load_index(&before, name, IndexConfig::default())
+        .open_index(&before, name, IndexOptions::default())
         .await
         .unwrap();
     let qs = queries(&reference, 1000);
@@ -534,10 +527,7 @@ async fn compact(url: &str, name: &str) {
     drop(reference);
     println!("  rss before compaction {:.1} MB", rss_mb());
 
-    let tiered = CompactionPolicy {
-        max_hidden_fraction: 1.0,
-        ..CompactionPolicy::default()
-    };
+    let tiered = CompactionPolicy::default().max_hidden_fraction(1.0);
     let usage = start();
     let step = ds.compact(name, &tiered).await.unwrap();
     report(
@@ -550,13 +540,7 @@ async fn compact(url: &str, name: &str) {
 
     let usage = start();
     let full = ds
-        .compact(
-            name,
-            &CompactionPolicy {
-                max_segments: 1,
-                ..tiered
-            },
-        )
+        .compact(name, &tiered.max_segments(1))
         .await
         .unwrap()
         .unwrap();
@@ -566,7 +550,7 @@ async fn compact(url: &str, name: &str) {
     );
 
     let index = ds
-        .load_index(&full, name, IndexConfig::default())
+        .open_index(&full, name, IndexOptions::default())
         .await
         .unwrap();
     let same = qs
@@ -591,7 +575,7 @@ async fn concurrent(
     let ds = open(url).await;
     let base_manifest = ds.latest().await.unwrap();
     let base = ds
-        .load_index(&base_manifest, name, IndexConfig::default())
+        .open_index(&base_manifest, name, IndexOptions::default())
         .await
         .unwrap();
     let docs = Arc::new(base.documents().collect::<Vec<_>>());
@@ -613,13 +597,7 @@ async fn concurrent(
             let (mut done, mut lost) = (0, 0);
             while !stop.load(Ordering::Relaxed) {
                 match ds
-                    .compact(
-                        &name,
-                        &CompactionPolicy {
-                            fanout: 4,
-                            ..CompactionPolicy::default()
-                        },
-                    )
+                    .compact(&name, &CompactionPolicy::default().fanout(4))
                     .await
                 {
                     Ok(Some(_)) => done += 1,
@@ -635,7 +613,7 @@ async fn concurrent(
         let (ds, stop) = (ds.clone(), stop.clone());
         tokio::spawn(async move {
             let engine = Engine::new();
-            let replica = Replica::new(ds, IndexConfig::default());
+            let replica = Replica::new(ds, IndexOptions::default());
             let mut syncs = Vec::new();
             while !stop.load(Ordering::Relaxed) {
                 let t = Instant::now();
@@ -666,15 +644,17 @@ async fn concurrent(
             for batch in 0..batches {
                 let first = first_new + ((ingestor * batches + batch) * size) as u64;
                 let mut upserts: Vec<Document> = (0..size as u64)
-                    .map(|i| Document {
-                        id: first + i,
-                        ..docs[rng.below(docs.len())].clone()
+                    .map(|i| {
+                        let mut d = docs[rng.below(docs.len())].clone();
+                        d.id = first + i;
+                        d
                     })
                     .collect();
                 let hot = shared[rng.below(shared.len())];
-                upserts.push(Document {
-                    text: format!("hot w{ingestor} b{batch}"),
-                    ..docs.iter().find(|d| d.id == hot).unwrap().clone()
+                upserts.push({
+                    let mut d = docs.iter().find(|d| d.id == hot).unwrap().clone();
+                    d.text = format!("hot w{ingestor} b{batch}");
+                    d
                 });
                 let deletes = vec![docs[rng.below(docs.len())].id];
                 let ids: Vec<u64> = upserts.iter().map(|d| d.id).collect();
@@ -742,7 +722,7 @@ async fn concurrent(
 
     let manifest = ds.latest().await.unwrap();
     let index = ds
-        .load_index(&manifest, name, IndexConfig::default())
+        .open_index(&manifest, name, IndexOptions::default())
         .await
         .unwrap();
     let mut records = records.lock().unwrap().clone();
@@ -834,10 +814,7 @@ fn build_segment(
         Ok(other) => panic!("unknown layout {other}"),
     };
     Segment::build_with(
-        strato::SegmentConfig {
-            layout,
-            ..strato::SegmentConfig::default()
-        },
+        strato::BuildOptions::default().layout(layout),
         documents,
         deletes,
     )

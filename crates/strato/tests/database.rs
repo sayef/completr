@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use strato::{
-    CleanupPolicy, CompactionPolicy, Database, Document, Engine, Error, Index, IndexConfig,
+    CleanupPolicy, CompactionPolicy, Database, Document, Engine, Error, Index, IndexOptions,
     Replica, Segment, BASE_LEVEL,
 };
 
@@ -117,7 +117,7 @@ async fn commits_rebase_and_conflict() {
         assert!(matches!(overwrite.commit().await, Err(Error::Conflict(_))));
 
         let index = ds
-            .load_index(&v3, "a", IndexConfig::default())
+            .open_index(&v3, "a", IndexOptions::default())
             .await
             .unwrap();
         assert_eq!(index.len(), 119);
@@ -146,16 +146,15 @@ async fn compaction_preserves_results() {
         }
         let before = ds.latest().await.unwrap();
         let expected = results(
-            &ds.load_index(&before, "a", IndexConfig::default())
+            &ds.open_index(&before, "a", IndexOptions::default())
                 .await
                 .unwrap(),
         );
 
-        let policy = CompactionPolicy {
-            fanout: 4,
-            max_segments: 16,
-            max_hidden_fraction: 1.0,
-        };
+        let policy = CompactionPolicy::default()
+            .fanout(4)
+            .max_segments(16)
+            .max_hidden_fraction(1.0);
         let tiered = ds
             .compact("a", &policy)
             .await
@@ -169,7 +168,7 @@ async fn compaction_preserves_results() {
         assert_eq!(levels, [BASE_LEVEL, 1]);
         assert_eq!(
             results(
-                &ds.load_index(&tiered, "a", IndexConfig::default())
+                &ds.open_index(&tiered, "a", IndexOptions::default())
                     .await
                     .unwrap()
             ),
@@ -178,13 +177,7 @@ async fn compaction_preserves_results() {
         assert!(ds.compact("a", &policy).await.unwrap().is_none());
 
         let full = ds
-            .compact(
-                "a",
-                &CompactionPolicy {
-                    max_segments: 1,
-                    ..policy
-                },
-            )
+            .compact("a", &policy.max_segments(1))
             .await
             .unwrap()
             .unwrap();
@@ -199,7 +192,7 @@ async fn compaction_preserves_results() {
         );
         assert_eq!(
             results(
-                &ds.load_index(&full, "a", IndexConfig::default())
+                &ds.open_index(&full, "a", IndexOptions::default())
                     .await
                     .unwrap()
             ),
@@ -207,10 +200,11 @@ async fn compaction_preserves_results() {
         );
 
         let stats = ds
-            .cleanup(&CleanupPolicy {
-                keep_versions: 1,
-                older_than: Duration::ZERO,
-            })
+            .cleanup(
+                &CleanupPolicy::default()
+                    .keep_versions(1)
+                    .older_than(Duration::ZERO),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -220,7 +214,7 @@ async fn compaction_preserves_results() {
         assert_eq!(ds.versions().await.unwrap(), [full.version]);
         assert_eq!(
             results(
-                &ds.load_index(&ds.latest().await.unwrap(), "a", IndexConfig::default())
+                &ds.open_index(&ds.latest().await.unwrap(), "a", IndexOptions::default())
                     .await
                     .unwrap()
             ),
@@ -256,10 +250,7 @@ async fn concurrent_writers_and_compactor_converge() {
         let compactor = {
             let ds = ds.clone();
             tokio::spawn(async move {
-                let policy = CompactionPolicy {
-                    fanout: 2,
-                    ..CompactionPolicy::default()
-                };
+                let policy = CompactionPolicy::default().fanout(2);
                 let mut done = 0;
                 for _ in 0..12 {
                     match ds.compact("a", &policy).await {
@@ -278,7 +269,7 @@ async fn concurrent_writers_and_compactor_converge() {
 
         let manifest = ds.latest().await.unwrap();
         let index = ds
-            .load_index(&manifest, "a", IndexConfig::default())
+            .open_index(&manifest, "a", IndexOptions::default())
             .await
             .unwrap();
         let mut expected: Vec<Document> = docs(0..200, "base");
@@ -291,10 +282,7 @@ async fn concurrent_writers_and_compactor_converge() {
         }
         let truth = Index::new(
             vec![Arc::new(Segment::build(expected, []).unwrap())],
-            IndexConfig {
-                max_score: Some(700.0),
-                ..IndexConfig::default()
-            },
+            IndexOptions::default().max_score(700.0),
         )
         .unwrap();
         assert_eq!(index.len(), truth.len());
@@ -347,7 +335,7 @@ async fn replica_loads_only_changes() {
     let dir = tempfile::tempdir().unwrap();
     for ds in databases(&dir, "replica").await {
         let engine = Engine::new();
-        let replica = Replica::new(ds.clone(), IndexConfig::default());
+        let replica = Replica::new(ds.clone(), IndexOptions::default());
         assert_eq!(replica.sync(&engine).await.unwrap(), None);
 
         let mut t = ds.begin().await.unwrap();

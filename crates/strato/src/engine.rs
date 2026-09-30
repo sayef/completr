@@ -4,7 +4,9 @@ use arc_swap::ArcSwap;
 use rustc_hash::FxHashMap;
 
 use crate::hybrid::fuse;
-use crate::{AliasSuggestion, Error, HybridOptions, HybridSuggestion, Index, Suggestion};
+use crate::{
+    AliasSuggestion, Error, HybridOptions, HybridSuggestion, Index, SearchOptions, Suggestion,
+};
 
 type Indexes = FxHashMap<String, Arc<Index>>;
 
@@ -23,10 +25,11 @@ impl Default for Engine {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct LayeredSuggestion<H> {
-    pub hit: H,
-    /// Position in the requested layers of the index that produced the hit.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct LayeredSuggestion<S> {
+    pub suggestion: S,
+    /// Position in the requested layers of the index that produced the suggestion.
     pub layer: usize,
 }
 
@@ -66,7 +69,7 @@ impl Engine {
         });
     }
 
-    /// Searches `layers` in order, later layers overriding earlier ones per document id.
+    /// Completes over `layers` in order, later layers overriding earlier ones per document id.
     /// Missing names are empty layers.
     pub fn complete(
         &self,
@@ -74,12 +77,21 @@ impl Engine {
         query: &str,
         limit: usize,
     ) -> Vec<LayeredSuggestion<Suggestion>> {
+        self.complete_with(layers, query, &SearchOptions::new(limit))
+    }
+
+    pub fn complete_with(
+        &self,
+        layers: &[&str],
+        query: &str,
+        options: &SearchOptions,
+    ) -> Vec<LayeredSuggestion<Suggestion>> {
         let indexes = self.indexes.load();
         let resolved: Vec<Option<&Index>> = layers
             .iter()
             .map(|n| indexes.get(*n).map(|i| &**i))
             .collect();
-        layered_autocomplete(&resolved, query, limit, self.overfetch)
+        layered_complete(&resolved, query, options, self.overfetch)
     }
 
     pub fn complete_aliases(
@@ -88,12 +100,21 @@ impl Engine {
         query: &str,
         limit: usize,
     ) -> Vec<LayeredSuggestion<AliasSuggestion>> {
+        self.complete_aliases_with(layers, query, &SearchOptions::new(limit))
+    }
+
+    pub fn complete_aliases_with(
+        &self,
+        layers: &[&str],
+        query: &str,
+        options: &SearchOptions,
+    ) -> Vec<LayeredSuggestion<AliasSuggestion>> {
         let indexes = self.indexes.load();
         let resolved: Vec<Option<&Index>> = layers
             .iter()
             .map(|n| indexes.get(*n).map(|i| &**i))
             .collect();
-        layered_search_aliases(&resolved, query, limit, self.overfetch)
+        layered_complete_aliases(&resolved, query, options, self.overfetch)
     }
 
     /// Layered autocomplete on `text` fused with layered vector search on `vector`.
@@ -103,19 +124,19 @@ impl Engine {
         text: &str,
         vector: &[f32],
         limit: usize,
-        options: HybridOptions,
+        options: &HybridOptions,
     ) -> Result<Vec<HybridSuggestion>, Error> {
         options.validate()?;
-        let n = options.candidates(limit);
+        let search = options.search_options(limit);
         let lexical: Vec<(Suggestion, usize)> = self
-            .complete(layers, text, n)
+            .complete_with(layers, text, &search)
             .into_iter()
-            .map(|h| (h.hit, h.layer))
+            .map(|h| (h.suggestion, h.layer))
             .collect();
         let semantic: Vec<(Suggestion, usize)> = self
-            .vector_search(layers, vector, n)?
+            .vector_search_with(layers, vector, &search)?
             .into_iter()
-            .map(|h| (h.hit, h.layer))
+            .map(|h| (h.suggestion, h.layer))
             .collect();
         Ok(fuse(&lexical, &semantic, limit, options.fusion))
     }
@@ -126,101 +147,127 @@ impl Engine {
         query: &[f32],
         limit: usize,
     ) -> Result<Vec<LayeredSuggestion<Suggestion>>, Error> {
+        self.vector_search_with(layers, query, &SearchOptions::new(limit))
+    }
+
+    pub fn vector_search_with(
+        &self,
+        layers: &[&str],
+        query: &[f32],
+        options: &SearchOptions,
+    ) -> Result<Vec<LayeredSuggestion<Suggestion>>, Error> {
         let indexes = self.indexes.load();
         let resolved: Vec<Option<&Index>> = layers
             .iter()
             .map(|n| indexes.get(*n).map(|i| &**i))
             .collect();
-        layered_vector_search(&resolved, query, limit, self.overfetch)
+        layered_vector_search(&resolved, query, options, self.overfetch)
     }
 }
 
-fn fetch(layers: usize, limit: usize, overfetch: usize) -> usize {
-    if layers > 1 {
-        limit * overfetch
+fn fetch(layers: usize, options: &SearchOptions, overfetch: usize) -> SearchOptions {
+    let limit = if layers > 1 {
+        options.limit * overfetch
     } else {
-        limit
-    }
+        options.limit
+    };
+    options.clone().limit(limit)
 }
 
-/// With more than one layer, each is asked for `limit * overfetch` hits before merging.
-pub fn layered_autocomplete(
+/// With more than one layer, each is asked for `limit * overfetch` suggestions before merging.
+pub fn layered_complete(
     layers: &[Option<&Index>],
     query: &str,
-    limit: usize,
+    options: &SearchOptions,
     overfetch: usize,
 ) -> Vec<LayeredSuggestion<Suggestion>> {
-    let fetch = fetch(layers.len(), limit, overfetch);
+    let fetch = fetch(layers.len(), options, overfetch);
     let per_layer = layers
         .iter()
         .map(|l| {
-            l.map(|index| index.complete(query, fetch))
+            l.map(|index| index.complete_with(query, &fetch))
                 .unwrap_or_default()
         })
         .collect();
-    merge(per_layer, limit, |h: &Suggestion| (h.id, h.score))
+    merge(layers, per_layer, options.limit, |s: &Suggestion| {
+        (s.id, s.score)
+    })
 }
 
-pub fn layered_search_aliases(
+pub fn layered_complete_aliases(
     layers: &[Option<&Index>],
     query: &str,
-    limit: usize,
+    options: &SearchOptions,
     overfetch: usize,
 ) -> Vec<LayeredSuggestion<AliasSuggestion>> {
-    let fetch = fetch(layers.len(), limit, overfetch);
+    let fetch = fetch(layers.len(), options, overfetch);
     let per_layer = layers
         .iter()
         .map(|l| {
-            l.map(|index| index.complete_aliases(query, fetch))
+            l.map(|index| index.complete_aliases_with(query, &fetch))
                 .unwrap_or_default()
         })
         .collect();
-    merge(per_layer, limit, |h: &AliasSuggestion| (h.id, h.score))
+    merge(layers, per_layer, options.limit, |s: &AliasSuggestion| {
+        (s.id, s.score)
+    })
 }
 
 pub fn layered_vector_search(
     layers: &[Option<&Index>],
     query: &[f32],
-    limit: usize,
+    options: &SearchOptions,
     overfetch: usize,
 ) -> Result<Vec<LayeredSuggestion<Suggestion>>, Error> {
-    let fetch = fetch(layers.len(), limit, overfetch);
+    let fetch = fetch(layers.len(), options, overfetch);
     let mut per_layer = Vec::with_capacity(layers.len());
     for index in layers {
         per_layer.push(match index {
-            Some(index) => index.vector_search(query, fetch)?,
+            Some(index) => index.vector_search_with(query, &fetch)?,
             None => Vec::new(),
         });
     }
-    Ok(merge(per_layer, limit, |h: &Suggestion| (h.id, h.score)))
+    Ok(merge(layers, per_layer, options.limit, |s: &Suggestion| {
+        (s.id, s.score)
+    }))
 }
 
 /// Later layers override earlier ones per id, keeping the earlier position; then sorts by score.
-fn merge<H: Copy>(
-    per_layer: Vec<Vec<H>>,
+/// A layer that holds or deletes an id hides it from earlier layers even when it does not match.
+fn merge<S>(
+    layers: &[Option<&Index>],
+    per_layer: Vec<Vec<S>>,
     limit: usize,
-    key: impl Fn(&H) -> (u64, f64),
-) -> Vec<LayeredSuggestion<H>> {
-    let mut hits: Vec<LayeredSuggestion<H>> = Vec::new();
+    key: impl Fn(&S) -> (u64, f64),
+) -> Vec<LayeredSuggestion<S>> {
+    let mut merged: Vec<LayeredSuggestion<S>> = Vec::new();
     let mut position: FxHashMap<u64, usize> = FxHashMap::default();
     for (layer, results) in per_layer.into_iter().enumerate() {
-        for hit in results {
-            let entry = LayeredSuggestion { hit, layer };
-            match position.get(&key(&hit).0) {
-                Some(&i) => hits[i] = entry,
+        for suggestion in results {
+            let id = key(&suggestion).0;
+            let entry = LayeredSuggestion { suggestion, layer };
+            match position.get(&id) {
+                Some(&i) => merged[i] = entry,
                 None => {
-                    position.insert(key(&hit).0, hits.len());
-                    hits.push(entry);
+                    position.insert(id, merged.len());
+                    merged.push(entry);
                 }
             }
         }
     }
-    hits.sort_by(|a, b| {
-        key(&b.hit)
+    merged.retain(|entry| {
+        let id = key(&entry.suggestion).0;
+        !layers[entry.layer + 1..]
+            .iter()
+            .flatten()
+            .any(|index| index.covers(id))
+    });
+    merged.sort_by(|a, b| {
+        key(&b.suggestion)
             .1
-            .partial_cmp(&key(&a.hit).1)
+            .partial_cmp(&key(&a.suggestion).1)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    hits.truncate(limit);
-    hits
+    merged.truncate(limit);
+    merged
 }

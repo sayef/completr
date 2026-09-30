@@ -1,14 +1,14 @@
 # Architecture
 
 This document describes how strato stores, searches and updates indexes. strato is serverless: the engine
-runs inside each application process, and the only shared component is the store. For usage, see the
-[README](../README.md).
+runs inside each application process, and the only shared component is the store. For usage, see
+[Getting started](getting-started.md) and the guides.
 
 ## Model
 
 | Type | Role |
 |---|---|
-| `Document` | `id`, `text`, `weight` (popularity in `[0, 1]`), optional aliases (synonyms or abbreviations) and an optional embedding |
+| `Document` | `id` (or a string `key` hashed to it), `text`, `popularity` in `[0, 1]`, aliases (synonyms or abbreviations), `contexts` tags and an optional embedding |
 | `Segment` | Immutable, self-contained set of documents and deletions, one file |
 | `Index` | Segments ordered oldest to newest. A newer copy of an id supersedes older ones, and a segment's deletes hide ids in older segments |
 | `Engine` | Indexes by name, replaced atomically; searches run over a list of names as override layers |
@@ -25,13 +25,16 @@ segment involves no parsing or copying beyond validation.
 ```
 magic "STRATO\0\0" | version | settings | layout
 ids (sorted) | weights | text lengths | single-word flags | deletes
-document store     zstd blocks of 128 documents, with block offsets
+document store     zstd blocks of 128 documents' aliases and contexts, with block offsets
 titles             dictionary: normalised title -> postings
 words              dictionary: title word -> postings, with word frequencies and texts
 forward index      per document, the ordinals of its words
 aliases            dictionary: alias -> postings (synonyms and abbreviations)
 variants           dictionary: SymSpell delete variant -> word ordinals
 vectors            optional: TurboQuant codes, scales and slot mapping
+texts              original texts, read in place for suggestions
+keys               string keys, empty for numeric ids
+contexts           dictionary: context tag -> postings
 xxh3 checksum of everything above
 ```
 
@@ -85,6 +88,12 @@ in a nested trie, which is smaller but slower.
    - A popularity multiplier, `1 + weight * popularity_weight * 10`.
    - Normalisation by `max_score`, then fuzzy hits rescaled to rank below the weakest direct match.
 5. **Order** by score, then shorter text, then id. The same inputs always give the same output.
+6. **Suggestions** read each result's text in place and mark the matched ranges: word prefixes, then
+   corrections within the edit distance, then words that spell out run-together input.
+
+**Context filters.** A request with `contexts` builds a bitset of the documents tagged with any of them and
+applies it next to the live masks, so scans continue past excluded documents. Filtered requests bypass the
+short-query and recursion caches.
 
 Layered searches (`Engine`) run each layer with an overfetch, let later layers override earlier ones per
 id, and merge by the same order.

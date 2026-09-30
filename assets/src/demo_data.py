@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from strato import Index, Segment
+from strato import Index
 
 titles = [
     ("Machine Learning", 0.95, [("ML", True)]), ("Machine Vision", 0.55, []), ("Machine Translation", 0.5, [("MT", True)]),
@@ -14,14 +14,22 @@ titles = [
     ("Project Management", 0.8, []), ("Product Design", 0.6, []), ("Graph Databases", 0.45, []), ("Stream Processing", 0.5, []),
     ("Learning Analytics", 0.3, []), ("Political Science", 0.4, []), ("Materials Science", 0.35, []),
 ]
-docs = [(i + 1, t, w, a) for i, (t, w, a) in enumerate(titles)]
-index = Index([Segment.build(docs)])
-text = {i: t for i, t, _, _ in docs}
+docs = [
+    {
+        "id": i + 1,
+        "text": t,
+        "popularity": w,
+        "abbreviations": [a for a, is_abbreviation in aliases if is_abbreviation],
+        "synonyms": [a for a, is_abbreviation in aliases if not is_abbreviation],
+    }
+    for i, (t, w, aliases) in enumerate(titles)
+]
+index = Index.from_documents(docs)
 scenes = [("mach", "prefix completion"), ("nlp", "abbreviations"), ("machne lerning", "spelling correction"),
           ("datascience", "word decomposition"), ("science", "infix matches")]
 out = []
 for q, caption in scenes:
-    hits = index.autocomplete(q, 4)
-    out.append({"query": q, "caption": caption, "hits": [(text[h.id], h.kind, round(h.score, 2)) for h in hits]})
+    hits = index.complete(q, 4)
+    out.append({"query": q, "caption": caption, "hits": [(h.text, h.kind, round(h.score, 2)) for h in hits]})
     print(q, out[-1]["hits"])
 json.dump(out, open(Path(__file__).with_name("demo.json"), "w"), indent=1)

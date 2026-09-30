@@ -1,10 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/strato", "crates/strato-py"]
+members = ["crates/strato", "crates/strato-cli", "crates/strato-py"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.94.1"
 license = "MIT"
 authors = ["Saiful Islam"]
 repository = "https://github.com/sayef/strato"

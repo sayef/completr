@@ -3,13 +3,13 @@ import time
 
 import pytest
 
-from strato import Engine, Index, Segment, Store
+from strato import CorruptionError, Engine, Index, NotFoundError, Segment, Store
 
 DOCS = [
-    (1, "Machine Learning", 0.9, [("ML", True), ("statistical learning", False)]),
-    (2, "Machine Vision", 0.2, []),
-    (3, "Data Science", 0.5, [("data analytics", False)]),
-    (4, "Datadog", 0.1, []),
+    {"id": 1, "text": "Machine Learning", "popularity": 0.9, "abbreviations": ["ML"], "synonyms": ["statistical learning"]},
+    {"id": 2, "text": "Machine Vision", "popularity": 0.2},
+    {"id": 3, "text": "Data Science", "popularity": 0.5, "synonyms": ["data analytics"]},
+    {"id": 4, "text": "Datadog", "popularity": 0.1},
 ]
 
 
@@ -31,12 +31,12 @@ def test_search_aliases_skips_abbreviations():
 
 def test_newer_segments_supersede_and_delete():
     base = Segment.build(DOCS)
-    delta = Segment.build([(2, "Computer Vision", 0.2, [])], deletes=[4])
+    delta = Segment.build([{"id": 2, "text": "Computer Vision", "popularity": 0.2}], deletes=[4])
     index = Index([base, delta], max_score=1000.0)
     assert len(index) == 3
     assert [h.id for h in index.complete("machine")] == [1]
     assert 4 not in [h.id for h in index.complete("datadog")]
-    assert index.get(2)[1] == "Computer Vision"
+    assert index.get(2).text == "Computer Vision"
     compacted = index.compact()
     assert sorted(compacted.ids()) == [1, 2, 3] and compacted.deletes() == []
 
@@ -48,7 +48,7 @@ def test_round_trip(tmp_path):
     for copy in (Segment.open(path), Segment.from_bytes(segment.to_bytes())):
         assert copy.documents() == segment.documents()
         assert copy.deletes() == [9]
-    with pytest.raises(ValueError):
+    with pytest.raises(CorruptionError):
         Segment.from_bytes(b"not a segment")
 
 
@@ -57,7 +57,7 @@ def test_engine_layers_override_by_id():
     engine.publish(
         {
             "default": Index([Segment.build(DOCS)], max_score=1000.0),
-            "acme": Index([Segment.build([(2, "Machine Vision Systems", 1.0, [])])], max_score=1000.0),
+            "acme": Index([Segment.build([{"id": 2, "text": "Machine Vision Systems", "popularity": 1.0}])], max_score=1000.0),
         }
     )
     hits = engine.complete("machine", ["default", "acme"])
@@ -69,7 +69,7 @@ def test_engine_layers_override_by_id():
 
 def _round_trip(store: Store):
     store.put_segment("segments/base.seg", Segment.build(DOCS))
-    store.put_segment("segments/delta.seg", Segment.build([(2, "Computer Vision", 0.2, [])], deletes=[4]))
+    store.put_segment("segments/delta.seg", Segment.build([{"id": 2, "text": "Computer Vision", "popularity": 0.2}], deletes=[4]))
     index = Index([store.get_segment("segments/base.seg"), store.get_segment("segments/delta.seg")], max_score=1000.0)
     assert len(index) == 3
     assert store.put_if_absent("_versions/000000000001.json", b"{}")
@@ -77,7 +77,7 @@ def _round_trip(store: Store):
     assert store.list() == ["_versions/000000000001.json", "segments/base.seg", "segments/delta.seg"]
     for key in store.list():
         store.delete(key)
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(NotFoundError):
         store.get("segments/base.seg")
 
 

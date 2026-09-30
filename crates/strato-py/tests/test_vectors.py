@@ -7,7 +7,7 @@ rng = np.random.default_rng(0)
 N, DIM = 500, 64
 VECTORS = rng.standard_normal((N, DIM)).astype(np.float32)
 VECTORS /= np.linalg.norm(VECTORS, axis=1, keepdims=True)
-DOCS = [(i, f"entry {i}", 0.5, []) for i in range(N)]
+DOCS = [{"id": i, "text": f"entry {i}", "popularity": 0.5} for i in range(N)]
 
 
 def test_vector_search_returns_semantic_hits():
@@ -21,7 +21,7 @@ def test_vector_search_returns_semantic_hits():
 
 def test_updates_deletes_and_compaction():
     base = Segment.build(DOCS, vectors=VECTORS)
-    delta = Segment.build([(7, "moved", 0.5, [])], deletes=[42], vectors=VECTORS[100:101])
+    delta = Segment.build([{"id": 7, "text": "moved", "popularity": 0.5}], deletes=[42], vectors=VECTORS[100:101])
     index = Index([base, delta], max_score=1000.0)
     assert 42 not in [h.id for h in index.vector_search(VECTORS[42], 10)]
     assert index.vector_search(VECTORS[100], 2)[0].id in (7, 100)
@@ -56,15 +56,15 @@ def test_layers_and_database(tmp_path):
     assert hits[0].id == 5 and hits[0].layer == "acme"
     for i in range(5):
         t = ds.begin()
-        t.append("default", [(1000 + i, f"new {i}", 0.1, [])], vectors=VECTORS[i : i + 1])
+        t.append("default", [{"id": 1000 + i, "text": f"new {i}", "popularity": 0.1}], vectors=VECTORS[i : i + 1])
         t.commit()
-    before = [h.id for h in ds.load_index("default").vector_search(VECTORS[1], 10)]
+    before = [h.id for h in ds.open_index("default").vector_search(VECTORS[1], 10)]
     ds.compact("default", max_segments=1)
-    assert [h.id for h in ds.load_index("default").vector_search(VECTORS[1], 10)] == before
+    assert [h.id for h in ds.open_index("default").vector_search(VECTORS[1], 10)] == before
 
 
 def test_hybrid_fusions():
-    docs = [(i, "python programming" if i == 7 else f"entry {i}", 0.5, []) for i in range(N)]
+    docs = [{"id": i, "text": "python programming" if i == 7 else f"entry {i}", "popularity": 0.5} for i in range(N)]
     index = Index([Segment.build(docs, vectors=VECTORS)], max_score=1000.0)
     for fusion in ("rrf", "weighted", "lexical_first"):
         hits = index.hybrid_search("python", VECTORS[42], limit=5, fusion=fusion)

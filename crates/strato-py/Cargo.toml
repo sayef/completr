@@ -3,6 +3,7 @@ name = "strato-py"
 description = "Python bindings for strato"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -14,4 +15,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.29", features = ["extension-module", "abi3-py311"] }
+pyo3-log = "0.13"
+tracing = { version = "0.1", default-features = false, features = ["log"] }
 strato_rs = { package = "strato", path = "../strato", features = ["aws-credentials", "gcp", "azure"] }

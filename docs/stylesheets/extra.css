@@ -1,0 +1,45 @@
+/* Indigo to cyan, from the logo. */
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #4f46e5;
+  --md-primary-fg-color--light: #6366f1;
+  --md-primary-fg-color--dark: #4338ca;
+  --md-accent-fg-color: #0891b2;
+  --md-accent-fg-color--transparent: rgba(8, 145, 178, 0.1);
+  --md-typeset-a-color: #4f46e5;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #312e81;
+  --md-primary-fg-color--light: #4f46e5;
+  --md-primary-fg-color--dark: #1e1b4b;
+  --md-accent-fg-color: #22d3ee;
+  --md-accent-fg-color--transparent: rgba(34, 211, 238, 0.1);
+  --md-typeset-a-color: #67e8f9;
+  --md-default-bg-color: #0b1020;
+  --md-code-bg-color: #161e3a;
+}
+
+.md-header,
+.md-tabs {
+  background: linear-gradient(90deg, #4f46e5, #06b6d4);
+}
+
+[data-md-color-scheme="slate"] .md-header,
+[data-md-color-scheme="slate"] .md-tabs {
+  background: linear-gradient(90deg, #1e1b4b, #164e63);
+}
+
+.strato-hero {
+  text-align: center;
+  margin: 1rem 0 2rem;
+}
+
+.strato-hero img {
+  max-width: 100%;
+}
+
+.strato-pitch {
+  font-size: 1.15rem;
+  text-align: center;
+  margin-bottom: 1.5rem;
+}

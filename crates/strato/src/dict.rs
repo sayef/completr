@@ -31,7 +31,7 @@ impl Dictionary {
             0 => Ok(Self::Fst),
             1 => Ok(Self::Trie),
             2 => Ok(Self::CompactTrie),
-            other => Err(Error::Format(format!("unknown dictionary {other}"))),
+            other => Err(Error::Corrupt(format!("unknown dictionary {other}"))),
         }
     }
 }
@@ -94,7 +94,7 @@ impl Dict {
                 let valid = values.len == trie.len();
                 valid
                     .then_some(Self::Trie { trie, values, wide })
-                    .ok_or_else(|| Error::Format("invalid trie values".into()))
+                    .ok_or_else(|| Error::Corrupt("invalid trie values".into()))
             }
         }
     }

@@ -1,7 +1,10 @@
 //! A database with streamed updates: `cargo run --example live_updates --features store -- [url]`
 //! The url may be a local path, `s3://bucket/prefix`, `gs://...`, `az://...` or `memory:///name`.
 
-use strato::{ChangeSet, Database, Document, Engine, IndexConfig, IngestStep, Ingestor, Replica};
+use strato::{
+    ChangeSet, Database, Document, Engine, IndexOptions, IngestStep, Ingestor, Replica,
+    SearchOptions,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), strato::Error> {
@@ -22,7 +25,7 @@ async fn main() -> Result<(), strato::Error> {
 
     // Serving processes follow the database and publish new versions atomically.
     let engine = Engine::new();
-    let replica = Replica::new(database.clone(), IndexConfig::default());
+    let replica = Replica::new(database.clone(), IndexOptions::default());
     replica.sync(&engine).await?;
 
     // Any process submits change sets; the one holding the ingestor lease commits them.
@@ -30,7 +33,7 @@ async fn main() -> Result<(), strato::Error> {
     changes
         .upsert(
             "products",
-            [Document::new(10_000, "wireless keyboard", 0.9)],
+            [Document::keyed("kb-1", "Wireless Keyboard", 0.9).with_context("peripherals")],
         )
         .delete("products", [42]);
     database.submit(changes).await?;
@@ -46,13 +49,10 @@ async fn main() -> Result<(), strato::Error> {
     ingestor.release().await?;
 
     replica.sync(&engine).await?;
-    for hit in engine.complete(&["products"], "wirel", 5) {
-        println!(
-            "{} {} {:.3}",
-            hit.hit.id,
-            hit.hit.kind.as_str(),
-            hit.hit.score
-        );
+    let peripherals = SearchOptions::new(5).contexts(["peripherals"]);
+    for layered in engine.complete_with(&["products"], "wirel", &peripherals) {
+        let s = layered.suggestion;
+        println!("{:?} {} {} {:.3}", s.key, s.text, s.kind.as_str(), s.score);
     }
     Ok(())
 }

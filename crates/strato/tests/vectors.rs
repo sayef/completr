@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use strato::{Document, Engine, Error, Index, IndexConfig, MatchKind, Segment, SegmentConfig};
+use strato::{BuildOptions, Document, Engine, Error, Index, IndexOptions, MatchKind, Segment};
 
 const DIM: usize = 64;
 
@@ -37,10 +37,7 @@ fn corpus(n: u64, seed: u64) -> (Vec<Document>, Vec<Vec<f32>>) {
 }
 
 fn index(segments: Vec<Segment>) -> Index {
-    let config = IndexConfig {
-        max_score: Some(1000.0),
-        ..IndexConfig::default()
-    };
+    let config = IndexOptions::default().max_score(1000.0);
     Index::new(segments.into_iter().map(Arc::new).collect(), config).unwrap()
 }
 
@@ -188,10 +185,7 @@ fn handles_missing_vectors_bits_and_shapes() {
     ));
 
     for bits in [2, 3, 4] {
-        let config = SegmentConfig {
-            vector_bits: bits,
-            ..SegmentConfig::default()
-        };
+        let config = BuildOptions::default().vector_bits(bits);
         let seg = Segment::build_with(config, docs.clone(), []).unwrap();
         assert_eq!(
             index(vec![seg])
@@ -201,28 +195,15 @@ fn handles_missing_vectors_bits_and_shapes() {
             5
         );
     }
-    let two = Segment::build_with(
-        SegmentConfig {
-            vector_bits: 2,
-            ..SegmentConfig::default()
-        },
-        docs.clone(),
-        [],
-    )
-    .unwrap();
+    let two =
+        Segment::build_with(BuildOptions::default().vector_bits(2), docs.clone(), []).unwrap();
     let four = Segment::build(docs.clone(), []).unwrap();
-    let config = IndexConfig {
-        max_score: Some(1000.0),
-        ..IndexConfig::default()
-    };
+    let config = IndexOptions::default().max_score(1000.0);
     assert!(Index::new(vec![Arc::new(two), Arc::new(four)], config).is_err());
 
     let odd = vec![Document::new(1, "a", 0.1).with_vector(vec![0.5; 12])];
     assert!(Segment::build(odd, []).is_err());
-    let bad_bits = SegmentConfig {
-        vector_bits: 5,
-        ..SegmentConfig::default()
-    };
+    let bad_bits = BuildOptions::default().vector_bits(5);
     assert!(Segment::build_with(bad_bits, docs, []).is_err());
     assert!(index(vec![Segment::build(
         [Document::new(1, "no vectors", 0.1)],
@@ -240,9 +221,10 @@ fn layers_override_by_id() {
     let engine = Engine::new();
     let overlay: Vec<Document> = docs[..20]
         .iter()
-        .map(|d| Document {
-            text: format!("{} custom", d.text),
-            ..d.clone()
+        .map(|d| {
+            let mut d = d.clone();
+            d.text = format!("{} custom", d.text);
+            d
         })
         .collect();
     engine.publish([
@@ -264,10 +246,10 @@ fn layers_override_by_id() {
     assert_eq!(hits.len(), 10);
     let top = hits
         .iter()
-        .find(|h| h.hit.id == 3)
+        .find(|h| h.suggestion.id == 3)
         .expect("the query document itself");
     assert_eq!(top.layer, 1);
-    let mut ids: Vec<u64> = hits.iter().map(|h| h.hit.id).collect();
+    let mut ids: Vec<u64> = hits.iter().map(|h| h.suggestion.id).collect();
     ids.sort_unstable();
     ids.dedup();
     assert_eq!(ids.len(), 10);
@@ -304,20 +286,17 @@ async fn database_compaction_keeps_vectors() {
         .map(|d| d.vector.clone().unwrap())
         .collect();
     let before = results(
-        &ds.load_index(&ds.latest().await.unwrap(), "a", IndexConfig::default())
+        &ds.open_index(&ds.latest().await.unwrap(), "a", IndexOptions::default())
             .await
             .unwrap(),
         &queries,
     );
     // Any hidden document forces a full merge.
-    let policy = strato::CompactionPolicy {
-        max_hidden_fraction: 0.0,
-        ..strato::CompactionPolicy::default()
-    };
+    let policy = strato::CompactionPolicy::default().max_hidden_fraction(0.0);
     let full = ds.compact("a", &policy).await.unwrap().unwrap();
     assert_eq!(full.indexes["a"].segments.len(), 1);
     let after = results(
-        &ds.load_index(&full, "a", IndexConfig::default())
+        &ds.open_index(&full, "a", IndexOptions::default())
             .await
             .unwrap(),
         &queries,
@@ -325,7 +304,7 @@ async fn database_compaction_keeps_vectors() {
     assert_eq!(after, before);
 
     let engine = Engine::new();
-    strato::Replica::new(ds.clone(), IndexConfig::default())
+    strato::Replica::new(ds.clone(), IndexOptions::default())
         .sync(&engine)
         .await
         .unwrap();
