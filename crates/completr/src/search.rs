@@ -756,12 +756,20 @@ impl Index {
             .into_iter()
             .map(|(doc, m)| {
                 let d = doc as usize;
+                let weight = self.weights[d];
+                let multiplier = if weight > 0.0 {
+                    f64::from(1.0f32 + weight * factor as f32)
+                } else {
+                    default_multiplier
+                };
                 let mut score = if m.fuzzy_distance > 0 {
                     let base = 20.0 * 0.15f64.powf((m.fuzzy_distance - 1) as f64);
+                    // The corrected query's own score, without the popularity applied below.
+                    let own = m.fuzzy_score * self.max_score / multiplier;
                     base + m
                         .fuzzy_rank
                         .map_or(0.0, |rank| (5.0 - rank as f64).max(0.0))
-                        + 40.0 * m.fuzzy_score
+                        + 0.25 * own
                 } else if m.is_exact {
                     150.0
                 } else if m.from_prefix {
@@ -773,12 +781,7 @@ impl Index {
                 if single_word_query && self.single_word[d] == 0 && word_bonus.contains(&doc) {
                     score += 25.0;
                 }
-                let weight = self.weights[d];
-                score *= if weight > 0.0 {
-                    f64::from(1.0f32 + weight * factor as f32)
-                } else {
-                    default_multiplier
-                };
+                score *= multiplier;
                 (score, doc, m)
             })
             .collect();
