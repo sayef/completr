@@ -223,14 +223,8 @@ impl Index {
         for (i, seg) in segments.iter().enumerate() {
             let base = offsets[i] as usize;
             for local in (0..seg.len()).filter(|&l| !live[base + l]) {
-                for &ordinal in seg.doc_words(local) {
-                    let word = seg.word_text(ordinal);
-                    match hidden_word_freqs.get_mut(word) {
-                        Some(count) => *count += 1,
-                        None => {
-                            hidden_word_freqs.insert(word.to_owned(), 1);
-                        }
-                    }
+                for word in seg.doc_words(local) {
+                    *hidden_word_freqs.entry(word).or_default() += 1;
                 }
             }
         }
@@ -348,7 +342,7 @@ impl Index {
         for (seg, &base) in self.segments.iter().zip(&self.offsets) {
             for context in contexts {
                 if let Some(postings) = seg.contexts.get(&term_key(context)) {
-                    for &local in postings.as_slice() {
+                    for local in postings {
                         let doc = (base + local) as usize;
                         bits[doc / 64] |= 1 << (doc % 64);
                     }
@@ -531,6 +525,23 @@ impl Index {
         }
     }
 
+    /// Calls `f(doc)` for every visible document under a key starting with `prefix`, in no order.
+    pub(crate) fn scan_docs(&self, field: Field, prefix: &str, mut f: impl FnMut(u32)) {
+        let allowed = current_filter();
+        for (seg, &base) in self.segments.iter().zip(&self.offsets) {
+            let keyed = Self::keyed(seg, field);
+            let mut cursor = keyed.map.cursor(prefix.as_bytes());
+            while cursor.advance() {
+                for posting in keyed.postings(cursor.value()) {
+                    let doc = base + Self::decode(field, posting).0;
+                    if self.live[doc as usize] && allowed.as_ref().is_none_or(|a| a.contains(doc)) {
+                        f(doc);
+                    }
+                }
+            }
+        }
+    }
+
     /// Calls `f(key, doc, kind)` for up to `limit` live entries whose key starts with `prefix`,
     /// in key byte order and by id within a key.
     pub(crate) fn scan(
@@ -568,10 +579,7 @@ impl Index {
                 }
                 sources += 1;
                 let base = self.offsets[*i];
-                for &posting in Self::keyed(&self.segments[*i], field)
-                    .postings(cursor.value())
-                    .as_slice()
-                {
+                for posting in Self::keyed(&self.segments[*i], field).postings(cursor.value()) {
                     let (local, kind) = Self::decode(field, posting);
                     if visible(base + local) {
                         entries.push((base + local, kind));
@@ -603,7 +611,7 @@ impl Index {
                 continue;
             };
             sources += 1;
-            for &posting in postings.as_slice() {
+            for posting in postings {
                 let (local, kind) = Self::decode(field, posting);
                 let doc = self.offsets[i] + local;
                 if self.live[doc as usize] && allowed.as_ref().is_none_or(|a| a.contains(doc)) {
