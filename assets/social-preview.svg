@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640">
+  <defs>
+    <linearGradient id="g" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#4F46E5"/>
+      <stop offset="1" stop-color="#06B6D4"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.2" cy="0.3" r="0.9">
+      <stop offset="0" stop-color="#1E1B4B"/>
+      <stop offset="1" stop-color="#0B1020"/>
+    </radialGradient>
+  </defs>
+  <rect width="1280" height="640" fill="url(#glow)"/>
+  <g transform="translate(120 200)">
+    <rect x="0" y="0" width="240" height="240" rx="56" fill="#111733" stroke="#1F2A4D" stroke-width="2"/>
+    <rect x="38" y="146" width="158" height="28" rx="14" fill="url(#g)" opacity="0.45"/>
+    <rect x="38" y="101" width="122" height="28" rx="14" fill="url(#g)" opacity="0.72"/>
+    <rect x="38" y="56" width="79" height="28" rx="14" fill="url(#g)"/>
+    <rect x="131" y="47" width="9" height="46" rx="4.5" fill="#67E8F9"/>
+  </g>
+  <text x="430" y="330" font-family="Inter, Helvetica Neue, Helvetica, Arial, sans-serif" font-size="132" font-weight="bold" letter-spacing="-4" fill="#F8FAFC">strato</text>
+  <text x="436" y="392" font-family="Inter, Helvetica Neue, Helvetica, Arial, sans-serif" font-size="36" fill="#94A3B8">Layered autocompletion for Rust and Python</text>
+  <text x="436" y="452" font-family="Menlo, Consolas, monospace" font-size="21" fill="#67E8F9">prefix · infix · fuzzy · abbreviation · semantic · hybrid</text>
+</svg>
