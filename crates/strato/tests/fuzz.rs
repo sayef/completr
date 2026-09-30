@@ -5,7 +5,7 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
-use strato::{AliasKind, Document, Index, IndexConfig, Segment, SegmentConfig};
+use strato::{AliasKind, BuildOptions, Document, Index, IndexOptions, Segment};
 
 struct Rng(u64);
 
@@ -91,10 +91,7 @@ fn corrupted_segments_never_panic() {
         .into_iter()
         .map(|compact_keys| {
             Segment::build_with(
-                SegmentConfig {
-                    compact_keys,
-                    ..SegmentConfig::default()
-                },
+                BuildOptions::default().compact_keys(compact_keys),
                 docs.clone(),
                 [3, 9],
             )
@@ -142,7 +139,8 @@ fn corrupted_segments_never_panic() {
             match Segment::from_bytes(data.clone()) {
                 Err(_) => false,
                 Ok(segment) => {
-                    if let Ok(index) = Index::new(vec![Arc::new(segment)], IndexConfig::default()) {
+                    if let Ok(index) = Index::new(vec![Arc::new(segment)], IndexOptions::default())
+                    {
                         exercise(&index, &mut Rng(seed | 1));
                     }
                     true
@@ -188,14 +186,14 @@ fn random_queries_are_deterministic() {
     let docs = corpus(&mut rng);
     let whole = Index::new(
         vec![Arc::new(Segment::build(docs.clone(), []).unwrap())],
-        IndexConfig::default(),
+        IndexOptions::default(),
     )
     .unwrap();
     let parts: Vec<Arc<Segment>> = docs
         .chunks(97)
         .map(|c| Arc::new(Segment::build(c.to_vec(), []).unwrap()))
         .collect();
-    let segmented = Index::new(parts, IndexConfig::default()).unwrap();
+    let segmented = Index::new(parts, IndexOptions::default()).unwrap();
     let bits = |index: &Index, q: &str| -> Vec<(u64, u64, &'static str)> {
         let mut out: Vec<_> = index
             .complete(q, 10)

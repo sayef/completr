@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use strato::{AliasKind, Document, HybridOptions, Index, IndexConfig, Segment};
+use strato::{AliasKind, Document, HybridOptions, Index, IndexOptions, Segment};
 
 struct Rng(u64);
 
@@ -174,9 +174,10 @@ fn main() {
     let updates: Vec<Document> = docs
         .iter()
         .step_by(n / 1000)
-        .map(|d| Document {
-            weight: 1.0,
-            ..d.clone()
+        .map(|d| {
+            let mut d = d.clone();
+            d.popularity = 1.0;
+            d
         })
         .collect();
     let t = Instant::now();
@@ -186,13 +187,10 @@ fn main() {
         t.elapsed().as_secs_f64() * 1e3
     );
 
-    let config = IndexConfig {
-        short_query_cache_entries: 0,
-        ..IndexConfig::default()
-    };
+    let config = IndexOptions::default().short_query_cache_entries(0);
     let one = Index::new(vec![base.clone()], config.clone()).unwrap();
     let layered = Index::new(vec![base.clone(), delta], config).unwrap();
-    let cached = Index::new(vec![base], IndexConfig::default()).unwrap();
+    let cached = Index::new(vec![base], IndexOptions::default()).unwrap();
     println!("| Query | Count | p50 | p99 | max |\n|---|---|---|---|---|");
     latency("Typed prefixes", &typed, |q| drop(one.complete(q, 10)));
     latency("Typed prefixes, short-query cache", &typed, |q| {
@@ -218,7 +216,7 @@ fn main() {
         latency("Hybrid (RRF)", &hybrid, |q| {
             let (i, text) = q.split_once(' ').unwrap();
             drop(
-                one.hybrid_search(text, vector(i), 10, HybridOptions::default())
+                one.hybrid_search(text, vector(i), 10, &HybridOptions::default())
                     .unwrap(),
             );
         });

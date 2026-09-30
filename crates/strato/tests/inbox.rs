@@ -2,7 +2,7 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use strato::{ChangeSet, Database, Document, Error, IndexConfig, IngestStep, Ingestor};
+use strato::{ChangeSet, Database, Document, Error, IndexOptions, IngestStep, Ingestor};
 
 async fn databases(dir: &tempfile::TempDir, name: &str) -> Vec<Database> {
     let run = SystemTime::now()
@@ -40,7 +40,7 @@ fn doc(id: u64, text: &str) -> Document {
 async fn text_of(ds: &Database, index: &str, id: u64) -> Option<String> {
     let manifest = ds.latest().await.unwrap();
     let index = ds
-        .load_index(&manifest, index, IndexConfig::default())
+        .open_index(&manifest, index, IndexOptions::default())
         .await
         .unwrap();
     index.document(id).map(|d| d.text)
@@ -234,7 +234,7 @@ async fn many_producers_and_competing_writers() {
         assert_eq!(total, 80);
         let manifest = ds.latest().await.unwrap();
         let index = ds
-            .load_index(&manifest, "i", IndexConfig::default())
+            .open_index(&manifest, "i", IndexOptions::default())
             .await
             .unwrap();
         assert_eq!(index.len(), 88);

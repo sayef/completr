@@ -4,25 +4,41 @@
 //!
 //! ```
 //! use std::sync::Arc;
-//! use strato::{AliasKind, Document, Index, IndexConfig, MatchKind, Segment};
+//! use strato::{AliasKind, Document, Index, IndexOptions, MatchKind, Segment};
 //!
 //! let docs = [
 //!     Document::new(1, "Machine Learning", 0.9).with_alias("ML", AliasKind::Abbreviation),
 //!     Document::new(2, "Machine Vision", 0.4),
 //! ];
-//! let index = Index::new(vec![Arc::new(Segment::build(docs, [])?)], IndexConfig::default())?;
+//! let index = Index::new(vec![Arc::new(Segment::build(docs, [])?)], IndexOptions::default())?;
 //! let hits = index.complete("ml", 10);
 //! assert_eq!((hits[0].id, hits[0].kind), (1, MatchKind::Abbreviation));
 //! # Ok::<(), strato::Error>(())
 //! ```
 
 mod codec;
+/// Chainable setters named after the fields of a non-exhaustive options struct.
+macro_rules! setters {
+    ($ty:ident { $($field:ident: $t:ty),* $(,)? }) => {
+        impl $ty {
+            $(
+                pub fn $field(mut self, value: $t) -> Self {
+                    self.$field = value;
+                    self
+                }
+            )*
+        }
+    };
+}
+pub(crate) use setters;
+
 #[cfg(feature = "store")]
 mod database;
 mod dict;
 mod document;
 mod engine;
 mod fuzzy;
+mod highlight;
 mod hybrid;
 #[cfg(feature = "store")]
 mod inbox;
@@ -42,24 +58,26 @@ pub use database::{
 };
 #[doc(hidden)]
 pub use dict::Dictionary;
-pub use document::{Alias, AliasKind, Document};
-pub use engine::{layered_autocomplete, layered_search_aliases, Engine, LayeredSuggestion};
+pub use document::{key_id, Alias, AliasKind, Document};
+pub use engine::{layered_complete, layered_complete_aliases, Engine, LayeredSuggestion};
 pub use hybrid::{Fusion, HybridOptions, HybridSuggestion};
 #[cfg(feature = "store")]
 pub use inbox::{ChangeSet, IngestStep, Ingestor};
-pub use index::{Index, IndexConfig};
-pub use search::{AliasSuggestion, MatchKind, Suggestion};
+pub use index::{Index, IndexOptions};
+pub use search::{AliasSuggestion, MatchKind, SearchOptions, Suggestion};
 #[doc(hidden)]
 pub use segment::Layout;
-pub use segment::{Segment, SegmentConfig};
+pub use segment::{BuildOptions, Segment};
 #[cfg(feature = "store")]
 pub use store::{block_on, BlockingStore, ObjectInfo, Store};
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
     Io(std::io::Error),
     Fst(fst::Error),
-    Format(String),
+    /// Stored data failed its checksum or structural validation.
+    Corrupt(String),
     InvalidInput(String),
     NotFound(String),
     /// A concurrent commit changed what this transaction depends on.
@@ -79,7 +97,7 @@ impl std::fmt::Display for Error {
         match self {
             Self::Io(e) => write!(f, "io error: {e}"),
             Self::Fst(e) => write!(f, "fst error: {e}"),
-            Self::Format(m) => write!(f, "invalid segment: {m}"),
+            Self::Corrupt(m) => write!(f, "corrupt data: {m}"),
             Self::InvalidInput(m) => write!(f, "invalid input: {m}"),
             Self::NotFound(key) => write!(f, "not found: {key}"),
             Self::Conflict(m) => write!(f, "commit conflict: {m}"),
@@ -89,7 +107,17 @@ impl std::fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(e) => Some(e),
+            Self::Fst(e) => Some(e),
+            #[cfg(feature = "store")]
+            Self::Store(e) => Some(e),
+            _ => None,
+        }
+    }
+}
 
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {

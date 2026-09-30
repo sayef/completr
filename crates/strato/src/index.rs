@@ -1,13 +1,18 @@
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::search::{CachedHit, RawHit};
 use crate::segment::{term_key, Keyed};
-use crate::{Document, Error, Segment, SegmentConfig};
+use crate::{BuildOptions, Document, Error, Segment};
 
+/// Options for searching segments as one index. Set them with the chainable methods of the same
+/// names, e.g. `IndexOptions::default().max_score(742.0)`.
 #[derive(Clone, Debug)]
-pub struct IndexConfig {
+#[non_exhaustive]
+pub struct IndexOptions {
     /// Raw score that normalises to 1.0. `None` estimates it from the documents; pin it when
     /// scores must stay comparable across rebuilds.
     pub max_score: Option<f64>,
@@ -27,7 +32,7 @@ pub struct IndexConfig {
     pub vector_threads: usize,
 }
 
-impl Default for IndexConfig {
+impl Default for IndexOptions {
     fn default() -> Self {
         Self {
             max_score: None,
@@ -40,6 +45,55 @@ impl Default for IndexConfig {
             warm_on_load: true,
         }
     }
+}
+
+crate::setters!(IndexOptions {
+    popularity_weight: f64,
+    short_query_chars: usize,
+    short_query_limit: usize,
+    short_query_cache_entries: usize,
+    carry_short_queries: usize,
+    warm_on_load: bool,
+    vector_threads: usize,
+});
+
+impl IndexOptions {
+    /// Pins the raw score that normalises to 1.0, so scores stay comparable across rebuilds.
+    pub fn max_score(mut self, max_score: f64) -> Self {
+        self.max_score = Some(max_score);
+        self
+    }
+}
+
+/// Documents a request may return, as a bitset over an index's document numbers.
+pub(crate) struct Allowed(Vec<u64>);
+
+impl Allowed {
+    pub(crate) fn contains(&self, doc: u32) -> bool {
+        self.0[doc as usize / 64] >> (doc % 64) & 1 == 1
+    }
+}
+
+thread_local! {
+    static ALLOWED: RefCell<Option<Rc<Allowed>>> = const { RefCell::new(None) };
+}
+
+/// The filter of the request running on this thread, if any.
+pub(crate) fn current_filter() -> Option<Rc<Allowed>> {
+    ALLOWED.with(|a| a.borrow().clone())
+}
+
+/// Runs `f` with `allowed` as the filter of this thread's request, restoring the previous one.
+pub(crate) fn with_filter<R>(allowed: Option<Allowed>, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<Rc<Allowed>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ALLOWED.with(|a| *a.borrow_mut() = self.0.take());
+        }
+    }
+    let previous = ALLOWED.with(|a| a.replace(allowed.map(Rc::new)));
+    let _restore = Restore(previous);
+    f()
 }
 
 /// Cached results of one short query, and how often they were served.
@@ -59,9 +113,9 @@ pub(crate) enum Field {
 ///
 /// A newer segment supersedes older documents with the same id, and its deletes hide them.
 pub struct Index {
-    pub(crate) config: IndexConfig,
+    pub(crate) config: IndexOptions,
     pub(crate) max_score: f64,
-    pub(crate) segment_config: SegmentConfig,
+    pub(crate) segment_config: BuildOptions,
     segments: Vec<Arc<Segment>>,
     offsets: Vec<u32>,
     pub(crate) ids: Vec<u64>,
@@ -84,10 +138,10 @@ pub struct Index {
 }
 
 impl Index {
-    pub fn new(segments: Vec<Arc<Segment>>, config: IndexConfig) -> Result<Self, Error> {
+    pub fn new(segments: Vec<Arc<Segment>>, config: IndexOptions) -> Result<Self, Error> {
         let segment_config = segments
             .first()
-            .map_or_else(SegmentConfig::default, |s| s.config());
+            .map_or_else(BuildOptions::default, |s| s.config());
         if segments
             .iter()
             .any(|s| !s.config().compatible(&segment_config))
@@ -115,17 +169,31 @@ impl Index {
         }
 
         let mut live = vec![true; total];
-        let mut superseded: FxHashSet<u64> = FxHashSet::default();
+        // Superseding ids with their key; deletes carry none.
+        let mut superseded: FxHashMap<u64, Option<String>> = FxHashMap::default();
         for (i, seg) in segments.iter().enumerate().rev() {
             let base = offsets[i] as usize;
             if !superseded.is_empty() {
                 for (local, id) in seg.ids().iter().enumerate() {
-                    live[base + local] = !superseded.contains(id);
+                    if let Some(newer) = superseded.get(id) {
+                        live[base + local] = false;
+                        if let (Some(newer), Some(older)) = (newer, seg.key(local)) {
+                            if *newer != older {
+                                return Err(Error::input(format!(
+                                    "keys {older:?} and {newer:?} map to the same id {id}"
+                                )));
+                            }
+                        }
+                    }
                 }
             }
             if i > 0 {
-                superseded.extend(seg.ids());
-                superseded.extend(seg.deletes());
+                for local in 0..seg.len() {
+                    superseded.insert(seg.ids()[local], seg.key(local));
+                }
+                for &id in seg.deletes() {
+                    superseded.entry(id).or_insert(None);
+                }
             }
         }
 
@@ -208,11 +276,25 @@ impl Index {
         Ok(index)
     }
 
-    pub fn empty(config: IndexConfig) -> Result<Self, Error> {
+    pub fn empty(config: IndexOptions) -> Result<Self, Error> {
         Self::new(Vec::new(), config)
     }
 
-    pub fn config(&self) -> &IndexConfig {
+    /// Builds one segment from `documents` with default options and searches it.
+    pub fn from_documents(documents: impl IntoIterator<Item = Document>) -> Result<Self, Error> {
+        Self::from_documents_with(documents, BuildOptions::default(), IndexOptions::default())
+    }
+
+    pub fn from_documents_with(
+        documents: impl IntoIterator<Item = Document>,
+        build: BuildOptions,
+        options: IndexOptions,
+    ) -> Result<Self, Error> {
+        let segment = Segment::build_with(build, documents, [])?;
+        Self::new(vec![Arc::new(segment)], options)
+    }
+
+    pub fn config(&self) -> &IndexOptions {
         &self.config
     }
 
@@ -238,6 +320,54 @@ impl Index {
             let local = seg.ids().binary_search(&id).ok()?;
             self.live[self.offsets[i] as usize + local].then(|| seg.document(local))
         })
+    }
+
+    /// Whether this index holds or deletes `id`, so that it overrides `id` in earlier layers.
+    pub(crate) fn covers(&self, id: u64) -> bool {
+        self.segments
+            .iter()
+            .any(|s| s.ids().binary_search(&id).is_ok() || s.deletes().binary_search(&id).is_ok())
+    }
+
+    /// The live document with string key `key`.
+    pub fn document_by_key(&self, key: &str) -> Option<Document> {
+        self.document(crate::key_id(key))
+            .filter(|d| d.key.as_deref() == Some(key))
+    }
+
+    /// Segment and local position of document number `doc`.
+    fn locate(&self, doc: u32) -> (usize, usize) {
+        let i = self.offsets.partition_point(|&o| o <= doc) - 1;
+        (i, (doc - self.offsets[i]) as usize)
+    }
+
+    pub(crate) fn doc_text(&self, doc: u32) -> String {
+        let (i, local) = self.locate(doc);
+        self.segments[i].text(local)
+    }
+
+    pub(crate) fn doc_key(&self, doc: u32) -> Option<String> {
+        let (i, local) = self.locate(doc);
+        self.segments[i].key(local)
+    }
+
+    /// The live documents tagged with any of `contexts`, or `None` for no filter.
+    pub(crate) fn allowed(&self, contexts: &[String]) -> Option<Allowed> {
+        if contexts.is_empty() {
+            return None;
+        }
+        let mut bits = vec![0u64; self.ids.len().div_ceil(64)];
+        for (seg, &base) in self.segments.iter().zip(&self.offsets) {
+            for context in contexts {
+                if let Some(postings) = seg.contexts.get(&term_key(context)) {
+                    for &local in postings.as_slice() {
+                        let doc = (base + local) as usize;
+                        bits[doc / 64] |= 1 << (doc % 64);
+                    }
+                }
+            }
+        }
+        Some(Allowed(bits))
     }
 
     pub fn documents(&self) -> impl Iterator<Item = Document> + '_ {
@@ -275,7 +405,7 @@ impl Index {
             .segments
             .iter()
             .find_map(|s| s.vectors.as_ref().map(|v| v.bits()));
-        let config = SegmentConfig {
+        let config = BuildOptions {
             vector_bits: bits.unwrap_or(self.segment_config.vector_bits),
             ..self.segment_config
         };
@@ -331,7 +461,8 @@ impl Index {
                 Err(Error::input("query vector is not finite"))
             };
         }
-        let mut hits: Vec<crate::Suggestion> = Vec::new();
+        let allowed = current_filter();
+        let mut hits: Vec<(u32, f64)> = Vec::new();
         for ((seg, mask), &base) in self
             .segments
             .iter()
@@ -341,21 +472,34 @@ impl Index {
             let (Some(vectors), Some(mask)) = (&seg.vectors, mask) else {
                 continue;
             };
+            let filtered: Vec<bool>;
+            let mask = match &allowed {
+                Some(allowed) => {
+                    filtered = mask
+                        .iter()
+                        .zip(vectors.locals())
+                        .map(|(&m, &local)| m && allowed.contains(base + local))
+                        .collect();
+                    &filtered
+                }
+                None => mask,
+            };
             if !mask.iter().any(|&m| m) {
                 continue;
             }
             for (local, score) in vectors.search(query, k, mask, self.config.vector_threads)? {
-                let id = self.ids[base as usize + local as usize];
-                hits.push(crate::Suggestion {
-                    id,
-                    score: f64::from(score),
-                    kind: crate::MatchKind::Semantic,
-                });
+                hits.push((base + local, f64::from(score)));
             }
         }
-        hits.sort_unstable_by(|a, b| b.score.total_cmp(&a.score).then(a.id.cmp(&b.id)));
+        hits.sort_unstable_by(|a, b| {
+            b.1.total_cmp(&a.1)
+                .then(self.ids[a.0 as usize].cmp(&self.ids[b.0 as usize]))
+        });
         hits.truncate(k);
-        Ok(hits)
+        Ok(hits
+            .into_iter()
+            .map(|(doc, score)| self.suggestion(doc, score, crate::MatchKind::Semantic, None))
+            .collect())
     }
 
     /// The 99th percentile of exact-match scores over distinct texts, the lowest id per text.
@@ -423,6 +567,9 @@ impl Index {
             .map(|(i, seg)| (i, Self::keyed(seg, field).map.cursor(prefix)))
             .filter_map(|(i, mut cursor)| cursor.advance().then_some((i, cursor)))
             .collect();
+        let allowed = current_filter();
+        let visible =
+            |doc: u32| self.live[doc as usize] && allowed.as_ref().is_none_or(|a| a.contains(doc));
         let mut key: Vec<u8> = Vec::new();
         let mut entries: Vec<(u32, u8)> = Vec::new();
         let mut emitted = 0;
@@ -442,7 +589,7 @@ impl Index {
                     .as_slice()
                 {
                     let (local, kind) = Self::decode(field, posting);
-                    if self.live[(base + local) as usize] {
+                    if visible(base + local) {
                         entries.push((base + local, kind));
                     }
                 }
@@ -464,6 +611,7 @@ impl Index {
     /// Live entries whose key is exactly `key`, by id.
     pub(crate) fn get(&self, field: Field, key: &str) -> Vec<(u32, u8)> {
         let key = term_key(key);
+        let allowed = current_filter();
         let mut entries = Vec::new();
         let mut sources = 0;
         for (i, seg) in self.segments.iter().enumerate() {
@@ -474,7 +622,7 @@ impl Index {
             for &posting in postings.as_slice() {
                 let (local, kind) = Self::decode(field, posting);
                 let doc = self.offsets[i] + local;
-                if self.live[doc as usize] {
+                if self.live[doc as usize] && allowed.as_ref().is_none_or(|a| a.contains(doc)) {
                     entries.push((doc, kind));
                 }
             }

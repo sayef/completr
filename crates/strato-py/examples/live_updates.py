@@ -1,29 +1,30 @@
-"""Streamed updates: python crates/strato-py/examples/live_updates.py [url]"""
+"""Serverless updates: python crates/strato-py/examples/live_updates.py [url]"""
 
 import sys
 import tempfile
 
-from strato import ChangeSet, Database, Engine, Replica, Ingestor
+import strato
 
 url = sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp()  # or s3://bucket/prefix, gs://..., az://...
-database = Database(url)
+db = strato.connect(url)
 
-txn = database.begin()
-txn.append("products", [(i, f"product {i}", 0.5, []) for i in range(10_000)])
+txn = db.begin()
+txn.append("products", [{"id": f"p{i}", "text": f"product {i}", "popularity": 0.5} for i in range(10_000)])
 txn.commit()
 
-engine = Engine()
-replica = Replica(database, engine)
-replica.sync()
+# Serving processes: an engine that follows the database.
+engine = db.engine()
 
-changes = ChangeSet()
-changes.upsert("products", [(10_000, "wireless keyboard", 0.9, [])])
-changes.delete("products", [42])
-database.submit(changes)
+# Any process: submit changes.
+changes = strato.ChangeSet()
+changes.upsert("products", [{"id": "kb-1", "text": "Wireless Keyboard", "popularity": 0.9, "contexts": ["peripherals"]}])
+changes.delete("products", ["p42"])
+db.submit(changes)
 
-ingestor = Ingestor(database, "ingestor-1")
+# One process at a time commits them (lease-elected).
+ingestor = strato.Ingestor(db, "ingestor-1")
 print(ingestor.run_once())
 ingestor.release()
 
-replica.sync()
-print([(h.id, h.kind) for h in engine.complete("wirel", ["products"])])
+engine.sync()
+print([(s.id, s.text, s.kind) for s in engine.complete("wirel", ["products"], contexts=["peripherals"])])

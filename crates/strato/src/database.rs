@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
-use crate::{Document, Engine, Error, Index, IndexConfig, Segment, SegmentConfig, Store};
+use crate::{BuildOptions, Document, Engine, Error, Index, IndexOptions, Segment, Store};
 
 const VERSIONS: &str = "_versions";
 const SEGMENTS: &str = "segments";
@@ -18,6 +18,7 @@ const LOCKS: &str = "_locks";
 pub const BASE_LEVEL: u32 = 255;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SegmentRef {
     pub id: String,
     pub key: String,
@@ -30,6 +31,7 @@ pub struct SegmentRef {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct IndexEntry {
     pub max_score: f64,
     /// Oldest first.
@@ -38,6 +40,7 @@ pub struct IndexEntry {
 
 /// The full state of a database at one version. Version 0 is the empty database and has no file.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Manifest {
     pub version: u64,
     pub parent: Option<u64>,
@@ -52,7 +55,7 @@ impl Manifest {
     }
 
     pub fn from_json(data: &[u8]) -> Result<Self, Error> {
-        serde_json::from_slice(data).map_err(|e| Error::Format(format!("invalid manifest: {e}")))
+        serde_json::from_slice(data).map_err(|e| Error::Corrupt(format!("invalid manifest: {e}")))
     }
 }
 
@@ -78,24 +81,24 @@ fn parse_version(key: &str) -> Option<u64> {
 #[derive(Clone, Debug)]
 pub struct Database {
     store: Store,
-    segment_config: SegmentConfig,
+    segment_config: BuildOptions,
 }
 
 impl Database {
     pub fn new(store: Store) -> Self {
         Self {
             store,
-            segment_config: SegmentConfig::default(),
+            segment_config: BuildOptions::default(),
         }
     }
 
     /// Build settings for segments this database writes from documents.
-    pub fn with_segment_config(mut self, config: SegmentConfig) -> Self {
+    pub fn with_build_options(mut self, config: BuildOptions) -> Self {
         self.segment_config = config;
         self
     }
 
-    pub fn segment_config(&self) -> SegmentConfig {
+    pub fn build_options(&self) -> BuildOptions {
         self.segment_config
     }
 
@@ -152,7 +155,7 @@ impl Database {
         }
         let manifest = Manifest::from_json(&self.store.get(&version_key(version)).await?)?;
         if manifest.version != version {
-            return Err(Error::Format(format!(
+            return Err(Error::Corrupt(format!(
                 "manifest {version} claims version {}",
                 manifest.version
             )));
@@ -195,11 +198,11 @@ impl Database {
     }
 
     /// Loads one index of `manifest`; its `max_score` overrides the one in `config`.
-    pub async fn load_index(
+    pub async fn open_index(
         &self,
         manifest: &Manifest,
         name: &str,
-        config: IndexConfig,
+        config: IndexOptions,
     ) -> Result<Index, Error> {
         let entry = manifest
             .indexes
@@ -208,7 +211,7 @@ impl Database {
         let segments = self.load_segments(&entry.segments).await?;
         Index::new(
             segments,
-            IndexConfig {
+            IndexOptions {
                 max_score: Some(entry.max_score),
                 ..config
             },
@@ -238,9 +241,9 @@ impl Database {
         let mut full = false;
         if total > 0 && newer as f64 / total as f64 > policy.max_hidden_fraction {
             let all = self.load_segments(refs).await?;
-            let config = IndexConfig {
+            let config = IndexOptions {
                 max_score: Some(1.0),
-                ..IndexConfig::default()
+                ..IndexOptions::default()
             };
             let live = Index::new(all, config)?.len();
             full = 1.0 - live as f64 / total as f64 > policy.max_hidden_fraction;
@@ -252,8 +255,18 @@ impl Database {
             (false, Some(run)) => run,
             (false, None) => return Ok(None),
         };
+        let started = std::time::Instant::now();
         let segments = self.load_segments(&refs[start..end]).await?;
         let merged = merge(&segments, start == 0)?;
+        tracing::info!(
+            index,
+            merged = end - start,
+            level,
+            full,
+            documents = merged.len(),
+            ms = started.elapsed().as_millis() as u64,
+            "compacting"
+        );
         let remove = entry.segments[start..end]
             .iter()
             .map(|s| s.id.clone())
@@ -322,6 +335,12 @@ impl Database {
                 stats.bytes_removed += object.size;
             }
         }
+        tracing::info!(
+            versions = stats.versions_removed,
+            segments = stats.segments_removed,
+            bytes = stats.bytes_removed,
+            "cleaned up"
+        );
         Ok(stats)
     }
 
@@ -345,7 +364,7 @@ impl Database {
             match self.store.get(&lease_key(&prefix, generation)).await {
                 Ok(data) => {
                     let record: LeaseRecord = serde_json::from_slice(&data)
-                        .map_err(|e| Error::Format(format!("invalid lease: {e}")))?;
+                        .map_err(|e| Error::Corrupt(format!("invalid lease: {e}")))?;
                     if !record.released && record.expires_at_ms > now_ms() {
                         return Ok(None);
                     }
@@ -370,9 +389,9 @@ impl Database {
 fn merge(run: &[Arc<Segment>], oldest: bool) -> Result<Segment, Error> {
     let view = Index::new(
         run.to_vec(),
-        IndexConfig {
+        IndexOptions {
             max_score: Some(1.0),
-            ..IndexConfig::default()
+            ..IndexOptions::default()
         },
     )?;
     let deletes: Vec<u64> = if oldest {
@@ -386,6 +405,7 @@ fn merge(run: &[Arc<Segment>], oldest: bool) -> Result<Segment, Error> {
 }
 
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct CompactionPolicy {
     /// Merge this many consecutive segments of one level into one of the next level.
     pub fanout: usize,
@@ -394,6 +414,12 @@ pub struct CompactionPolicy {
     /// Above this fraction of superseded or deleted documents, merge everything into one base.
     pub max_hidden_fraction: f64,
 }
+
+crate::setters!(CompactionPolicy {
+    fanout: usize,
+    max_segments: usize,
+    max_hidden_fraction: f64,
+});
 
 impl Default for CompactionPolicy {
     fn default() -> Self {
@@ -430,11 +456,17 @@ impl CompactionPolicy {
 }
 
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct CleanupPolicy {
     /// Newest versions always kept, at least one.
     pub keep_versions: usize,
     pub older_than: Duration,
 }
+
+crate::setters!(CleanupPolicy {
+    keep_versions: usize,
+    older_than: std::time::Duration,
+});
 
 impl Default for CleanupPolicy {
     fn default() -> Self {
@@ -446,6 +478,7 @@ impl Default for CleanupPolicy {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CleanupStats {
     pub versions_removed: usize,
     pub segments_removed: usize,
@@ -671,9 +704,19 @@ impl Transaction {
                 .put_if_absent(&version_key(next.version), next.to_json().into_bytes())
                 .await?
             {
+                tracing::info!(
+                    version = next.version,
+                    attempts = attempt + 1,
+                    segments = refs.iter().flatten().count(),
+                    "committed"
+                );
                 return Ok((next, attempt + 1));
             }
         }
+        tracing::warn!(
+            attempts = self.max_retries + 1,
+            "commit gave up under contention"
+        );
         Err(Error::Conflict(format!(
             "gave up after {} concurrent commits",
             self.max_retries + 1
@@ -824,7 +867,7 @@ impl Transaction {
 }
 
 fn estimate_max_score(segment: &Arc<Segment>) -> Result<f64, Error> {
-    Ok(Index::new(vec![segment.clone()], IndexConfig::default())?.max_score())
+    Ok(Index::new(vec![segment.clone()], IndexOptions::default())?.max_score())
 }
 
 /// Exponential backoff with full jitter, from 10 ms up to 1 s.
@@ -943,7 +986,7 @@ impl Lease {
 /// republishing only indexes that changed.
 pub struct Replica {
     database: Database,
-    config: IndexConfig,
+    config: IndexOptions,
     group: Arc<dyn Fn(&str) -> String + Send + Sync>,
     state: tokio::sync::Mutex<ReplicaState>,
 }
@@ -957,7 +1000,7 @@ struct ReplicaState {
 
 impl Replica {
     /// `config` applies to every index; each index's `max_score` comes from the manifest.
-    pub fn new(database: Database, config: IndexConfig) -> Self {
+    pub fn new(database: Database, config: IndexOptions) -> Self {
         Self {
             database,
             config,
@@ -995,6 +1038,8 @@ impl Replica {
             return Ok(None);
         };
         let manifest = self.database.manifest(version).await?;
+        let started = std::time::Instant::now();
+        let mut downloaded = 0usize;
 
         // Removals first, so their memory is free before anything new loads.
         let removed: Vec<String> = state
@@ -1037,6 +1082,7 @@ impl Replica {
                     missing.push(segment.clone());
                 }
             }
+            downloaded += missing.len();
             for (reference, segment) in missing
                 .iter()
                 .zip(self.database.load_segments(&missing).await?)
@@ -1051,7 +1097,7 @@ impl Replica {
                     .iter()
                     .map(|s| state.segments[&s.id].clone())
                     .collect();
-                let config = IndexConfig {
+                let config = IndexOptions {
                     max_score: Some(entry.max_score),
                     ..self.config.clone()
                 };
@@ -1090,6 +1136,12 @@ impl Replica {
             .collect();
         self.database.store.prune_cache(keys)?;
         state.version = version;
+        tracing::info!(
+            version,
+            segments_loaded = downloaded,
+            ms = started.elapsed().as_millis() as u64,
+            "replica synced"
+        );
         Ok(Some(version))
     }
 }

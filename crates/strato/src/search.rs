@@ -1,14 +1,16 @@
 //! Ranking: exact, prefix, abbreviation, infix and fuzzy scores, with deterministic tie-breaks by id.
 
 use std::cmp::Ordering;
+use std::ops::Range;
 use std::sync::Arc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::index::{char_count, Field};
+use crate::index::{char_count, current_filter, with_filter, Field};
 use crate::{fuzzy, text, Index};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum MatchKind {
     Exact,
     Prefix,
@@ -32,17 +34,61 @@ impl MatchKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// One completion: the document, how it matched, and which parts of its text matched.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct Suggestion {
     pub id: u64,
+    pub key: Option<String>,
+    pub text: String,
     pub score: f64,
     pub kind: MatchKind,
+    /// Byte ranges of `text` that matched the query, sorted, for highlighting.
+    pub highlights: Vec<Range<usize>>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// A document found through one of its synonyms.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct AliasSuggestion {
     pub id: u64,
+    pub key: Option<String>,
+    pub text: String,
     pub score: f64,
+}
+
+/// Per-request options: how many results, and which contexts they must be tagged with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SearchOptions {
+    pub limit: usize,
+    /// Only documents tagged with any of these contexts; empty means all documents.
+    pub contexts: Vec<String>,
+}
+
+impl Default for SearchOptions {
+    fn default() -> Self {
+        Self::new(10)
+    }
+}
+
+impl SearchOptions {
+    pub fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            contexts: Vec::new(),
+        }
+    }
+
+    pub fn limit(mut self, limit: usize) -> Self {
+        self.limit = limit;
+        self
+    }
+
+    pub fn contexts<S: Into<String>>(mut self, contexts: impl IntoIterator<Item = S>) -> Self {
+        self.contexts = contexts.into_iter().map(Into::into).collect();
+        self
+    }
 }
 
 /// Cached short-query results keep `f32` scores, as the precomputed tables they replace did.
@@ -54,12 +100,13 @@ pub(crate) struct CachedHit {
 }
 
 /// Corrected phrases with their edit distance.
-type Corrections = Vec<(String, usize)>;
+/// Corrected words or phrases with their edit distance and dictionary frequency.
+type Corrections = Vec<(String, usize, u32)>;
 
 /// Fuzzy lookups repeated within one request.
 #[derive(Default)]
 struct Memo {
-    fuzzy: std::cell::RefCell<FxHashMap<(String, usize), Corrections>>,
+    fuzzy: std::cell::RefCell<FxHashMap<(String, usize, bool), Corrections>>,
 }
 
 #[derive(Clone, Copy)]
@@ -81,52 +128,106 @@ struct Merged {
 impl Index {
     /// Ranked completions for `query`: exact, prefix, abbreviation, infix and typo-tolerant matches.
     pub fn complete(&self, query: &str, limit: usize) -> Vec<Suggestion> {
+        self.complete_with(query, &SearchOptions::new(limit))
+    }
+
+    pub fn complete_with(&self, query: &str, options: &SearchOptions) -> Vec<Suggestion> {
+        let hits = with_filter(self.allowed(&options.contexts), || {
+            self.ranked(query, options.limit)
+        });
+        hits.into_iter()
+            .map(|(doc, score, kind)| self.suggestion(doc, score, kind, Some(query)))
+            .collect()
+    }
+
+    /// Document numbers, scores and kinds of the best `limit` completions.
+    fn ranked(&self, query: &str, limit: usize) -> Vec<(u32, f64, MatchKind)> {
         let lower = text::lower(query);
         let stripped = text::strip(&lower);
         if let Some(cached) = self.short_query(stripped) {
             return cached
                 .iter()
                 .take(limit)
-                .map(|h| Suggestion {
-                    id: self.ids[h.doc as usize],
-                    score: f64::from(h.score),
-                    kind: h.kind,
-                })
+                .map(|h| (h.doc, f64::from(h.score), h.kind))
                 .collect();
         }
         let mut hits = self.raw_autocomplete(&Memo::default(), query, limit, 0);
         hits.truncate(limit);
-        hits.into_iter()
-            .map(|h| Suggestion {
-                id: self.ids[h.doc as usize],
-                score: h.score,
-                kind: h.kind,
-            })
-            .collect()
+        hits.into_iter().map(|h| (h.doc, h.score, h.kind)).collect()
+    }
+
+    pub(crate) fn suggestion(
+        &self,
+        doc: u32,
+        score: f64,
+        kind: MatchKind,
+        query: Option<&str>,
+    ) -> Suggestion {
+        let text = self.doc_text(doc);
+        let highlights = match (query, kind) {
+            (
+                Some(q),
+                MatchKind::Exact | MatchKind::Prefix | MatchKind::Infix | MatchKind::Fuzzy,
+            ) => crate::highlight::highlights(
+                &text,
+                q,
+                self.segment_config.max_edit_distance as usize,
+            ),
+            _ => Vec::new(),
+        };
+        Suggestion {
+            id: self.ids[doc as usize],
+            key: self.doc_key(doc),
+            text,
+            score,
+            kind,
+            highlights,
+        }
     }
 
     /// Documents with a synonym alias starting with `query`, ranked by alias length and weight.
     pub fn complete_aliases(&self, query: &str, limit: usize) -> Vec<AliasSuggestion> {
-        let lower = text::lower(query);
-        let stripped = text::strip(&lower);
-        if self.is_short(stripped) {
-            let hits = self.raw_aliases(stripped, self.config.short_query_limit);
-            return hits
-                .into_iter()
-                .take(limit)
-                .map(|(doc, score)| AliasSuggestion {
-                    id: self.ids[doc as usize],
-                    score: f64::from(score as f32),
-                })
-                .collect();
-        }
-        let hits = self.raw_aliases(query, limit);
+        self.complete_aliases_with(query, &SearchOptions::new(limit))
+    }
+
+    pub fn complete_aliases_with(
+        &self,
+        query: &str,
+        options: &SearchOptions,
+    ) -> Vec<AliasSuggestion> {
+        let limit = options.limit;
+        let hits = with_filter(self.allowed(&options.contexts), || {
+            let lower = text::lower(query);
+            let stripped = text::strip(&lower);
+            if self.is_short(stripped) {
+                let hits = self.raw_aliases(stripped, self.config.short_query_limit);
+                return hits
+                    .into_iter()
+                    .take(limit)
+                    .map(|(doc, score)| (doc, f64::from(score as f32)))
+                    .collect::<Vec<_>>();
+            }
+            self.raw_aliases(query, limit)
+        });
         hits.into_iter()
             .map(|(doc, score)| AliasSuggestion {
                 id: self.ids[doc as usize],
+                key: self.doc_key(doc),
+                text: self.doc_text(doc),
                 score,
             })
             .collect()
+    }
+
+    /// Vector search restricted to `options.contexts`.
+    pub fn vector_search_with(
+        &self,
+        query: &[f32],
+        options: &SearchOptions,
+    ) -> Result<Vec<Suggestion>, crate::Error> {
+        with_filter(self.allowed(&options.contexts), || {
+            self.vector_search(query, options.limit)
+        })
     }
 
     fn is_short(&self, query: &str) -> bool {
@@ -136,7 +237,7 @@ impl Index {
     }
 
     fn short_query(&self, query: &str) -> Option<Arc<[CachedHit]>> {
-        if !self.is_short(query) {
+        if current_filter().is_some() || !self.is_short(query) {
             return None;
         }
         let cache = || self.short_cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -200,9 +301,8 @@ impl Index {
     fn infix_search(&self, query: &str, max_results: usize) -> Vec<u32> {
         let lower = text::lower(query);
         let min_chars = self.segment_config.min_word_chars as usize;
-        let words: Vec<&str> = text::words(&lower)
-            .filter(|w| text::char_len(w) >= min_chars)
-            .collect();
+        let (words, short): (Vec<&str>, Vec<&str>) =
+            text::words(&lower).partition(|w| text::char_len(w) >= min_chars);
         let docs = match words.as_slice() {
             [] => return Vec::new(),
             [word] => {
@@ -235,16 +335,38 @@ impl Index {
                     .collect()
             }
         };
-        self.top_by_weight(docs, max_results)
+        if short.is_empty() {
+            return self.top_by_weight(docs, max_results);
+        }
+        // Words too short to index must still start a word of the text.
+        let mut docs = docs;
+        docs.sort_unstable_by(|&a, &b| self.by_weight(a, b));
+        docs.into_iter()
+            .filter(|&doc| {
+                let text = text::lower(&self.doc_text(doc));
+                short
+                    .iter()
+                    .all(|s| text::words(&text).any(|w| w.starts_with(s)))
+            })
+            .take(max_results)
+            .collect()
     }
 
     /// Dictionary words within the edit distance of `query`, closest and most frequent first.
-    fn fuzzy_search(&self, memo: &Memo, query: &str, max_results: usize) -> Vec<(String, usize)> {
+    /// With `prefix`, words are compared by their first `query` chars, and those prefixes are
+    /// returned: corrections of a word still being typed.
+    fn fuzzy_search(
+        &self,
+        memo: &Memo,
+        query: &str,
+        max_results: usize,
+        prefix: bool,
+    ) -> Corrections {
         if !self.has_words || query.is_empty() {
             return Vec::new();
         }
         let lower = text::lower(query);
-        let key = (lower, max_results);
+        let key = (lower, max_results, prefix);
         if let Some(hit) = memo.fuzzy.borrow().get(&key) {
             return hit.clone();
         }
@@ -257,25 +379,47 @@ impl Index {
             config.fuzzy_prefix_chars as usize,
         );
         let query_len = lower.chars().count();
-        // rapidfuzz's bit-parallel Levenshtein, with the query's pattern masks built once.
-        let comparator = rapidfuzz::distance::levenshtein::BatchComparator::new(lower.chars());
-        let args = rapidfuzz::distance::levenshtein::Args::default().score_cutoff(max_distance);
+        // Optimal string alignment: a transposition is one edit, as in SymSpell.
+        let comparator = rapidfuzz::distance::osa::BatchComparator::new(lower.chars());
+        let args = rapidfuzz::distance::osa::Args::default().score_cutoff(max_distance);
+        let mut prefixes: FxHashMap<&str, u32> = FxHashMap::default();
         let mut matches: Vec<(&str, usize, u32)> = Vec::new();
         for (word, freq) in self.fuzzy_candidates(&variants) {
-            if freq == 0 || char_count(word.as_bytes()).abs_diff(query_len) > max_distance {
+            let word_len = char_count(word.as_bytes());
+            if freq == 0 {
                 continue;
             }
-            if let Some(distance) = comparator.distance_with_args(word.chars(), &args) {
-                matches.push((word, distance, freq));
+            let compared = if prefix && word_len > query_len {
+                let end = word
+                    .char_indices()
+                    .nth(query_len)
+                    .map_or(word.len(), |(i, _)| i);
+                &word[..end]
+            } else {
+                word
+            };
+            if char_count(compared.as_bytes()).abs_diff(query_len) > max_distance {
+                continue;
+            }
+            if prefix {
+                // Words sharing a prefix pool their frequency under it.
+                *prefixes.entry(compared).or_default() += freq;
+                continue;
+            }
+            if let Some(distance) = comparator.distance_with_args(compared.chars(), &args) {
+                matches.push((compared, distance, freq));
             }
         }
-        matches.sort_unstable_by(|a, b| (a.1, a.0).cmp(&(b.1, b.0)));
-        matches.truncate(max_results * 2);
+        for (compared, freq) in prefixes {
+            if let Some(distance) = comparator.distance_with_args(compared.chars(), &args) {
+                matches.push((compared, distance, freq));
+            }
+        }
         matches.sort_unstable_by(|a, b| (a.1, b.2, a.0).cmp(&(b.1, a.2, b.0)));
         matches.truncate(max_results);
-        let result: Vec<(String, usize)> = matches
+        let result: Corrections = matches
             .into_iter()
-            .map(|(word, distance, _)| (word.to_owned(), distance))
+            .map(|(word, distance, freq)| (word.to_owned(), distance, freq))
             .collect();
         memo.fuzzy.borrow_mut().insert(key.clone(), result.clone());
         result
@@ -298,20 +442,45 @@ impl Index {
         }
 
         let mut corrected = Vec::with_capacity(words.len());
+        // Runner-up corrections per word position, tried one at a time.
+        let mut alternatives: Vec<(usize, String, usize)> = Vec::new();
         let mut total_distance = 0;
         let mut any_correction = false;
-        for &word in &words {
-            if text::char_len(word) < 2 {
+        let min_chars = (self.segment_config.min_word_chars as usize).max(2);
+        for (i, &word) in words.iter().enumerate() {
+            let last = i + 1 == words.len();
+            // Short words are not indexed, so a correction would replace a real word; the word
+            // being typed stays while an indexed word starts with it.
+            let typing = last && self.has_prefix(Field::Word, word);
+            if text::char_len(word) < min_chars || typing {
                 corrected.push(word.to_owned());
                 continue;
             }
-            match self.fuzzy_search(memo, word, 3).into_iter().next() {
-                Some((best, distance)) if distance > 0 => {
-                    corrected.push(best);
+            let prefix = last && text::char_len(word) >= 3;
+            let found = self.fuzzy_search(memo, word, 3, prefix);
+            match found.first() {
+                Some((best, distance, _)) if *distance > 0 => {
+                    corrected.push(best.clone());
                     total_distance += distance;
                     any_correction = true;
+                    alternatives.extend(
+                        found[1..]
+                            .iter()
+                            .filter(|(_, d, _)| *d > 0)
+                            .map(|(alt, d, _)| (i, alt.clone(), d.saturating_sub(*distance))),
+                    );
                 }
-                _ => corrected.push(word.to_owned()),
+                Some((_, _, freq)) => {
+                    // A real word can still be a typo of a much more common one.
+                    let common = found[1..]
+                        .iter()
+                        .find(|(_, d, f)| *d == 1 && *f >= freq.saturating_mul(20).max(20));
+                    if let Some((alt, _, _)) = common {
+                        alternatives.push((i, alt.clone(), 1));
+                    }
+                    corrected.push(word.to_owned());
+                }
+                None => corrected.push(word.to_owned()),
             }
         }
 
@@ -322,6 +491,11 @@ impl Index {
                 results.push((joined, total_distance.max(1)));
             }
         }
+        for (i, alt, extra) in alternatives {
+            let mut phrase_words = corrected.clone();
+            phrase_words[i] = alt;
+            results.push((phrase_words.join(" "), (total_distance + extra).max(1)));
+        }
 
         if let [word] = words.as_slice() {
             let chars: Vec<char> = word.chars().collect();
@@ -329,9 +503,9 @@ impl Index {
                 for split in 3..chars.len() - 2 {
                     let left: String = chars[..split].iter().collect();
                     let right: String = chars[split..].iter().collect();
-                    let left = self.fuzzy_search(memo, &left, 1).into_iter().next();
-                    let right = self.fuzzy_search(memo, &right, 1).into_iter().next();
-                    if let (Some((lw, ld)), Some((rw, rd))) = (left, right) {
+                    let left = self.fuzzy_search(memo, &left, 1, false).into_iter().next();
+                    let right = self.fuzzy_search(memo, &right, 1, false).into_iter().next();
+                    if let (Some((lw, ld, _)), Some((rw, rd, _))) = (left, right) {
                         if ld <= 1 && rd <= 1 {
                             let compound = format!("{lw} {rw}");
                             if compound != phrase {
@@ -361,7 +535,7 @@ impl Index {
             .filter(|(p, _)| *p != lower)
             .collect();
         let mut seen: FxHashSet<String> = phrases.iter().map(|p| p.0.clone()).collect();
-        for (word, distance) in self.fuzzy_search(memo, &lower, 5) {
+        for (word, distance, _) in self.fuzzy_search(memo, &lower, 5, false) {
             if word != lower && distance > 0 && seen.insert(word.clone()) {
                 phrases.push((word, distance));
             }
@@ -421,6 +595,7 @@ impl Index {
         }
         // Recursive lookups of short corrections are expensive and depend only on the index.
         if depth == 2
+            && current_filter().is_none()
             && text::char_len(text::strip(&text::lower(query))) <= self.config.short_query_chars
         {
             let key = (query.to_owned(), max_results);
@@ -468,11 +643,17 @@ impl Index {
 
         let mut fuzzy_matches: FxHashMap<u32, (usize, usize)> = FxHashMap::default();
         if prefix_matches.len() < max_results && depth < 2 {
+            let mut last_distance = 0;
             for (rank, (phrase, distance)) in self
                 .fix_spell(memo, query, fetch_prefix)
                 .into_iter()
                 .enumerate()
             {
+                // Phrases come closest first; further ones only fill up a short list.
+                if distance > last_distance && fuzzy_matches.len() >= max_results * 2 {
+                    break;
+                }
+                last_distance = distance;
                 for hit in self.raw_autocomplete(memo, &phrase, max_results * 2, 2) {
                     let better = fuzzy_matches
                         .get(&hit.doc)
@@ -496,38 +677,29 @@ impl Index {
                 },
             );
         }
+        // Direct matches override corrections that also reach the document.
         for doc in infix_matches {
-            let fuzzy_distance = merged.get(&doc).map_or(0, |m| m.fuzzy_distance);
-            merged.insert(
-                doc,
-                Merged {
-                    fuzzy_distance,
-                    ..Merged::default()
-                },
-            );
+            merged.insert(doc, Merged::default());
         }
         for doc in prefix_matches {
-            let fuzzy_distance = merged.get(&doc).map_or(0, |m| m.fuzzy_distance);
             merged.insert(
                 doc,
                 Merged {
                     from_prefix: true,
-                    fuzzy_distance,
                     is_exact: Some(doc) == exact,
                     ..Merged::default()
                 },
             );
         }
         for doc in abbreviation_matches {
-            let prev = merged.get(&doc).copied();
+            let prev = merged.get(&doc).copied().filter(|p| p.fuzzy_distance == 0);
             merged.insert(
                 doc,
                 Merged {
                     from_prefix: prev.is_none_or(|p| p.from_prefix),
-                    fuzzy_distance: prev.map_or(0, |p| p.fuzzy_distance),
                     is_abbreviation: true,
                     is_exact: prev.is_some_and(|p| p.is_exact),
-                    fuzzy_rank: None,
+                    ..Merged::default()
                 },
             );
         }

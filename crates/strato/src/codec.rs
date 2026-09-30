@@ -164,7 +164,9 @@ pub(crate) struct Reader {
 impl Reader {
     pub(crate) fn new(data: Bytes) -> Result<Self, Error> {
         if !(data.as_ref().as_ptr() as usize).is_multiple_of(ALIGN) {
-            return Err(Error::Format("segment buffer is not 8-byte aligned".into()));
+            return Err(Error::Corrupt(
+                "segment buffer is not 8-byte aligned".into(),
+            ));
         }
         Ok(Self { data, pos: 0 })
     }
@@ -174,7 +176,7 @@ impl Reader {
             .pos
             .checked_add(n)
             .filter(|&e| e <= self.data.as_ref().len());
-        let end = end.ok_or_else(|| Error::Format("truncated segment".into()))?;
+        let end = end.ok_or_else(|| Error::Corrupt("truncated segment".into()))?;
         let start = self.pos;
         self.pos = end;
         Ok((start, end))
@@ -204,10 +206,10 @@ impl Reader {
     fn count(&mut self, width: usize) -> Result<(usize, usize), Error> {
         self.align()?;
         let n =
-            usize::try_from(self.u64()?).map_err(|_| Error::Format("length overflow".into()))?;
+            usize::try_from(self.u64()?).map_err(|_| Error::Corrupt("length overflow".into()))?;
         let bytes = n
             .checked_mul(width)
-            .ok_or_else(|| Error::Format("length overflow".into()))?;
+            .ok_or_else(|| Error::Corrupt("length overflow".into()))?;
         Ok((n, bytes))
     }
 
@@ -233,7 +235,7 @@ impl Reader {
         if self.pos == self.data.as_ref().len() {
             Ok(())
         } else {
-            Err(Error::Format("trailing bytes in segment".into()))
+            Err(Error::Corrupt("trailing bytes in segment".into()))
         }
     }
 }

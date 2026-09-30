@@ -5,7 +5,10 @@ import pytest
 
 from strato import ChangeSet, ConflictError, Database, Engine, Replica, Store, Ingestor
 
-DOCS = [(i, f"item {name} {i}", (i % 10) / 10, []) for i, name in enumerate(["rust", "python", "data", "cloud"] * 25)]
+DOCS = [
+    {"id": i, "text": f"item {name} {i}", "popularity": (i % 10) / 10}
+    for i, name in enumerate(["rust", "python", "data", "cloud"] * 25)
+]
 
 URLS = ["memory:///py"]
 if "STRATO_TEST_S3_URL" in os.environ:
@@ -29,9 +32,9 @@ def test_commit_rebase_conflict(database):
     assert t.commit()["version"] == 1
 
     first, second, strict = database.begin(), database.begin(), database.begin()
-    first.append("catalog", [(1000, "rust async", 0.9, [])], deletes=[0])
-    second.append("catalog", [(1001, "rust macros", 0.8, [])])
-    strict.append("catalog", [(1002, "rust unsafe", 0.1, [])])
+    first.append("catalog", [{"id": 1000, "text": "rust async", "popularity": 0.9}], deletes=[0])
+    second.append("catalog", [{"id": 1001, "text": "rust macros", "popularity": 0.8}])
+    strict.append("catalog", [{"id": 1002, "text": "rust unsafe", "popularity": 0.1}])
     strict.strict()
     first.commit()
     manifest = second.commit()
@@ -39,7 +42,7 @@ def test_commit_rebase_conflict(database):
     with pytest.raises(ConflictError):
         strict.commit()
 
-    index = database.load_index("catalog")
+    index = database.open_index("catalog")
     assert len(index) == 101
     assert {h.id for h in index.complete("rust a")} >= {1000}
 
@@ -50,7 +53,7 @@ def test_compact_cleanup_and_follow(database):
     t.commit()
     for i in range(4):
         t = database.begin()
-        t.append("catalog", [(2000 + i, f"cloud native {i}", 0.5, [])], deletes=[i])
+        t.append("catalog", [{"id": 2000 + i, "text": f"cloud native {i}", "popularity": 0.5}], deletes=[i])
         t.commit()
 
     engine = Engine()
@@ -80,7 +83,7 @@ def test_lease(database):
 def test_inbox_and_single_writer(database):
     for n in range(3):
         batch = ChangeSet()
-        batch.upsert("catalog", [(5000 + n, f"streamed item {n}", 0.4, [])])
+        batch.upsert("catalog", [{"id": 5000 + n, "text": f"streamed item {n}", "popularity": 0.4}])
         if n == 2:
             batch.delete("catalog", [5000])
         database.submit(batch)
@@ -93,8 +96,8 @@ def test_inbox_and_single_writer(database):
     assert step["step"] == "committed" and step["change_sets"] == 3 and leader.is_active
     assert standby.run_once()["step"] == "standby"
     assert leader.run_once()["step"] == "idle"
-    index = database.load_index("catalog")
-    assert index.get(5000) is None and index.get(5002)[1] == "streamed item 2"
+    index = database.open_index("catalog")
+    assert index.get(5000) is None and index.get(5002).text == "streamed item 2"
     leader.release()
     assert standby.run_once()["step"] == "idle" and standby.is_active
     standby.release()
@@ -113,7 +116,7 @@ def test_grouped_replica_and_compacting_writer(database):
     ingestor = Ingestor(database, "w")
     for n in range(6):
         batch = ChangeSet()
-        batch.upsert("base/en", [(9000 + n, f"extra {n}", 0.2, [])])
+        batch.upsert("base/en", [{"id": 9000 + n, "text": f"extra {n}", "popularity": 0.2}])
         database.submit(batch)
         ingestor.run_once()
     replica.sync()
@@ -127,7 +130,10 @@ def test_threaded_queries_during_updates(database):
     import threading
 
     t = database.begin()
-    t.append("catalog", [(i, f"item {w} {i}", (i % 10) / 10, []) for i, w in enumerate(["rust", "python", "data", "cloud"] * 500)])
+    t.append(
+        "catalog",
+        [{"id": i, "text": f"item {w} {i}", "popularity": (i % 10) / 10} for i, w in enumerate(["rust", "python", "data", "cloud"] * 500)],
+    )
     t.set_max_score("catalog", 1000.0)
     t.commit()
     engine = Engine()
@@ -153,7 +159,7 @@ def test_threaded_queries_during_updates(database):
     ingestor = Ingestor(database, "w")
     for n in range(30):
         batch = ChangeSet()
-        batch.upsert("catalog", [(10_000 + n, f"rust streamed {n}", 0.3, []), (n, f"python renamed {n}", 0.9, [])])
+        batch.upsert("catalog", [{"id": 10_000 + n, "text": f"rust streamed {n}", "popularity": 0.3}, {"id": n, "text": f"python renamed {n}", "popularity": 0.9}])
         database.submit(batch)
         ingestor.run_once()
         replica.sync()

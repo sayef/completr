@@ -1,52 +1,69 @@
+use std::collections::HashMap;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use std::collections::HashMap;
-
 use pyo3::buffer::PyBuffer;
-use pyo3::exceptions::{PyFileNotFoundError, PyIOError, PyValueError};
+use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict};
+use pyo3::sync::PyOnceLock;
+use pyo3::types::{PyBytes, PyDict, PyString, PyType};
 
-pyo3::create_exception!(
-    strato,
-    ConflictError,
-    pyo3::exceptions::PyException,
-    "A concurrent commit changed what this transaction depends on."
-);
+fn error_class(py: Python<'_>, name: &str) -> PyResult<Py<PyType>> {
+    static MODULE: PyOnceLock<Py<PyModule>> = PyOnceLock::new();
+    let module = MODULE.get_or_try_init(py, || py.import("strato._errors").map(Bound::unbind))?;
+    Ok(module
+        .bind(py)
+        .getattr(name)?
+        .cast_into::<PyType>()?
+        .unbind())
+}
 
-type DocumentTuple = (u64, String, f32, Vec<(String, bool)>);
+fn raise(name: &str, message: String) -> PyErr {
+    Python::attach(|py| match error_class(py, name) {
+        Ok(class) => PyErr::from_type(class.into_bound(py), message),
+        Err(e) => e,
+    })
+}
+
+fn invalid(message: impl Into<String>) -> PyErr {
+    raise("InvalidInputError", message.into())
+}
 
 fn to_py_err(e: strato_rs::Error) -> PyErr {
-    match e {
-        strato_rs::Error::Io(e) => PyIOError::new_err(e.to_string()),
-        strato_rs::Error::NotFound(key) => PyFileNotFoundError::new_err(key),
-        e @ strato_rs::Error::Store(_) => PyIOError::new_err(e.to_string()),
-        e @ strato_rs::Error::Conflict(_) => ConflictError::new_err(e.to_string()),
-        e => PyValueError::new_err(e.to_string()),
+    let name = match &e {
+        strato_rs::Error::Io(_) | strato_rs::Error::Store(_) => "StorageError",
+        strato_rs::Error::NotFound(_) => "NotFoundError",
+        strato_rs::Error::Conflict(_) => "ConflictError",
+        strato_rs::Error::Corrupt(_) | strato_rs::Error::Fst(_) => "CorruptionError",
+        strato_rs::Error::InvalidInput(_) => "InvalidInputError",
+        _ => "StratoError",
+    };
+    raise(name, e.to_string())
+}
+
+/// A document id as Python sees it: an int, or a string key.
+#[derive(FromPyObject)]
+enum Id {
+    Int(u64),
+    Key(String),
+}
+
+impl Id {
+    fn numeric(&self) -> u64 {
+        match self {
+            Self::Int(id) => *id,
+            Self::Key(key) => strato_rs::key_id(key),
+        }
     }
 }
 
-fn to_document((id, text, weight, aliases): DocumentTuple) -> strato_rs::Document {
-    let aliases = aliases
-        .into_iter()
-        .map(|(text, abbreviation)| strato_rs::Alias {
-            text,
-            kind: if abbreviation {
-                strato_rs::AliasKind::Abbreviation
-            } else {
-                strato_rs::AliasKind::Synonym
-            },
-        })
-        .collect();
-    strato_rs::Document {
-        id,
-        text,
-        weight,
-        aliases,
-        vector: None,
-    }
+fn py_id(py: Python<'_>, id: u64, key: Option<&str>) -> PyResult<Py<PyAny>> {
+    Ok(match key {
+        Some(key) => key.into_pyobject(py)?.into_any().unbind(),
+        None => id.into_pyobject(py)?.into_any().unbind(),
+    })
 }
 
 /// Rows of a 2-D float32 buffer such as a numpy array, or a list of lists.
@@ -55,7 +72,7 @@ fn vector_rows(py: Python<'_>, vectors: &Bound<'_, PyAny>, rows: usize) -> PyRes
         Ok(buffer) => {
             let shape = buffer.shape().to_vec();
             if shape.len() != 2 || shape[1] == 0 {
-                return Err(PyValueError::new_err(format!(
+                return Err(invalid(format!(
                     "vectors must have shape (n, dim), got {shape:?}"
                 )));
             }
@@ -66,13 +83,11 @@ fn vector_rows(py: Python<'_>, vectors: &Bound<'_, PyAny>, rows: usize) -> PyRes
                 .collect()
         }
         Err(_) => vectors.extract().map_err(|_| {
-            PyValueError::new_err(
-                "vectors must be a float32 array of shape (n, dim) or a list of float lists",
-            )
+            invalid("vectors must be a float32 array of shape (n, dim) or a list of float lists")
         })?,
     };
     if out.len() != rows {
-        return Err(PyValueError::new_err(format!(
+        return Err(invalid(format!(
             "{} vectors for {rows} documents",
             out.len()
         )));
@@ -84,63 +99,307 @@ fn vector_rows(py: Python<'_>, vectors: &Bound<'_, PyAny>, rows: usize) -> PyRes
 fn query_vector(py: Python<'_>, vector: &Bound<'_, PyAny>) -> PyResult<Vec<f32>> {
     match PyBuffer::<f32>::get(vector) {
         Ok(buffer) if buffer.dimensions() == 1 => buffer.to_vec(py),
-        Ok(_) => Err(PyValueError::new_err(
-            "the query vector must be one-dimensional",
-        )),
-        Err(_) => vector.extract().map_err(|_| {
-            PyValueError::new_err("the query vector must be a float32 array or a list of floats")
-        }),
+        Ok(_) => Err(invalid("a vector must be one-dimensional")),
+        Err(_) => vector
+            .extract()
+            .map_err(|_| invalid("a vector must be a float32 array or a list of floats")),
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn segment_config(
-    min_word_chars: u8,
-    max_edit_distance: u8,
-    fuzzy_prefix_chars: u8,
-    vector_bits: u8,
-    compact_keys: bool,
-    build_threads: usize,
-) -> strato_rs::SegmentConfig {
-    strato_rs::SegmentConfig {
-        min_word_chars,
-        max_edit_distance,
-        fuzzy_prefix_chars,
-        vector_bits,
-        compact_keys,
-        build_threads,
-        ..strato_rs::SegmentConfig::default()
+const FIELDS: [&str; 7] = [
+    "id",
+    "text",
+    "popularity",
+    "synonyms",
+    "abbreviations",
+    "contexts",
+    "vector",
+];
+
+/// Strings from a list-like value; `None` and pandas' NaN mean none.
+fn strings(value: &Bound<'_, PyAny>, field: &str) -> PyResult<Vec<String>> {
+    if value.is_none() || value.extract::<f64>().is_ok_and(f64::is_nan) {
+        return Ok(Vec::new());
     }
+    if value.is_instance_of::<PyString>() {
+        return Err(invalid(format!(
+            "{field} must be a list of strings, not a string"
+        )));
+    }
+    value
+        .try_iter()?
+        .map(|v| v?.extract::<String>())
+        .collect::<PyResult<_>>()
+        .map_err(|_| invalid(format!("{field} must be a list of strings")))
 }
 
-fn build_segment(
+fn document_from_dict(py: Python<'_>, dict: &Bound<'_, PyDict>) -> PyResult<strato_rs::Document> {
+    for key in dict.keys() {
+        let key: String = key.extract()?;
+        if !FIELDS.contains(&key.as_str()) {
+            return Err(invalid(format!(
+                "unknown document field {key:?}; expected {}",
+                FIELDS.join(", ")
+            )));
+        }
+    }
+    let get = |name: &str| dict.get_item(name).ok().flatten().filter(|v| !v.is_none());
+    let id: Id = get("id")
+        .ok_or_else(|| invalid("a document needs an id"))?
+        .extract()
+        .map_err(|_| invalid("a document id must be an int or a string"))?;
+    let text: String = get("text")
+        .ok_or_else(|| invalid("a document needs a text"))?
+        .extract()?;
+    let popularity: f32 = get("popularity").map_or(Ok(0.0), |p| p.extract())?;
+    let mut doc = match id {
+        Id::Int(id) => strato_rs::Document::new(id, text, popularity),
+        Id::Key(key) => strato_rs::Document::keyed(key, text, popularity),
+    };
+    if let Some(v) = get("synonyms") {
+        for s in strings(&v, "synonyms")? {
+            doc = doc.with_synonym(s);
+        }
+    }
+    if let Some(v) = get("abbreviations") {
+        for s in strings(&v, "abbreviations")? {
+            doc = doc.with_abbreviation(s);
+        }
+    }
+    if let Some(v) = get("contexts") {
+        for s in strings(&v, "contexts")? {
+            doc = doc.with_context(s);
+        }
+    }
+    if let Some(v) = get("vector") {
+        doc = doc.with_vector(query_vector(py, &v)?);
+    }
+    Ok(doc)
+}
+
+/// Documents from dicts, `Document`s, or a pandas, polars or pyarrow table.
+fn documents(
     py: Python<'_>,
-    documents: Vec<DocumentTuple>,
-    deletes: Vec<u64>,
+    source: &Bound<'_, PyAny>,
     vectors: Option<&Bound<'_, PyAny>>,
-    config: strato_rs::SegmentConfig,
-) -> PyResult<strato_rs::Segment> {
-    let mut docs: Vec<strato_rs::Document> = documents.into_iter().map(to_document).collect();
+) -> PyResult<Vec<strato_rs::Document>> {
+    let rows = if source.hasattr("to_pylist")? {
+        source.call_method0("to_pylist")?
+    } else if source.hasattr("to_dicts")? {
+        source.call_method0("to_dicts")?
+    } else if source.hasattr("to_dict")? && source.hasattr("columns")? {
+        source.call_method1("to_dict", ("records",))?
+    } else {
+        source.clone()
+    };
+    let mut docs = Vec::new();
+    for item in rows.try_iter()? {
+        let item = item?;
+        if let Ok(doc) = item.cast::<Document>() {
+            docs.push(doc.get().0.clone());
+        } else if let Ok(dict) = item.cast::<PyDict>() {
+            docs.push(document_from_dict(py, dict)?);
+        } else {
+            return Err(PyTypeError::new_err(format!(
+                "documents must be dicts or strato.Document, not {}",
+                item.get_type().name()?
+            )));
+        }
+    }
     if let Some(vectors) = vectors {
         let rows = vector_rows(py, vectors, docs.len())?;
         for (doc, vector) in docs.iter_mut().zip(rows) {
             doc.vector = Some(vector);
         }
     }
-    py.detach(|| strato_rs::Segment::build_with(config, docs, deletes))
-        .map_err(to_py_err)
+    Ok(docs)
 }
 
-fn to_tuple(doc: strato_rs::Document) -> DocumentTuple {
-    let aliases = doc
-        .aliases
-        .into_iter()
-        .map(|a| (a.text, a.kind == strato_rs::AliasKind::Abbreviation))
-        .collect();
-    (doc.id, doc.text, doc.weight, aliases)
+fn numeric_ids(values: Vec<Id>) -> Vec<u64> {
+    values.iter().map(Id::numeric).collect()
 }
 
-/// An immutable batch of documents `(id, text, weight, [(alias, is_abbreviation)])` plus deleted ids.
+/// Byte ranges of `text` as `(start, end)` char offsets.
+fn char_ranges(text: &str, ranges: &[Range<usize>]) -> Vec<(usize, usize)> {
+    let offset = |byte: usize| text[..byte].chars().count();
+    ranges
+        .iter()
+        .map(|r| (offset(r.start), offset(r.end)))
+        .collect()
+}
+
+fn build_options(
+    min_word_chars: u8,
+    max_edit_distance: u8,
+    fuzzy_prefix_chars: u8,
+    vector_bits: u8,
+    compact_keys: bool,
+    build_threads: usize,
+) -> strato_rs::BuildOptions {
+    strato_rs::BuildOptions::default()
+        .min_word_chars(min_word_chars)
+        .max_edit_distance(max_edit_distance)
+        .fuzzy_prefix_chars(fuzzy_prefix_chars)
+        .vector_bits(vector_bits)
+        .compact_keys(compact_keys)
+        .build_threads(build_threads)
+}
+
+fn index_options(
+    max_score: Option<f64>,
+    popularity_weight: f64,
+    short_query_chars: usize,
+    short_query_limit: usize,
+    short_query_cache_entries: usize,
+    vector_threads: usize,
+) -> strato_rs::IndexOptions {
+    let options = strato_rs::IndexOptions::default()
+        .popularity_weight(popularity_weight)
+        .short_query_chars(short_query_chars)
+        .short_query_limit(short_query_limit)
+        .short_query_cache_entries(short_query_cache_entries)
+        .vector_threads(vector_threads);
+    match max_score {
+        Some(score) => options.max_score(score),
+        None => options,
+    }
+}
+
+fn search_options(limit: usize, contexts: Option<Vec<String>>) -> strato_rs::SearchOptions {
+    strato_rs::SearchOptions::new(limit).contexts(contexts.unwrap_or_default())
+}
+
+fn hybrid_options(
+    fusion: &str,
+    rrf_k: f64,
+    semantic_weight: f64,
+    candidates: Option<usize>,
+    contexts: Option<Vec<String>>,
+) -> PyResult<strato_rs::HybridOptions> {
+    let fusion = match fusion {
+        "rrf" => strato_rs::Fusion::ReciprocalRank { k: rrf_k },
+        "weighted" => strato_rs::Fusion::Weighted { semantic_weight },
+        "lexical_first" => strato_rs::Fusion::LexicalFirst,
+        other => {
+            return Err(invalid(format!(
+                "unknown fusion {other:?}: use 'rrf', 'weighted' or 'lexical_first'"
+            )))
+        }
+    };
+    let options = strato_rs::HybridOptions::default()
+        .fusion(fusion)
+        .contexts(contexts.unwrap_or_default());
+    Ok(match candidates {
+        Some(n) => options.candidates(n),
+        None => options,
+    })
+}
+
+/// One completable entry. `id` is an int or a string key.
+#[pyclass(frozen, module = "strato")]
+struct Document(strato_rs::Document);
+
+#[pymethods]
+impl Document {
+    #[new]
+    #[pyo3(signature = (id, text, popularity = 0.0, *, synonyms = Vec::new(), abbreviations = Vec::new(), contexts = Vec::new(), vector = None))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        py: Python<'_>,
+        id: Id,
+        text: String,
+        popularity: f32,
+        synonyms: Vec<String>,
+        abbreviations: Vec<String>,
+        contexts: Vec<String>,
+        vector: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        let mut doc = match id {
+            Id::Int(id) => strato_rs::Document::new(id, text, popularity),
+            Id::Key(key) => strato_rs::Document::keyed(key, text, popularity),
+        };
+        for s in synonyms {
+            doc = doc.with_synonym(s);
+        }
+        for a in abbreviations {
+            doc = doc.with_abbreviation(a);
+        }
+        for c in contexts {
+            doc = doc.with_context(c);
+        }
+        if let Some(v) = vector {
+            doc = doc.with_vector(query_vector(py, &v)?);
+        }
+        Ok(Self(doc))
+    }
+
+    #[getter]
+    fn id(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        py_id(py, self.0.id, self.0.key.as_deref())
+    }
+
+    #[getter]
+    fn text(&self) -> &str {
+        &self.0.text
+    }
+
+    #[getter]
+    fn popularity(&self) -> f32 {
+        self.0.popularity
+    }
+
+    #[getter]
+    fn synonyms(&self) -> Vec<String> {
+        self.aliases(strato_rs::AliasKind::Synonym)
+    }
+
+    #[getter]
+    fn abbreviations(&self) -> Vec<String> {
+        self.aliases(strato_rs::AliasKind::Abbreviation)
+    }
+
+    #[getter]
+    fn contexts(&self) -> Vec<String> {
+        self.0.contexts.clone()
+    }
+
+    fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let out = PyDict::new(py);
+        out.set_item("id", self.id(py)?)?;
+        out.set_item("text", &self.0.text)?;
+        out.set_item("popularity", self.0.popularity)?;
+        out.set_item("synonyms", self.synonyms())?;
+        out.set_item("abbreviations", self.abbreviations())?;
+        out.set_item("contexts", self.contexts())?;
+        Ok(out)
+    }
+
+    fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
+        other.cast::<Document>().is_ok_and(|o| o.get().0 == self.0)
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(format!(
+            "Document(id={}, text={:?}, popularity={})",
+            self.id(py)?.bind(py).repr()?,
+            self.0.text,
+            self.0.popularity
+        ))
+    }
+}
+
+impl Document {
+    fn aliases(&self, kind: strato_rs::AliasKind) -> Vec<String> {
+        self.0
+            .aliases
+            .iter()
+            .filter(|a| a.kind == kind)
+            .map(|a| a.text.clone())
+            .collect()
+    }
+}
+
+/// An immutable batch of documents plus deleted ids.
 #[pyclass(frozen, module = "strato")]
 struct Segment(Arc<strato_rs::Segment>);
 
@@ -155,8 +414,8 @@ impl Segment {
     #[allow(clippy::too_many_arguments)]
     fn build(
         py: Python<'_>,
-        documents: Vec<DocumentTuple>,
-        deletes: Vec<u64>,
+        documents: &Bound<'_, PyAny>,
+        deletes: Vec<Id>,
         vectors: Option<Bound<'_, PyAny>>,
         min_word_chars: u8,
         max_edit_distance: u8,
@@ -165,7 +424,7 @@ impl Segment {
         compact_keys: bool,
         build_threads: usize,
     ) -> PyResult<Self> {
-        let config = segment_config(
+        let options = build_options(
             min_word_chars,
             max_edit_distance,
             fuzzy_prefix_chars,
@@ -173,13 +432,12 @@ impl Segment {
             compact_keys,
             build_threads,
         );
-        Ok(Self(Arc::new(build_segment(
-            py,
-            documents,
-            deletes,
-            vectors.as_ref(),
-            config,
-        )?)))
+        let docs = self::documents(py, documents, vectors.as_ref())?;
+        let deletes = numeric_ids(deletes);
+        let segment = py
+            .detach(|| strato_rs::Segment::build_with(options, docs, deletes))
+            .map_err(to_py_err)?;
+        Ok(Self(Arc::new(segment)))
     }
 
     #[getter]
@@ -217,16 +475,18 @@ impl Segment {
         py.detach(|| self.0.save(path)).map_err(to_py_err)
     }
 
+    fn documents(&self) -> Vec<Document> {
+        self.0.documents().map(Document).collect()
+    }
+
+    /// Numeric ids of the documents, ascending.
     fn ids(&self) -> Vec<u64> {
         self.0.ids().to_vec()
     }
 
+    /// Numeric ids this segment deletes from older segments.
     fn deletes(&self) -> Vec<u64> {
         self.0.deletes().to_vec()
-    }
-
-    fn documents(&self) -> Vec<DocumentTuple> {
-        self.0.documents().map(to_tuple).collect()
     }
 
     fn __len__(&self) -> usize {
@@ -242,93 +502,133 @@ impl Segment {
     }
 }
 
+/// One completion. `highlights` are `(start, end)` character offsets into `text`.
 #[pyclass(frozen, get_all, module = "strato")]
 struct Suggestion {
-    id: u64,
+    id: Py<PyAny>,
+    text: String,
     score: f64,
     kind: &'static str,
+    highlights: Vec<(usize, usize)>,
     layer: Option<String>,
+}
+
+impl Suggestion {
+    fn from(py: Python<'_>, s: strato_rs::Suggestion, layer: Option<String>) -> PyResult<Self> {
+        Ok(Self {
+            id: py_id(py, s.id, s.key.as_deref())?,
+            highlights: char_ranges(&s.text, &s.highlights),
+            text: s.text,
+            score: s.score,
+            kind: s.kind.as_str(),
+            layer,
+        })
+    }
 }
 
 #[pymethods]
 impl Suggestion {
-    fn __repr__(&self) -> String {
-        format!(
-            "Suggestion(id={}, score={}, kind={:?}, layer={:?})",
-            self.id, self.score, self.kind, self.layer
-        )
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(format!(
+            "Suggestion(id={}, text={:?}, score={:.4}, kind={:?})",
+            self.id.bind(py).repr()?,
+            self.text,
+            self.score,
+            self.kind
+        ))
     }
 }
 
 /// A fused hybrid result: `kind` is the lexical match kind when matched lexically, else "semantic".
 #[pyclass(frozen, get_all, module = "strato")]
 struct HybridSuggestion {
-    id: u64,
+    id: Py<PyAny>,
+    text: String,
     score: f64,
     kind: &'static str,
     lexical_score: Option<f64>,
     semantic_score: Option<f64>,
+    highlights: Vec<(usize, usize)>,
     layer: Option<String>,
+}
+
+impl HybridSuggestion {
+    fn from(
+        py: Python<'_>,
+        h: strato_rs::HybridSuggestion,
+        layer: Option<String>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            id: py_id(py, h.id, h.key.as_deref())?,
+            highlights: char_ranges(&h.text, &h.highlights),
+            text: h.text,
+            score: h.score,
+            kind: h.kind.as_str(),
+            lexical_score: h.lexical_score,
+            semantic_score: h.semantic_score,
+            layer,
+        })
+    }
 }
 
 #[pymethods]
 impl HybridSuggestion {
-    fn __repr__(&self) -> String {
-        format!(
-            "HybridSuggestion(id={}, score={}, kind={:?}, lexical_score={:?}, semantic_score={:?}, layer={:?})",
-            self.id, self.score, self.kind, self.lexical_score, self.semantic_score, self.layer
-        )
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(format!(
+            "HybridSuggestion(id={}, text={:?}, score={:.4}, kind={:?})",
+            self.id.bind(py).repr()?,
+            self.text,
+            self.score,
+            self.kind
+        ))
     }
 }
 
-fn hybrid_options(
-    fusion: &str,
-    rrf_k: f64,
-    semantic_weight: f64,
-    candidates: Option<usize>,
-) -> PyResult<strato_rs::HybridOptions> {
-    let fusion = match fusion {
-        "rrf" => strato_rs::Fusion::ReciprocalRank { k: rrf_k },
-        "weighted" => strato_rs::Fusion::Weighted { semantic_weight },
-        "lexical_first" => strato_rs::Fusion::LexicalFirst,
-        other => {
-            return Err(PyValueError::new_err(format!(
-                "unknown fusion {other:?}: use 'rrf', 'weighted' or 'lexical_first'"
-            )))
-        }
-    };
-    Ok(strato_rs::HybridOptions { fusion, candidates })
-}
-
-fn to_hybrid(h: strato_rs::HybridSuggestion, layer: Option<String>) -> HybridSuggestion {
-    HybridSuggestion {
-        id: h.id,
-        score: h.score,
-        kind: h.kind.as_str(),
-        lexical_score: h.lexical_score,
-        semantic_score: h.semantic_score,
-        layer,
-    }
-}
-
+/// A document found through one of its synonyms.
 #[pyclass(frozen, get_all, module = "strato")]
 struct AliasSuggestion {
-    id: u64,
+    id: Py<PyAny>,
+    text: String,
     score: f64,
     layer: Option<String>,
 }
 
-#[pymethods]
 impl AliasSuggestion {
-    fn __repr__(&self) -> String {
-        format!(
-            "AliasSuggestion(id={}, score={}, layer={:?})",
-            self.id, self.score, self.layer
-        )
+    fn from(
+        py: Python<'_>,
+        a: strato_rs::AliasSuggestion,
+        layer: Option<String>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            id: py_id(py, a.id, a.key.as_deref())?,
+            text: a.text,
+            score: a.score,
+            layer,
+        })
     }
 }
 
-/// Segments ordered oldest to newest, composed into one searchable view.
+#[pymethods]
+impl AliasSuggestion {
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(format!(
+            "AliasSuggestion(id={}, text={:?}, score={:.4})",
+            self.id.bind(py).repr()?,
+            self.text,
+            self.score
+        ))
+    }
+}
+
+fn unlayered<T, U>(
+    py: Python<'_>,
+    items: Vec<T>,
+    f: impl Fn(Python<'_>, T, Option<String>) -> PyResult<U>,
+) -> PyResult<Vec<U>> {
+    items.into_iter().map(|item| f(py, item, None)).collect()
+}
+
+/// Segments ordered oldest to newest, completed as one.
 #[pyclass(frozen, module = "strato")]
 struct Index(Arc<strato_rs::Index>);
 
@@ -336,7 +636,7 @@ struct Index(Arc<strato_rs::Index>);
 impl Index {
     #[new]
     #[pyo3(signature = (
-        segments, max_score = None, popularity_weight = 0.4, short_query_chars = 3, short_query_limit = 100,
+        segments, *, max_score = None, popularity_weight = 0.4, short_query_chars = 3, short_query_limit = 100,
         short_query_cache_entries = 10_000, vector_threads = 1,
     ))]
     #[allow(clippy::too_many_arguments)]
@@ -351,78 +651,102 @@ impl Index {
         vector_threads: usize,
     ) -> PyResult<Self> {
         let segments: Vec<_> = segments.iter().map(|s| s.get().0.clone()).collect();
-        let config = strato_rs::IndexConfig {
+        let options = index_options(
             max_score,
-            ..index_config(
-                popularity_weight,
-                short_query_chars,
-                short_query_limit,
-                short_query_cache_entries,
-                vector_threads,
-            )
-        };
+            popularity_weight,
+            short_query_chars,
+            short_query_limit,
+            short_query_cache_entries,
+            vector_threads,
+        );
         Ok(Self(Arc::new(
-            py.detach(|| strato_rs::Index::new(segments, config))
+            py.detach(|| strato_rs::Index::new(segments, options))
                 .map_err(to_py_err)?,
         )))
     }
 
-    /// Nearest documents by embedding, as hits of kind "semantic" scored by inner product.
-    #[pyo3(signature = (vector, limit = 10))]
+    /// Builds one segment from `documents` (dicts, `Document`s or a table) and completes over it.
+    #[staticmethod]
+    #[pyo3(signature = (
+        documents, vectors = None, *, max_score = None, popularity_weight = 0.4,
+        min_word_chars = 3, max_edit_distance = 2, fuzzy_prefix_chars = 7, vector_bits = 4, build_threads = 1,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn from_documents(
+        py: Python<'_>,
+        documents: &Bound<'_, PyAny>,
+        vectors: Option<Bound<'_, PyAny>>,
+        max_score: Option<f64>,
+        popularity_weight: f64,
+        min_word_chars: u8,
+        max_edit_distance: u8,
+        fuzzy_prefix_chars: u8,
+        vector_bits: u8,
+        build_threads: usize,
+    ) -> PyResult<Self> {
+        let docs = self::documents(py, documents, vectors.as_ref())?;
+        let build = build_options(
+            min_word_chars,
+            max_edit_distance,
+            fuzzy_prefix_chars,
+            vector_bits,
+            false,
+            build_threads,
+        );
+        let options = index_options(max_score, popularity_weight, 3, 100, 10_000, 1);
+        let index = py
+            .detach(|| strato_rs::Index::from_documents_with(docs, build, options))
+            .map_err(to_py_err)?;
+        Ok(Self(Arc::new(index)))
+    }
+
+    /// Ranked completions: exact, prefix, abbreviation, infix and typo-tolerant matches.
+    #[pyo3(signature = (query, limit = 10, *, contexts = None))]
+    fn complete(
+        &self,
+        py: Python<'_>,
+        query: &str,
+        limit: usize,
+        contexts: Option<Vec<String>>,
+    ) -> PyResult<Vec<Suggestion>> {
+        let options = search_options(limit, contexts);
+        let hits = py.detach(|| self.0.complete_with(query, &options));
+        unlayered(py, hits, Suggestion::from)
+    }
+
+    #[pyo3(signature = (query, limit = 10, *, contexts = None))]
+    fn complete_aliases(
+        &self,
+        py: Python<'_>,
+        query: &str,
+        limit: usize,
+        contexts: Option<Vec<String>>,
+    ) -> PyResult<Vec<AliasSuggestion>> {
+        let options = search_options(limit, contexts);
+        let hits = py.detach(|| self.0.complete_aliases_with(query, &options));
+        unlayered(py, hits, AliasSuggestion::from)
+    }
+
+    /// Nearest documents by embedding, of kind "semantic", scored by inner product.
+    #[pyo3(signature = (vector, limit = 10, *, contexts = None))]
     fn vector_search(
         &self,
         py: Python<'_>,
         vector: &Bound<'_, PyAny>,
         limit: usize,
+        contexts: Option<Vec<String>>,
     ) -> PyResult<Vec<Suggestion>> {
         let query = query_vector(py, vector)?;
+        let options = search_options(limit, contexts);
         let hits = py
-            .detach(|| self.0.vector_search(&query, limit))
+            .detach(|| self.0.vector_search_with(&query, &options))
             .map_err(to_py_err)?;
-        Ok(hits
-            .into_iter()
-            .map(|h| Suggestion {
-                id: h.id,
-                score: h.score,
-                kind: h.kind.as_str(),
-                layer: None,
-            })
-            .collect())
-    }
-
-    #[getter]
-    fn vector_dim(&self) -> Option<usize> {
-        self.0.vector_dim()
-    }
-
-    #[pyo3(signature = (query, limit = 10))]
-    fn complete(&self, py: Python<'_>, query: &str, limit: usize) -> Vec<Suggestion> {
-        let hits = py.detach(|| self.0.complete(query, limit));
-        hits.into_iter()
-            .map(|h| Suggestion {
-                id: h.id,
-                score: h.score,
-                kind: h.kind.as_str(),
-                layer: None,
-            })
-            .collect()
-    }
-
-    #[pyo3(signature = (query, limit = 10))]
-    fn complete_aliases(&self, py: Python<'_>, query: &str, limit: usize) -> Vec<AliasSuggestion> {
-        let hits = py.detach(|| self.0.complete_aliases(query, limit));
-        hits.into_iter()
-            .map(|h| AliasSuggestion {
-                id: h.id,
-                score: h.score,
-                layer: None,
-            })
-            .collect()
+        unlayered(py, hits, Suggestion::from)
     }
 
     /// Lexical and vector results fused by `fusion`: "rrf" (reciprocal rank, `rrf_k`),
     /// "weighted" (`semantic_weight` in [0, 1]) or "lexical_first".
-    #[pyo3(signature = (text, vector, limit = 10, fusion = "rrf", rrf_k = 60.0, semantic_weight = 0.5, candidates = None))]
+    #[pyo3(signature = (text, vector, limit = 10, *, fusion = "rrf", rrf_k = 60.0, semantic_weight = 0.5, candidates = None, contexts = None))]
     #[allow(clippy::too_many_arguments)]
     fn hybrid_search(
         &self,
@@ -434,17 +758,23 @@ impl Index {
         rrf_k: f64,
         semantic_weight: f64,
         candidates: Option<usize>,
+        contexts: Option<Vec<String>>,
     ) -> PyResult<Vec<HybridSuggestion>> {
         let query = query_vector(py, vector)?;
-        let options = hybrid_options(fusion, rrf_k, semantic_weight, candidates)?;
+        let options = hybrid_options(fusion, rrf_k, semantic_weight, candidates, contexts)?;
         let hits = py
-            .detach(|| self.0.hybrid_search(text, &query, limit, options))
+            .detach(|| self.0.hybrid_search(text, &query, limit, &options))
             .map_err(to_py_err)?;
-        Ok(hits.into_iter().map(|h| to_hybrid(h, None)).collect())
+        unlayered(py, hits, HybridSuggestion::from)
     }
 
-    fn get(&self, id: u64) -> Option<DocumentTuple> {
-        self.0.document(id).map(to_tuple)
+    /// The live document with this id or key.
+    fn get(&self, id: Id) -> Option<Document> {
+        let doc = match &id {
+            Id::Int(id) => self.0.document(*id),
+            Id::Key(key) => self.0.document_by_key(key),
+        };
+        doc.map(Document)
     }
 
     fn compact(&self, py: Python<'_>) -> PyResult<Segment> {
@@ -462,6 +792,11 @@ impl Index {
     }
 
     #[getter]
+    fn vector_dim(&self) -> Option<usize> {
+        self.0.vector_dim()
+    }
+
+    #[getter]
     fn max_score(&self) -> f64 {
         self.0.max_score()
     }
@@ -472,25 +807,42 @@ impl Index {
 
     fn __repr__(&self) -> String {
         format!(
-            "Index(documents={}, segments={}, max_score={})",
+            "Index(documents={}, segments={})",
             self.0.len(),
-            self.0.segments().len(),
-            self.0.max_score()
+            self.0.segments().len()
         )
     }
 }
 
-/// Named indexes, published atomically; searches read one consistent set of them.
+/// Named indexes, published atomically and completed over as layers. An engine from
+/// `Database.engine()` also follows the database: call `sync()` to load new versions.
 #[pyclass(frozen, module = "strato")]
-struct Engine(Arc<strato_rs::Engine>);
+struct Engine {
+    engine: Arc<strato_rs::Engine>,
+    replica: Option<strato_rs::Replica>,
+}
+
+fn layered<T, U>(
+    py: Python<'_>,
+    layers: &[String],
+    hits: Vec<strato_rs::LayeredSuggestion<T>>,
+    f: impl Fn(Python<'_>, T, Option<String>) -> PyResult<U>,
+) -> PyResult<Vec<U>> {
+    hits.into_iter()
+        .map(|h| f(py, h.suggestion, Some(layers[h.layer].clone())))
+        .collect()
+}
 
 #[pymethods]
 impl Engine {
-    /// With several layers, each is asked for `limit * overfetch` hits before merging.
+    /// With several layers, each is asked for `limit * overfetch` suggestions before merging.
     #[new]
     #[pyo3(signature = (overfetch = 2))]
     fn new(overfetch: usize) -> Self {
-        Self(Arc::new(strato_rs::Engine::new().with_overfetch(overfetch)))
+        Self {
+            engine: Arc::new(strato_rs::Engine::new().with_overfetch(overfetch)),
+            replica: None,
+        }
     }
 
     /// Replaces or, with `None`, removes the given indexes in one step.
@@ -500,59 +852,84 @@ impl Engine {
             let index: Option<Py<Index>> = index.extract()?;
             staged.push((name.extract::<String>()?, index.map(|i| i.get().0.clone())));
         }
-        self.0.publish(staged);
+        self.engine.publish(staged);
         Ok(())
     }
 
+    /// Loads and publishes the database's latest version; returns it if new, else `None`.
+    fn sync(&self, py: Python<'_>) -> PyResult<Option<u64>> {
+        let replica = self.replica.as_ref().ok_or_else(|| {
+            invalid("this engine does not follow a database; create it with Database.engine()")
+        })?;
+        py.detach(|| strato_rs::block_on(replica.sync(&self.engine)))
+            .map_err(to_py_err)
+    }
+
+    /// The database version served, for an engine from `Database.engine()`.
+    #[getter]
+    fn version(&self, py: Python<'_>) -> Option<u64> {
+        let replica = self.replica.as_ref()?;
+        Some(py.detach(|| strato_rs::block_on(replica.version())))
+    }
+
     fn get(&self, name: &str) -> Option<Index> {
-        self.0.get(name).map(Index)
+        self.engine.get(name).map(Index)
     }
 
     fn names(&self) -> Vec<String> {
-        self.0.names()
+        self.engine.names()
     }
 
     /// Later layers override earlier ones per document id; missing names are empty layers.
-    #[pyo3(signature = (query, layers, limit = 10))]
+    #[pyo3(signature = (query, layers, limit = 10, *, contexts = None))]
     fn complete(
         &self,
         py: Python<'_>,
         query: &str,
         layers: Vec<String>,
         limit: usize,
-    ) -> Vec<Suggestion> {
+        contexts: Option<Vec<String>>,
+    ) -> PyResult<Vec<Suggestion>> {
         let names: Vec<&str> = layers.iter().map(String::as_str).collect();
-        let hits = py.detach(|| self.0.complete(&names, query, limit));
-        hits.into_iter()
-            .map(|h| Suggestion {
-                id: h.hit.id,
-                score: h.hit.score,
-                kind: h.hit.kind.as_str(),
-                layer: Some(layers[h.layer].clone()),
-            })
-            .collect()
+        let options = search_options(limit, contexts);
+        let hits = py.detach(|| self.engine.complete_with(&names, query, &options));
+        layered(py, &layers, hits, Suggestion::from)
     }
 
-    #[pyo3(signature = (query, layers, limit = 10))]
+    #[pyo3(signature = (query, layers, limit = 10, *, contexts = None))]
     fn complete_aliases(
         &self,
         py: Python<'_>,
         query: &str,
         layers: Vec<String>,
         limit: usize,
-    ) -> Vec<AliasSuggestion> {
+        contexts: Option<Vec<String>>,
+    ) -> PyResult<Vec<AliasSuggestion>> {
         let names: Vec<&str> = layers.iter().map(String::as_str).collect();
-        let hits = py.detach(|| self.0.complete_aliases(&names, query, limit));
-        hits.into_iter()
-            .map(|h| AliasSuggestion {
-                id: h.hit.id,
-                score: h.hit.score,
-                layer: Some(layers[h.layer].clone()),
-            })
-            .collect()
+        let options = search_options(limit, contexts);
+        let hits = py.detach(|| self.engine.complete_aliases_with(&names, query, &options));
+        layered(py, &layers, hits, AliasSuggestion::from)
     }
 
-    #[pyo3(signature = (text, vector, layers, limit = 10, fusion = "rrf", rrf_k = 60.0, semantic_weight = 0.5, candidates = None))]
+    #[pyo3(signature = (vector, layers, limit = 10, *, contexts = None))]
+    fn vector_search(
+        &self,
+        py: Python<'_>,
+        vector: &Bound<'_, PyAny>,
+        layers: Vec<String>,
+        limit: usize,
+        contexts: Option<Vec<String>>,
+    ) -> PyResult<Vec<Suggestion>> {
+        let query = query_vector(py, vector)?;
+        let names: Vec<&str> = layers.iter().map(String::as_str).collect();
+        let options = search_options(limit, contexts);
+        let hits = py
+            .detach(|| self.engine.vector_search_with(&names, &query, &options))
+            .map_err(to_py_err)?;
+        layered(py, &layers, hits, Suggestion::from)
+    }
+
+    #[pyo3(signature = (text, vector, layers, limit = 10, *, fusion = "rrf", rrf_k = 60.0, semantic_weight = 0.5, candidates = None, contexts = None))]
     #[allow(clippy::too_many_arguments)]
     fn hybrid_search(
         &self,
@@ -565,44 +942,23 @@ impl Engine {
         rrf_k: f64,
         semantic_weight: f64,
         candidates: Option<usize>,
+        contexts: Option<Vec<String>>,
     ) -> PyResult<Vec<HybridSuggestion>> {
         let query = query_vector(py, vector)?;
-        let options = hybrid_options(fusion, rrf_k, semantic_weight, candidates)?;
+        let options = hybrid_options(fusion, rrf_k, semantic_weight, candidates, contexts)?;
         let names: Vec<&str> = layers.iter().map(String::as_str).collect();
         let hits = py
-            .detach(|| self.0.hybrid_search(&names, text, &query, limit, options))
+            .detach(|| {
+                self.engine
+                    .hybrid_search(&names, text, &query, limit, &options)
+            })
             .map_err(to_py_err)?;
-        Ok(hits
-            .into_iter()
+        hits.into_iter()
             .map(|h| {
                 let layer = Some(layers[h.layer].clone());
-                to_hybrid(h, layer)
+                HybridSuggestion::from(py, h, layer)
             })
-            .collect())
-    }
-
-    #[pyo3(signature = (vector, layers, limit = 10))]
-    fn vector_search(
-        &self,
-        py: Python<'_>,
-        vector: &Bound<'_, PyAny>,
-        layers: Vec<String>,
-        limit: usize,
-    ) -> PyResult<Vec<Suggestion>> {
-        let query = query_vector(py, vector)?;
-        let names: Vec<&str> = layers.iter().map(String::as_str).collect();
-        let hits = py
-            .detach(|| self.0.vector_search(&names, &query, limit))
-            .map_err(to_py_err)?;
-        Ok(hits
-            .into_iter()
-            .map(|h| Suggestion {
-                id: h.hit.id,
-                score: h.hit.score,
-                kind: h.hit.kind.as_str(),
-                layer: Some(layers[h.layer].clone()),
-            })
-            .collect())
+            .collect()
     }
 }
 
@@ -682,26 +1038,18 @@ fn manifest_dict<'py>(
         .call_method1("loads", (manifest.to_json(),))
 }
 
-fn index_config(
-    popularity_weight: f64,
-    short_query_chars: usize,
-    short_query_limit: usize,
-    short_query_cache_entries: usize,
-    vector_threads: usize,
-) -> strato_rs::IndexConfig {
-    strato_rs::IndexConfig {
-        popularity_weight,
-        short_query_chars,
-        short_query_limit,
-        short_query_cache_entries,
-        vector_threads,
-        ..strato_rs::IndexConfig::default()
-    }
-}
-
-/// Named indexes versioned under one store URL, committed optimistically.
+/// Named indexes versioned in a bucket or directory: the database is the storage itself.
 #[pyclass(frozen, module = "strato")]
 struct Database(strato_rs::Database);
+
+impl Database {
+    async fn read(&self, version: Option<u64>) -> Result<strato_rs::Manifest, strato_rs::Error> {
+        match version {
+            Some(version) => self.0.manifest(version).await,
+            None => self.0.latest().await,
+        }
+    }
+}
 
 #[pymethods]
 impl Database {
@@ -733,7 +1081,7 @@ impl Database {
             Some(dir) => database.with_cache_dir(dir).map_err(to_py_err)?,
             None => database,
         };
-        let config = segment_config(
+        let build = build_options(
             min_word_chars,
             max_edit_distance,
             fuzzy_prefix_chars,
@@ -741,7 +1089,7 @@ impl Database {
             compact_keys,
             build_threads,
         );
-        Ok(Self(database.with_segment_config(config)))
+        Ok(Self(database.with_build_options(build)))
     }
 
     fn versions(&self, py: Python<'_>) -> PyResult<Vec<u64>> {
@@ -752,6 +1100,17 @@ impl Database {
     fn latest_version(&self, py: Python<'_>) -> PyResult<u64> {
         py.detach(|| strato_rs::block_on(self.0.latest_version()))
             .map_err(to_py_err)
+    }
+
+    /// Names of the indexes in `version` (latest by default).
+    #[pyo3(signature = (version = None))]
+    fn index_names(&self, py: Python<'_>, version: Option<u64>) -> PyResult<Vec<String>> {
+        let manifest = py
+            .detach(|| strato_rs::block_on(self.read(version)))
+            .map_err(to_py_err)?;
+        let mut names: Vec<String> = manifest.indexes.keys().cloned().collect();
+        names.sort();
+        Ok(names)
     }
 
     /// The manifest of `version` (latest by default) as a dict.
@@ -771,27 +1130,30 @@ impl Database {
             .map_err(to_py_err)?;
         Ok(Transaction {
             txn: Mutex::new(Some(self.0.transaction(manifest))),
-            config: self.0.segment_config(),
+            options: self.0.build_options(),
         })
     }
 
+    /// A snapshot of index `name` at `version` (latest by default).
     #[pyo3(signature = (
-        name, version = None, popularity_weight = 0.4, short_query_chars = 3, short_query_limit = 100,
+        name, version = None, *, max_score = None, popularity_weight = 0.4, short_query_chars = 3, short_query_limit = 100,
         short_query_cache_entries = 10_000, vector_threads = 1,
     ))]
     #[allow(clippy::too_many_arguments)]
-    fn load_index(
+    fn open_index(
         &self,
         py: Python<'_>,
         name: &str,
         version: Option<u64>,
+        max_score: Option<f64>,
         popularity_weight: f64,
         short_query_chars: usize,
         short_query_limit: usize,
         short_query_cache_entries: usize,
         vector_threads: usize,
     ) -> PyResult<Index> {
-        let config = index_config(
+        let options = index_options(
+            max_score,
             popularity_weight,
             short_query_chars,
             short_query_limit,
@@ -801,15 +1163,54 @@ impl Database {
         let index = py.detach(|| {
             strato_rs::block_on(async {
                 let manifest = self.read(version).await?;
-                self.0.load_index(&manifest, name, config).await
+                self.0.open_index(&manifest, name, options).await
             })
         });
         Ok(Index(Arc::new(index.map_err(to_py_err)?)))
     }
 
+    /// An engine serving every index of this database, loaded now; `engine.sync()` loads newer
+    /// versions. With `group_separator`, indexes switch group by group to bound memory.
+    #[pyo3(signature = (
+        *, group_separator = None, overfetch = 2, popularity_weight = 0.4, short_query_chars = 3,
+        short_query_limit = 100, short_query_cache_entries = 10_000, vector_threads = 1,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn engine(
+        &self,
+        py: Python<'_>,
+        group_separator: Option<&str>,
+        overfetch: usize,
+        popularity_weight: f64,
+        short_query_chars: usize,
+        short_query_limit: usize,
+        short_query_cache_entries: usize,
+        vector_threads: usize,
+    ) -> PyResult<Engine> {
+        let options = index_options(
+            None,
+            popularity_weight,
+            short_query_chars,
+            short_query_limit,
+            short_query_cache_entries,
+            vector_threads,
+        );
+        let replica = strato_rs::Replica::new(self.0.clone(), options);
+        let replica = match group_separator {
+            Some(separator) => replica.with_groups_by_suffix(separator),
+            None => replica,
+        };
+        let engine = Engine {
+            engine: Arc::new(strato_rs::Engine::new().with_overfetch(overfetch)),
+            replica: Some(replica),
+        };
+        engine.sync(py)?;
+        Ok(engine)
+    }
+
     /// One compaction step, or with `until_done` as many as are due; returns the new version,
     /// or `None` if nothing was due.
-    #[pyo3(signature = (index, fanout = 4, max_segments = 16, max_hidden_fraction = 0.25, until_done = false))]
+    #[pyo3(signature = (index, *, fanout = 4, max_segments = 16, max_hidden_fraction = 0.25, until_done = false))]
     fn compact(
         &self,
         py: Python<'_>,
@@ -819,11 +1220,10 @@ impl Database {
         max_hidden_fraction: f64,
         until_done: bool,
     ) -> PyResult<Option<u64>> {
-        let policy = strato_rs::CompactionPolicy {
-            fanout,
-            max_segments,
-            max_hidden_fraction,
-        };
+        let policy = strato_rs::CompactionPolicy::default()
+            .fanout(fanout)
+            .max_segments(max_segments)
+            .max_hidden_fraction(max_hidden_fraction);
         let manifest = py
             .detach(|| {
                 strato_rs::block_on(async {
@@ -840,17 +1240,16 @@ impl Database {
 
     /// Deletes manifests beyond the newest `keep_versions` and unreferenced segments, both only
     /// when older than `older_than_seconds`.
-    #[pyo3(signature = (keep_versions = 10, older_than_seconds = 3600.0))]
+    #[pyo3(signature = (*, keep_versions = 10, older_than_seconds = 3600.0))]
     fn cleanup<'py>(
         &self,
         py: Python<'py>,
         keep_versions: usize,
         older_than_seconds: f64,
     ) -> PyResult<Bound<'py, PyDict>> {
-        let policy = strato_rs::CleanupPolicy {
-            keep_versions,
-            older_than: Duration::from_secs_f64(older_than_seconds),
-        };
+        let policy = strato_rs::CleanupPolicy::default()
+            .keep_versions(keep_versions)
+            .older_than(Duration::from_secs_f64(older_than_seconds));
         let stats = py
             .detach(|| strato_rs::block_on(self.0.cleanup(&policy)))
             .map_err(to_py_err)?;
@@ -862,11 +1261,12 @@ impl Database {
     }
 
     /// Queues `changes` for the database's ingestor; returns the change set's id.
-    fn submit(&self, py: Python<'_>, changes: &mut ChangeSet) -> PyResult<String> {
+    fn submit(&self, py: Python<'_>, changes: &Bound<'_, ChangeSet>) -> PyResult<String> {
         let inner = changes
+            .borrow_mut()
             .0
             .take()
-            .ok_or_else(|| PyValueError::new_err("change set already submitted"))?;
+            .ok_or_else(|| invalid("change set already submitted"))?;
         py.detach(|| strato_rs::block_on(self.0.submit(inner)))
             .map_err(to_py_err)
     }
@@ -892,20 +1292,11 @@ impl Database {
     }
 }
 
-impl Database {
-    async fn read(&self, version: Option<u64>) -> Result<strato_rs::Manifest, strato_rs::Error> {
-        match version {
-            Some(version) => self.0.manifest(version).await,
-            None => self.0.latest().await,
-        }
-    }
-}
-
 /// Staged changes, committed together by `commit()`; usable once.
 #[pyclass(frozen, module = "strato")]
 struct Transaction {
     txn: Mutex<Option<strato_rs::Transaction>>,
-    config: strato_rs::SegmentConfig,
+    options: strato_rs::BuildOptions,
 }
 
 impl Transaction {
@@ -913,8 +1304,21 @@ impl Transaction {
         let mut guard = self.txn.lock().unwrap_or_else(|e| e.into_inner());
         let txn = guard
             .as_mut()
-            .ok_or_else(|| PyValueError::new_err("transaction already committed"))?;
+            .ok_or_else(|| invalid("transaction already committed"))?;
         f(txn)
+    }
+
+    fn segment(
+        &self,
+        py: Python<'_>,
+        documents: &Bound<'_, PyAny>,
+        deletes: Vec<u64>,
+        vectors: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<strato_rs::Segment> {
+        let docs = self::documents(py, documents, vectors)?;
+        let options = self.options;
+        py.detach(|| strato_rs::Segment::build_with(options, docs, deletes))
+            .map_err(to_py_err)
     }
 }
 
@@ -925,32 +1329,33 @@ impl Transaction {
         self.with(|t| Ok(t.read_version()))
     }
 
-    /// `vectors`, optional, holds one embedding row per document.
+    /// Adds or replaces `documents` and deletes `deletes` (ids or keys) in `index`.
     #[pyo3(signature = (index, documents, deletes = Vec::new(), vectors = None))]
     fn append(
         &self,
         py: Python<'_>,
         index: &str,
-        documents: Vec<DocumentTuple>,
-        deletes: Vec<u64>,
+        documents: &Bound<'_, PyAny>,
+        deletes: Vec<Id>,
         vectors: Option<Bound<'_, PyAny>>,
     ) -> PyResult<()> {
-        let segment = build_segment(py, documents, deletes, vectors.as_ref(), self.config)?;
+        let segment = self.segment(py, documents, numeric_ids(deletes), vectors.as_ref())?;
         self.with(|t| {
             t.append(index, segment);
             Ok(())
         })
     }
 
+    /// Replaces the whole of `index` with `documents`.
     #[pyo3(signature = (index, documents, vectors = None))]
     fn overwrite(
         &self,
         py: Python<'_>,
         index: &str,
-        documents: Vec<DocumentTuple>,
+        documents: &Bound<'_, PyAny>,
         vectors: Option<Bound<'_, PyAny>>,
     ) -> PyResult<()> {
-        let segment = build_segment(py, documents, Vec::new(), vectors.as_ref(), self.config)?;
+        let segment = self.segment(py, documents, Vec::new(), vectors.as_ref())?;
         self.with(|t| {
             t.overwrite(index, segment);
             Ok(())
@@ -998,7 +1403,7 @@ impl Transaction {
     /// Commits and returns the new manifest; raises `ConflictError` if it cannot be rebased.
     fn commit<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let txn = self.txn.lock().unwrap_or_else(|e| e.into_inner()).take();
-        let txn = txn.ok_or_else(|| PyValueError::new_err("transaction already committed"))?;
+        let txn = txn.ok_or_else(|| invalid("transaction already committed"))?;
         let manifest = py
             .detach(|| strato_rs::block_on(txn.commit()))
             .map_err(to_py_err)?;
@@ -1018,15 +1423,13 @@ impl Lease {
         guard
             .as_ref()
             .map(|l| l.generation())
-            .ok_or_else(|| PyValueError::new_err("lease released"))
+            .ok_or_else(|| invalid("lease released"))
     }
 
     /// Extends the lease; `False` means it was lost.
     fn renew(&self, py: Python<'_>, ttl_seconds: f64) -> PyResult<bool> {
         let mut guard = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let lease = guard
-            .as_mut()
-            .ok_or_else(|| PyValueError::new_err("lease released"))?;
+        let lease = guard.as_mut().ok_or_else(|| invalid("lease released"))?;
         py.detach(|| strato_rs::block_on(lease.renew(Duration::from_secs_f64(ttl_seconds))))
             .map_err(to_py_err)
     }
@@ -1050,7 +1453,7 @@ impl ChangeSet {
     fn inner(&mut self) -> PyResult<&mut strato_rs::ChangeSet> {
         self.0
             .as_mut()
-            .ok_or_else(|| PyValueError::new_err("change set already submitted"))
+            .ok_or_else(|| invalid("change set already submitted"))
     }
 }
 
@@ -1061,41 +1464,36 @@ impl ChangeSet {
         Self(Some(strato_rs::ChangeSet::new()))
     }
 
-    /// `vectors`, optional, holds one embedding row per document.
+    /// Adds or replaces `documents` in `index`.
     #[pyo3(signature = (index, documents, vectors = None))]
     fn upsert(
         &mut self,
         py: Python<'_>,
         index: &str,
-        documents: Vec<DocumentTuple>,
+        documents: &Bound<'_, PyAny>,
         vectors: Option<Bound<'_, PyAny>>,
     ) -> PyResult<()> {
-        let mut docs: Vec<strato_rs::Document> = documents.into_iter().map(to_document).collect();
-        if let Some(vectors) = vectors {
-            let rows = vector_rows(py, &vectors, docs.len())?;
-            for (doc, vector) in docs.iter_mut().zip(rows) {
-                doc.vector = Some(vector);
-            }
-        }
+        let docs = self::documents(py, documents, vectors.as_ref())?;
         self.inner()?.upsert(index, docs);
         Ok(())
     }
 
-    fn delete(&mut self, index: &str, ids: Vec<u64>) -> PyResult<()> {
-        self.inner()?.delete(index, ids);
+    /// Deletes documents by id or key.
+    fn delete(&mut self, index: &str, ids: Vec<Id>) -> PyResult<()> {
+        self.inner()?.delete(index, numeric_ids(ids));
         Ok(())
     }
 }
 
-/// Drains the inbox while it holds the ingestor lease; run one per process.
+/// Commits submitted change sets while it holds the ingestor lease; run one per process.
 #[pyclass(module = "strato")]
 struct Ingestor(Option<strato_rs::Ingestor>);
 
 #[pymethods]
 impl Ingestor {
-    #[new]
     /// With `compact`, the ingestor compacts the indexes it committed to after each round.
-    #[pyo3(signature = (database, owner, lease_ttl_seconds = 30.0, max_change_sets = 1000, compact = true))]
+    #[new]
+    #[pyo3(signature = (database, owner, *, lease_ttl_seconds = 30.0, max_change_sets = 1000, compact = true))]
     fn new(
         database: &Database,
         owner: &str,
@@ -1118,7 +1516,7 @@ impl Ingestor {
         let ingestor = self
             .0
             .as_mut()
-            .ok_or_else(|| PyValueError::new_err("ingestor released"))?;
+            .ok_or_else(|| invalid("ingestor released"))?;
         let step = py
             .detach(|| strato_rs::block_on(ingestor.run_once()))
             .map_err(to_py_err)?;
@@ -1136,6 +1534,7 @@ impl Ingestor {
                 out.set_item("change_sets", change_sets)?;
                 out.set_item("documents", documents)?;
             }
+            _ => out.set_item("step", "unknown")?,
         }
         Ok(out)
     }
@@ -1156,7 +1555,8 @@ impl Ingestor {
     }
 }
 
-/// Keeps an `Engine` on a database's latest version, loading only what changed.
+/// Keeps an existing `Engine` on a database's latest version, loading only what changed.
+/// `Database.engine()` is simpler when the engine serves one database.
 #[pyclass(frozen, module = "strato")]
 struct Replica {
     replica: strato_rs::Replica,
@@ -1167,7 +1567,7 @@ struct Replica {
 impl Replica {
     #[new]
     #[pyo3(signature = (
-        database, engine, popularity_weight = 0.4, short_query_chars = 3, short_query_limit = 100,
+        database, engine, *, popularity_weight = 0.4, short_query_chars = 3, short_query_limit = 100,
         short_query_cache_entries = 10_000, vector_threads = 1, group_separator = None,
     ))]
     #[allow(clippy::too_many_arguments)]
@@ -1181,21 +1581,22 @@ impl Replica {
         vector_threads: usize,
         group_separator: Option<&str>,
     ) -> Self {
-        let config = index_config(
+        let options = index_options(
+            None,
             popularity_weight,
             short_query_chars,
             short_query_limit,
             short_query_cache_entries,
             vector_threads,
         );
-        let replica = strato_rs::Replica::new(database.0.clone(), config);
+        let replica = strato_rs::Replica::new(database.0.clone(), options);
         let replica = match group_separator {
             Some(separator) => replica.with_groups_by_suffix(separator),
             None => replica,
         };
         Self {
             replica,
-            engine: engine.0.clone(),
+            engine: engine.engine.clone(),
         }
     }
 
@@ -1211,9 +1612,18 @@ impl Replica {
     }
 }
 
+/// The numeric id strato derives from a string key.
+#[pyfunction]
+fn key_id(key: &str) -> u64 {
+    strato_rs::key_id(key)
+}
+
 #[pymodule]
 fn strato(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Engine events go to Python's `logging`, under loggers named `strato.*`.
+    pyo3_log::init();
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    m.add_class::<Document>()?;
     m.add_class::<Segment>()?;
     m.add_class::<Index>()?;
     m.add_class::<Engine>()?;
@@ -1224,9 +1634,9 @@ fn strato(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Replica>()?;
     m.add_class::<ChangeSet>()?;
     m.add_class::<Ingestor>()?;
-    m.add("ConflictError", m.py().get_type::<ConflictError>())?;
     m.add_class::<Suggestion>()?;
     m.add_class::<AliasSuggestion>()?;
     m.add_class::<HybridSuggestion>()?;
+    m.add_function(wrap_pyfunction!(key_id, m)?)?;
     Ok(())
 }

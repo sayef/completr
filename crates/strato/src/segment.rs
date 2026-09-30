@@ -11,7 +11,7 @@ use crate::vectors::{CarriedCodes, Row, Vectors};
 use crate::{fuzzy, text, Alias, AliasKind, Document, Error};
 
 const MAGIC: &[u8; 8] = b"STRATO\0\0";
-const VERSION: u64 = 8;
+const VERSION: u64 = 9;
 const DOCS_PER_BLOCK: usize = 128;
 const ZSTD_LEVEL: i32 = 3;
 
@@ -22,9 +22,11 @@ pub(crate) const TERMINATOR: u8 = 0xff;
 const INLINE: u64 = 1 << 63;
 const LEN_BITS: u32 = 24;
 
-/// Build-time parameters. All segments of one index must share them.
+/// Build-time parameters. All segments of one index must share them. Set them with the chainable
+/// methods of the same names, e.g. `BuildOptions::default().vector_bits(2)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SegmentConfig {
+#[non_exhaustive]
+pub struct BuildOptions {
     /// Words shorter than this are not indexed for infix or fuzzy matching.
     pub min_word_chars: u8,
     pub max_edit_distance: u8,
@@ -44,7 +46,24 @@ pub struct SegmentConfig {
     pub layout: Layout,
 }
 
-impl Default for SegmentConfig {
+crate::setters!(BuildOptions {
+    min_word_chars: u8,
+    max_edit_distance: u8,
+    fuzzy_prefix_chars: u8,
+    vector_bits: u8,
+    compact_keys: bool,
+    build_threads: usize,
+});
+
+impl BuildOptions {
+    #[doc(hidden)]
+    pub fn layout(mut self, layout: Layout) -> Self {
+        self.layout = layout;
+        self
+    }
+}
+
+impl Default for BuildOptions {
     fn default() -> Self {
         Self {
             min_word_chars: 3,
@@ -92,7 +111,7 @@ impl Layout {
     }
 }
 
-impl SegmentConfig {
+impl BuildOptions {
     /// Whether segments built with `self` and `other` can be searched together.
     pub(crate) fn compatible(&self, other: &Self) -> bool {
         (
@@ -213,7 +232,7 @@ impl Keyed {
                 values,
                 bound,
             })
-            .ok_or_else(|| Error::Format("invalid postings".into()))
+            .ok_or_else(|| Error::Corrupt("invalid postings".into()))
     }
 
     /// Postings for an FST value; out-of-range values from a corrupt file yield none.
@@ -279,7 +298,7 @@ impl StrColumn {
         let data = r.bytes()?;
         let offsets = r.column::<u32>()?;
         let text = std::str::from_utf8(data.as_ref())
-            .map_err(|_| Error::Format("invalid utf-8".into()))?;
+            .map_err(|_| Error::Corrupt("invalid utf-8".into()))?;
         let o = offsets.as_slice();
         let valid = o.first() == Some(&0)
             && o.last().map(|&l| l as usize) == Some(text.len())
@@ -287,7 +306,7 @@ impl StrColumn {
                 .all(|w| w[0] <= w[1] && text.is_char_boundary(w[1] as usize));
         valid
             .then_some(Self { data, offsets })
-            .ok_or_else(|| Error::Format("invalid text column".into()))
+            .ok_or_else(|| Error::Corrupt("invalid text column".into()))
     }
 
     fn get(&self, i: usize) -> &str {
@@ -296,6 +315,110 @@ impl StrColumn {
         unsafe {
             std::str::from_utf8_unchecked(&self.data.as_ref()[o[i] as usize..o[i + 1] as usize])
         }
+    }
+}
+
+/// Strings compressed with FSST (Boncz et al., VLDB 2020), each decompressed on its own. Columns
+/// under `FSST_MIN_BYTES` are stored raw, where a symbol table would not pay for itself.
+struct FsstColumn {
+    data: Bytes,
+    offsets: Column<u32>,
+    symbols: Option<([fsst::Symbol; 255], [u8; 255])>,
+}
+
+const FSST_MIN_BYTES: usize = 4096;
+const ESCAPE: u8 = 255;
+
+impl FsstColumn {
+    fn write<'a>(w: &mut Writer, items: impl IntoIterator<Item = &'a str>) -> Result<(), Error> {
+        let items: Vec<&[u8]> = items.into_iter().map(str::as_bytes).collect();
+        let raw: usize = items.iter().map(|i| i.len()).sum();
+        let compressor = (raw >= FSST_MIN_BYTES).then(|| fsst::Compressor::train(&items));
+        let mut data = Vec::new();
+        let mut offsets = vec![0u32];
+        for item in &items {
+            match &compressor {
+                Some(c) => data.extend_from_slice(&c.compress(item)),
+                None => data.extend_from_slice(item),
+            }
+            offsets.push(
+                u32::try_from(data.len()).map_err(|_| Error::input("text column over 4 GiB"))?,
+            );
+        }
+        let (symbols, lengths): (Vec<u64>, Vec<u8>) = match compressor {
+            Some(c) => {
+                let parts = c.into_parts();
+                (
+                    parts.symbols.iter().map(|s| s.to_u64()).collect(),
+                    parts.lengths.to_vec(),
+                )
+            }
+            None => (Vec::new(), Vec::new()),
+        };
+        w.column(&symbols);
+        w.column(&lengths);
+        w.bytes(&data);
+        w.column(&offsets);
+        Ok(())
+    }
+
+    fn read(r: &mut Reader, n: usize) -> Result<Self, Error> {
+        let bad = || Error::Corrupt("invalid string column".into());
+        let symbols: Column<u64> = r.column()?;
+        let lengths: Column<u8> = r.column()?;
+        let data = r.bytes()?;
+        let offsets = r.column::<u32>()?;
+        let o = offsets.as_slice();
+        let valid = o.len() == n + 1
+            && o.first() == Some(&0)
+            && o.last().map(|&l| l as usize) == Some(data.as_ref().len())
+            && o.windows(2).all(|w| w[0] <= w[1]);
+        let symbols = match (symbols.as_slice(), lengths.as_slice()) {
+            ([], []) => None,
+            (s, l)
+                if s.len() == 255 && l.len() == 255 && l.iter().all(|&l| (1..=8).contains(&l)) =>
+            {
+                let table: [fsst::Symbol; 255] =
+                    std::array::from_fn(|i| fsst::Symbol::from_slice(&s[i].to_le_bytes()));
+                Some((table, l.try_into().map_err(|_| bad())?))
+            }
+            _ => return Err(bad()),
+        };
+        if symbols.is_none() {
+            std::str::from_utf8(data.as_ref()).map_err(|_| bad())?;
+        }
+        valid
+            .then_some(Self {
+                data,
+                offsets,
+                symbols,
+            })
+            .ok_or_else(bad)
+    }
+
+    fn get(&self, i: usize) -> String {
+        let o = self.offsets.as_slice();
+        let bytes = &self.data.as_ref()[o[i] as usize..o[i + 1] as usize];
+        match &self.symbols {
+            Some((symbols, lengths)) => {
+                // An escape code needs its literal byte; a truncated stream would read past it.
+                let mut i = 0;
+                while i < bytes.len() {
+                    i += if bytes[i] == ESCAPE { 2 } else { 1 };
+                }
+                if i > bytes.len() {
+                    return String::new();
+                }
+                let decoded = fsst::Decompressor::new(symbols, lengths).decompress(bytes);
+                String::from_utf8(decoded)
+                    .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+            }
+            None => String::from_utf8_lossy(bytes).into_owned(),
+        }
+    }
+
+    fn size(&self) -> usize {
+        self.data.as_ref().len() + self.offsets.len() * 4 + self.symbols.map_or(0, |_| 255 * 9)
     }
 }
 
@@ -320,10 +443,10 @@ fn get_varint(buf: &[u8], pos: &mut usize) -> Option<usize> {
     None
 }
 
-/// A stored document's text and aliases.
-type StoredDoc = (String, Vec<Alias>);
+/// A stored document's aliases and contexts.
+type StoredDoc = (Vec<Alias>, Vec<String>);
 
-/// Original texts and aliases, zstd-compressed in blocks; only needed to rebuild documents.
+/// Aliases and contexts, zstd-compressed in blocks; only needed to rebuild documents.
 struct DocStore {
     blocks: Bytes,
     offsets: Column<u64>,
@@ -336,13 +459,16 @@ impl DocStore {
             .map(|chunk| {
                 let mut raw = Vec::new();
                 for doc in chunk {
-                    put_varint(&mut raw, doc.text.len());
-                    raw.extend_from_slice(doc.text.as_bytes());
                     put_varint(&mut raw, doc.aliases.len());
                     for alias in &doc.aliases {
                         raw.push(alias.kind as u8);
                         put_varint(&mut raw, alias.text.len());
                         raw.extend_from_slice(alias.text.as_bytes());
+                    }
+                    put_varint(&mut raw, doc.contexts.len());
+                    for context in &doc.contexts {
+                        put_varint(&mut raw, context.len());
+                        raw.extend_from_slice(context.as_bytes());
                     }
                 }
                 let mut block = (raw.len() as u32).to_le_bytes().to_vec();
@@ -372,25 +498,22 @@ impl DocStore {
                 .all(|w| w[0].checked_add(4).is_some_and(|end| end <= w[1]));
         valid
             .then_some(Self { blocks, offsets })
-            .ok_or_else(|| Error::Format("invalid document store".into()))
+            .ok_or_else(|| Error::Corrupt("invalid document store".into()))
     }
 
-    /// `(text, aliases)` of every document in `block`.
+    /// `(aliases, contexts)` of every document in `block`.
     fn block(&self, block: usize) -> Result<Vec<StoredDoc>, Error> {
         let mut raw = Vec::new();
         self.decompress(block, &mut raw, &mut zstd::bulk::Decompressor::new()?)?;
         let docs = parse_block(&raw)?;
         Ok(docs
             .into_iter()
-            .map(|(text, aliases)| {
+            .map(|(aliases, contexts)| {
                 let aliases = aliases
                     .into_iter()
-                    .map(|(kind, text)| Alias {
-                        text: text.to_owned(),
-                        kind,
-                    })
+                    .map(|(kind, text)| Alias::new(text, kind))
                     .collect();
-                (text.to_owned(), aliases)
+                (aliases, contexts.into_iter().map(str::to_owned).collect())
             })
             .collect())
     }
@@ -405,12 +528,12 @@ impl DocStore {
         let data = &self.blocks.as_ref()[o[block] as usize..o[block + 1] as usize];
         let raw_len = u32::from_le_bytes(data[..4].try_into().unwrap()) as usize;
         if raw_len > MAX_BLOCK_BYTES {
-            return Err(Error::Format("corrupt document block".into()));
+            return Err(Error::Corrupt("corrupt document block".into()));
         }
         raw.clear();
         raw.reserve(raw_len);
         if dctx.decompress_to_buffer(&data[4..], raw)? != raw_len {
-            return Err(Error::Format("corrupt document block".into()));
+            return Err(Error::Corrupt("corrupt document block".into()));
         }
         Ok(())
     }
@@ -418,10 +541,10 @@ impl DocStore {
 
 const MAX_BLOCK_BYTES: usize = 1 << 28;
 
-type BorrowedDoc<'a> = (&'a str, Vec<(AliasKind, &'a str)>);
+type BorrowedDoc<'a> = (Vec<(AliasKind, &'a str)>, Vec<&'a str>);
 
 fn parse_block(raw: &[u8]) -> Result<Vec<BorrowedDoc<'_>>, Error> {
-    let corrupt = || Error::Format("corrupt document block".into());
+    let corrupt = || Error::Corrupt("corrupt document block".into());
     let text = |pos: &mut usize| -> Result<&str, Error> {
         let len = get_varint(raw, pos).ok_or_else(corrupt)?;
         let bytes = raw
@@ -433,7 +556,6 @@ fn parse_block(raw: &[u8]) -> Result<Vec<BorrowedDoc<'_>>, Error> {
     let mut pos = 0;
     let mut out = Vec::with_capacity(DOCS_PER_BLOCK);
     while pos < raw.len() {
-        let doc_text = text(&mut pos)?;
         let count = get_varint(raw, &mut pos).ok_or_else(corrupt)?;
         let mut aliases = Vec::with_capacity(count.min(raw.len() - pos));
         for _ in 0..count {
@@ -445,7 +567,12 @@ fn parse_block(raw: &[u8]) -> Result<Vec<BorrowedDoc<'_>>, Error> {
             pos += 1;
             aliases.push((kind, text(&mut pos)?));
         }
-        out.push((doc_text, aliases));
+        let count = get_varint(raw, &mut pos).ok_or_else(corrupt)?;
+        let mut contexts = Vec::with_capacity(count.min(raw.len() - pos));
+        for _ in 0..count {
+            contexts.push(text(&mut pos)?);
+        }
+        out.push((aliases, contexts));
     }
     Ok(out)
 }
@@ -455,7 +582,7 @@ fn parse_block(raw: &[u8]) -> Result<Vec<BorrowedDoc<'_>>, Error> {
 /// Documents are stored in id order; a document's position is its local id.
 pub struct Segment {
     data: Bytes,
-    config: SegmentConfig,
+    config: BuildOptions,
     ids: Column<u64>,
     weights: Column<f32>,
     text_lens: Column<u16>,
@@ -474,6 +601,11 @@ pub struct Segment {
     /// Delete variant to word ordinals.
     pub(crate) variants: Keyed,
     pub(crate) vectors: Option<Vectors>,
+    texts: FsstColumn,
+    /// Empty for documents without a key.
+    keys: FsstColumn,
+    /// Context tag to locals.
+    pub(crate) contexts: Keyed,
 }
 
 impl Segment {
@@ -481,12 +613,12 @@ impl Segment {
         documents: impl IntoIterator<Item = Document>,
         deletes: impl IntoIterator<Item = u64>,
     ) -> Result<Self, Error> {
-        Self::build_with(SegmentConfig::default(), documents, deletes)
+        Self::build_with(BuildOptions::default(), documents, deletes)
     }
 
     /// Builds a segment. A repeated id keeps its last document.
     pub fn build_with(
-        config: SegmentConfig,
+        config: BuildOptions,
         documents: impl IntoIterator<Item = Document>,
         deletes: impl IntoIterator<Item = u64>,
     ) -> Result<Self, Error> {
@@ -495,7 +627,7 @@ impl Segment {
 
     /// Builds with `config.build_threads`; `codes` as for [`Segment::build_inner`].
     pub(crate) fn build_pooled(
-        config: SegmentConfig,
+        config: BuildOptions,
         documents: Vec<Document>,
         deletes: Vec<u64>,
         codes: Option<(usize, &CarriedCodes)>,
@@ -508,7 +640,7 @@ impl Segment {
     /// Builds a segment; `codes` carries vectors over from other segments as `id -> (code, scale)`,
     /// with their dimension.
     pub(crate) fn build_inner(
-        config: SegmentConfig,
+        config: BuildOptions,
         documents: impl IntoIterator<Item = Document>,
         deletes: impl IntoIterator<Item = u64>,
         codes: Option<(usize, &CarriedCodes)>,
@@ -522,24 +654,37 @@ impl Segment {
     }
 
     fn build_inner_on_pool(
-        config: SegmentConfig,
+        config: BuildOptions,
         documents: Vec<Document>,
         deletes: Vec<u64>,
         codes: Option<(usize, &CarriedCodes)>,
     ) -> Result<Self, Error> {
         crate::vectors::validate_bits(config.vector_bits)?;
+        let started = std::time::Instant::now();
         let mut docs: Vec<Document> = documents.into_iter().collect();
-        if let Some(doc) = docs.iter().find(|d| !d.weight.is_finite()) {
+        if let Some(doc) = docs.iter().find(|d| !d.popularity.is_finite()) {
             return Err(Error::input(format!(
-                "document {} has a non-finite weight",
+                "document {} has a non-finite popularity",
                 doc.id
             )));
+        }
+        if docs.iter().any(|d| d.key.as_deref() == Some("")) {
+            return Err(Error::input("document keys must not be empty"));
         }
         if docs.len() >= (u32::MAX >> 1) as usize {
             return Err(Error::input("too many documents in one segment"));
         }
         docs.reverse();
         docs.sort_by_key(|d| d.id);
+        if let Some(pair) = docs
+            .windows(2)
+            .find(|w| w[0].id == w[1].id && w[0].key != w[1].key)
+        {
+            return Err(Error::input(format!(
+                "keys {:?} and {:?} map to the same id {}",
+                pair[0].key, pair[1].key, pair[0].id
+            )));
+        }
         docs.dedup_by_key(|d| d.id);
         let mut deletes: Vec<u64> = deletes.into_iter().collect();
         deletes.sort_unstable();
@@ -550,6 +695,7 @@ impl Segment {
         let mut single_word = Vec::with_capacity(n);
         let mut title_keys = KeyArena::default();
         let mut alias_keys = KeyArena::default();
+        let mut context_keys = KeyArena::default();
         // Per word: postings, occurrences, and a provisional id for the forward index.
         let mut word_map: FxHashMap<String, (Vec<u32>, u32, u32)> = FxHashMap::default();
         let mut doc_word_offsets = vec![0u32];
@@ -581,6 +727,12 @@ impl Segment {
                     text::lower(&alias.text).as_bytes(),
                     local << 1 | alias.kind as u32,
                 )?;
+            }
+            let mut contexts: Vec<&str> = doc.contexts.iter().map(String::as_str).collect();
+            contexts.sort_unstable();
+            contexts.dedup();
+            for context in contexts {
+                context_keys.push(context.as_bytes(), local)?;
             }
         }
 
@@ -651,7 +803,7 @@ impl Segment {
             layout.variants.code(),
         ]);
         w.column(&docs.iter().map(|d| d.id).collect::<Vec<_>>());
-        w.column(&docs.iter().map(|d| d.weight).collect::<Vec<_>>());
+        w.column(&docs.iter().map(|d| d.popularity).collect::<Vec<_>>());
         w.column(&text_lens);
         w.column(&single_word);
         w.column(&deletes);
@@ -692,6 +844,11 @@ impl Segment {
             Box::new(move |w| Keyed::write_packed(w, layout.aliases, alias_keys)),
             Box::new(move |w| Keyed::write_packed(w, layout.variants, variant_keys)),
             Box::new(move |w| Vectors::write(w, dim, config.vector_bits, rows_ref)),
+            Box::new(move |w| {
+                FsstColumn::write(w, docs_ref.iter().map(|d| d.text.as_str()))?;
+                FsstColumn::write(w, docs_ref.iter().map(|d| d.key.as_deref().unwrap_or("")))?;
+                Keyed::write_packed(w, Dictionary::Fst, context_keys)
+            }),
         ];
         if config.build_threads == 1 {
             for write in sections {
@@ -709,10 +866,16 @@ impl Segment {
         }
         w.align();
         w.u64(xxhash_rust::xxh3::xxh3_64(&w.buf));
+        tracing::debug!(
+            documents = n,
+            bytes = w.buf.len(),
+            ms = started.elapsed().as_millis() as u64,
+            "built segment"
+        );
         Self::decode(Bytes::from_vec(w.buf))
     }
 
-    pub fn config(&self) -> SegmentConfig {
+    pub fn config(&self) -> BuildOptions {
         self.config
     }
 
@@ -747,6 +910,7 @@ impl Segment {
                 "documents (zstd)",
                 self.docs.blocks.as_ref().len() + self.docs.offsets.len() * 8,
             ),
+            ("texts (fsst)", self.texts.size() + self.keys.size()),
             ("titles", self.titles.size()),
             (
                 "words",
@@ -766,16 +930,31 @@ impl Segment {
     }
 
     pub fn document(&self, local: usize) -> Document {
-        let (text, aliases) = self
+        let (aliases, contexts) = self
             .stored_block(local / DOCS_PER_BLOCK)
             .swap_remove(local % DOCS_PER_BLOCK);
+        self.assemble(local, aliases, contexts)
+    }
+
+    fn assemble(&self, local: usize, aliases: Vec<Alias>, contexts: Vec<String>) -> Document {
         Document {
             id: self.ids()[local],
-            text,
-            weight: self.weights()[local],
+            key: self.key(local),
+            text: self.text(local),
+            popularity: self.weights()[local],
             aliases,
+            contexts,
             vector: None,
         }
+    }
+
+    /// The original text of `local`.
+    pub(crate) fn text(&self, local: usize) -> String {
+        self.texts.get(local)
+    }
+
+    pub(crate) fn key(&self, local: usize) -> Option<String> {
+        Some(self.keys.get(local)).filter(|k| !k.is_empty())
     }
 
     /// A block's documents; only a crafted segment with a valid checksum can fail here.
@@ -795,13 +974,7 @@ impl Segment {
             entries
                 .into_iter()
                 .enumerate()
-                .map(move |(i, (text, aliases))| Document {
-                    id: self.ids()[first + i],
-                    text,
-                    weight: self.weights()[first + i],
-                    aliases,
-                    vector: None,
-                })
+                .map(move |(i, (aliases, contexts))| self.assemble(first + i, aliases, contexts))
         })
     }
 
@@ -876,17 +1049,17 @@ impl Segment {
         let body = bytes
             .len()
             .checked_sub(8)
-            .ok_or_else(|| Error::Format("truncated segment".into()))?;
+            .ok_or_else(|| Error::Corrupt("truncated segment".into()))?;
         if xxhash_rust::xxh3::xxh3_64(&bytes[..body]).to_le_bytes() != bytes[body..] {
-            return Err(Error::Format("segment checksum mismatch".into()));
+            return Err(Error::Corrupt("segment checksum mismatch".into()));
         }
         let mut r = Reader::new(data.clone())?;
         if r.raw(MAGIC.len())? != MAGIC {
-            return Err(Error::Format("not a strato segment".into()));
+            return Err(Error::Corrupt("not a strato segment".into()));
         }
         let version = r.u64()?;
         if version != VERSION {
-            return Err(Error::Format(format!(
+            return Err(Error::Corrupt(format!(
                 "unsupported segment version {version}"
             )));
         }
@@ -900,7 +1073,7 @@ impl Segment {
             variants: code()?,
         };
         let compact_keys = layout.aliases == Dictionary::CompactTrie;
-        let config = SegmentConfig {
+        let config = BuildOptions {
             min_word_chars,
             max_edit_distance,
             fuzzy_prefix_chars,
@@ -912,7 +1085,7 @@ impl Segment {
         let ids = r.column::<u64>()?;
         let n = ids.len();
         let local_bound =
-            u32::try_from(n).map_err(|_| Error::Format("too many documents".into()))?;
+            u32::try_from(n).map_err(|_| Error::Corrupt("too many documents".into()))?;
         let weights = r.column()?;
         let text_lens = r.column()?;
         let single_word = r.column()?;
@@ -931,13 +1104,16 @@ impl Segment {
             && o.windows(2).all(|w| w[0] <= w[1])
             && ords.iter().all(|&w| (w as usize) < word_freqs.len());
         if !forward_ok {
-            return Err(Error::Format("invalid forward index".into()));
+            return Err(Error::Corrupt("invalid forward index".into()));
         }
         let aliases = Keyed::read(&mut r, layout.aliases, false, local_bound.saturating_mul(2))?;
         let word_bound =
-            u32::try_from(word_freqs.len()).map_err(|_| Error::Format("too many words".into()))?;
+            u32::try_from(word_freqs.len()).map_err(|_| Error::Corrupt("too many words".into()))?;
         let variants = Keyed::read(&mut r, layout.variants, false, word_bound)?;
         let vectors = Vectors::read(&mut r, n)?;
+        let texts = FsstColumn::read(&mut r, n)?;
+        let keys = FsstColumn::read(&mut r, n)?;
+        let contexts = Keyed::read(&mut r, Dictionary::Fst, false, local_bound)?;
         r.align()?;
         r.u64()?;
         r.finish()?;
@@ -959,6 +1135,9 @@ impl Segment {
             aliases,
             variants,
             vectors,
+            texts,
+            keys,
+            contexts,
         };
         let valid = segment.weights.len() == n
             && segment.weights().iter().all(|w| w.is_finite())
@@ -969,7 +1148,7 @@ impl Segment {
             && segment.word_texts.offsets.len() == segment.words.map.len() + 1;
         valid
             .then_some(segment)
-            .ok_or_else(|| Error::Format("inconsistent segment".into()))
+            .ok_or_else(|| Error::Corrupt("inconsistent segment".into()))
     }
 }
 

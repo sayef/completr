@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use strato::{
-    ChangeSet, Database, Document, Engine, Fusion, HybridOptions, Index, IndexConfig, Ingestor,
+    ChangeSet, Database, Document, Engine, Fusion, HybridOptions, Index, IndexOptions, Ingestor,
     Replica,
 };
 
@@ -84,10 +84,7 @@ fn run(index: &Index, query: &Query) -> Bits {
                 q,
                 v,
                 10,
-                HybridOptions {
-                    fusion: Fusion::ReciprocalRank { k: 60.0 },
-                    candidates: None,
-                },
+                &HybridOptions::default().fusion(Fusion::ReciprocalRank { k: 60.0 }),
             )
             .unwrap()
             .into_iter()
@@ -115,7 +112,7 @@ fn queries_stay_deterministic_under_concurrent_updates() {
         t.commit().await.unwrap();
     });
     let engine = Arc::new(Engine::new());
-    let replica = Replica::new(ds.clone(), IndexConfig::default());
+    let replica = Replica::new(ds.clone(), IndexOptions::default());
     runtime.block_on(replica.sync(&engine)).unwrap();
 
     let stop = Arc::new(AtomicBool::new(false));

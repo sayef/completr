@@ -1,0 +1,112 @@
+import asyncio
+
+import pytest
+
+import strato
+from strato import ChangeSet, Document, Index, Ingestor
+
+CATALOG = [
+    {"id": "sku-ml", "text": "Machine Learning", "popularity": 0.9, "abbreviations": ["ML"], "contexts": ["books"]},
+    {"id": "sku-mv", "text": "Machine Vision", "popularity": 0.4, "contexts": ["courses"]},
+    {"id": "sku-ds", "text": "Data Science", "popularity": 0.7, "synonyms": ["data analytics"], "contexts": ["books"]},
+    {"id": 42, "text": "Machine Translation", "popularity": 0.2},
+]
+
+
+class Table:
+    """Quacks like a pyarrow table."""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def to_pylist(self):
+        return self.rows
+
+
+def test_documents_from_dicts_objects_and_tables():
+    objects = [Document("sku-ml", "Machine Learning", 0.9, abbreviations=["ML"], contexts=["books"])]
+    for source in (CATALOG, Table(CATALOG), objects):
+        index = Index.from_documents(source)
+        assert index.complete("mach")[0].id == "sku-ml"
+    doc = Index.from_documents(CATALOG).get("sku-ds")
+    assert (doc.id, doc.text, doc.synonyms, doc.contexts) == ("sku-ds", "Data Science", ["data analytics"], ["books"])
+    assert doc.to_dict()["popularity"] == pytest.approx(0.7)
+    assert Index.from_documents(CATALOG).get(42).id == 42
+    with pytest.raises(strato.InvalidInputError, match="unknown document field"):
+        Index.from_documents([{"id": 1, "text": "x", "popularty": 0.5}])
+    with pytest.raises(ValueError):
+        Index.from_documents([{"text": "no id"}])
+    with pytest.raises(TypeError):
+        Index.from_documents([(1, "tuple", 0.5)])
+
+
+def test_suggestions_carry_text_and_highlights():
+    index = Index.from_documents(CATALOG + [{"id": "u", "text": "Ärzte Übersicht", "popularity": 0.1}])
+    top = index.complete("mach")[0]
+    assert (top.id, top.text, top.kind, top.highlights) == ("sku-ml", "Machine Learning", "prefix", [(0, 4)])
+    typo = index.complete("machne lerning")[0]
+    assert [typo.text[a:b] for a, b in typo.highlights] == ["Machine", "Learning"]
+    umlaut = index.complete("ärz üb")[0]
+    assert [umlaut.text[a:b] for a, b in umlaut.highlights] == ["Ärz", "Üb"]
+    assert index.complete_aliases("data ana")[0].text == "Data Science"
+
+
+def test_contexts_filter_completions():
+    index = Index.from_documents(CATALOG)
+    assert [s.id for s in index.complete("mach", contexts=["books"])] == ["sku-ml"]
+    assert {s.id for s in index.complete("mach")} == {"sku-ml", "sku-mv", 42}
+    assert index.complete("mach", contexts=["music"]) == []
+    assert [s.id for s in index.complete("ma", contexts=["courses"])] == ["sku-mv"]
+
+
+def test_connect_engine_and_string_ids(tmp_path):
+    db = strato.connect(str(tmp_path / "db"))
+    txn = db.begin()
+    txn.append("products", CATALOG)
+    txn.commit()
+    engine = db.engine()
+    assert engine.version == 1 and db.index_names() == ["products"]
+    assert engine.complete("data", ["products"])[0].id == "sku-ds"
+
+    changes = ChangeSet()
+    changes.upsert("products", [{"id": "sku-kb", "text": "Wireless Keyboard", "popularity": 0.8}])
+    changes.delete("products", ["sku-ds"])
+    db.submit(changes)
+    Ingestor(db, "worker").run_once()
+    assert engine.sync() == 2 and engine.sync() is None
+    assert engine.complete("wirel", ["products"])[0].id == "sku-kb"
+    assert engine.complete("data sc", ["products"]) == []
+    with pytest.raises(strato.InvalidInputError):
+        strato.Engine().sync()
+
+
+def test_errors_form_a_hierarchy(tmp_path):
+    for cls in (
+        strato.ConflictError,
+        strato.CorruptionError,
+        strato.NotFoundError,
+        strato.InvalidInputError,
+        strato.StorageError,
+    ):
+        assert issubclass(cls, strato.StratoError)
+    with pytest.raises(strato.CorruptionError):
+        strato.Segment.from_bytes(b"garbage")
+    with pytest.raises(strato.NotFoundError):
+        strato.connect(str(tmp_path / "empty")).open_index("missing")
+
+
+def test_async_api(tmp_path):
+    async def main():
+        db = await strato.connect_async(str(tmp_path / "db"))
+        txn = await db.begin()
+        txn.append("products", CATALOG)
+        await db.commit(txn)
+        engine = await db.engine()
+        changes = ChangeSet()
+        changes.upsert("products", [{"id": "sku-kb", "text": "Wireless Keyboard"}])
+        await db.submit(changes)
+        await db.run_ingestor(Ingestor(db.database, "worker"))
+        assert await engine.sync() == 2
+        return engine.complete("wirel", ["products"])[0].id
+
+    assert asyncio.run(main()) == "sku-kb"

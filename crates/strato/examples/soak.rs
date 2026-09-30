@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 use std::time::{Duration, Instant};
 
 use strato::{
-    ChangeSet, CleanupPolicy, Database, Document, Engine, IndexConfig, Ingestor, Replica,
+    ChangeSet, CleanupPolicy, Database, Document, Engine, IndexOptions, Ingestor, Replica,
 };
 
 struct Counting;
@@ -109,7 +109,7 @@ async fn main() {
         .await
         .unwrap();
     let engine = Engine::new();
-    let replica = Replica::new(ds.clone(), IndexConfig::default());
+    let replica = Replica::new(ds.clone(), IndexOptions::default());
     replica.sync(&engine).await.unwrap();
     let docs: Vec<Document> = engine.get(name).unwrap().documents().collect();
     let mut ingestor = Ingestor::new(ds.clone(), "soak");
@@ -166,9 +166,10 @@ async fn main() {
         let upserts: Vec<Document> = (0..20)
             .map(|_| {
                 let doc = &docs[(next() % docs.len() as u64) as usize];
-                Document {
-                    text: format!("{} r{}", doc.text, next() % 1000),
-                    ..doc.clone()
+                {
+                    let mut d = doc.clone();
+                    d.text = format!("{} r{}", doc.text, next() % 1000);
+                    d
                 }
             })
             .collect();
@@ -184,10 +185,11 @@ async fn main() {
             drop(index);
         }
         if i % 100 == 99 {
-            ds.cleanup(&CleanupPolicy {
-                keep_versions: 5,
-                older_than: Duration::ZERO,
-            })
+            ds.cleanup(
+                &CleanupPolicy::default()
+                    .keep_versions(5)
+                    .older_than(Duration::ZERO),
+            )
             .await
             .unwrap();
         }

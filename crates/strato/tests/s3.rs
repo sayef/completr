@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use strato::{BlockingStore, Document, Error, Index, IndexConfig, Segment};
+use strato::{BlockingStore, Document, Error, Index, IndexOptions, Segment};
 
 #[test]
 fn s3_round_trip() {
@@ -32,14 +32,7 @@ fn s3_round_trip() {
 
     let segments = ["segments/base.seg", "segments/delta.seg"]
         .map(|key| Arc::new(store.get_segment(key).unwrap()));
-    let index = Index::new(
-        segments.to_vec(),
-        IndexConfig {
-            max_score: Some(1000.0),
-            ..IndexConfig::default()
-        },
-    )
-    .unwrap();
+    let index = Index::new(segments.to_vec(), IndexOptions::default().max_score(1000.0)).unwrap();
     assert_eq!(index.len(), 1999);
     assert_eq!(index.complete("rust prog", 5)[0].id, 5);
 

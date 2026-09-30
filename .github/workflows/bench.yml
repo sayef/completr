@@ -1,0 +1,70 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install critcmp --locked
+
+      # Report-only: shared runners are noisy, so regressions never fail the build.
+      - name: Benchmark the base commit
+        continue-on-error: true
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "No base commit to compare against."
+            exit 0
+          fi
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git worktree add "$RUNNER_TEMP/base" "$BASE_SHA"
+          if [ ! -f "$RUNNER_TEMP/base/crates/strato/benches/search.rs" ]; then
+            echo "The base commit has no benchmarks."
+            exit 0
+          fi
+          cd "$RUNNER_TEMP/base"
+          cargo bench -p strato --bench search -- --save-baseline base
+
+      - name: Benchmark the head commit
+        continue-on-error: true
+        run: cargo bench -p strato --bench search -- --save-baseline head
+
+      - name: Write the comparison to the job summary
+        if: always()
+        run: |
+          {
+            echo "## Benchmarks"
+            echo
+            if [ -d "$CARGO_TARGET_DIR/criterion" ] && critcmp --baselines | grep -qx base; then
+              echo "Base \`base\` against head \`head\`; changes under about 5% are usually runner noise."
+              echo
+              echo '```'
+              critcmp base head
+              echo '```'
+            elif [ -d "$CARGO_TARGET_DIR/criterion" ]; then
+              echo '```'
+              critcmp head
+              echo '```'
+            else
+              echo "No benchmark results."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

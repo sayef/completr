@@ -2,6 +2,7 @@
 //! caller.
 
 use std::cmp::Ordering;
+use std::ops::Range;
 
 use rustc_hash::FxHashMap;
 
@@ -9,6 +10,7 @@ use crate::{Error, Index, MatchKind, Suggestion};
 
 /// How lexical and semantic results are combined.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum Fusion {
     /// Reciprocal rank fusion: each list adds `1 / (k + rank)`, ranks from 1. Needs no score
     /// calibration; `k = 60` is the common choice.
@@ -26,15 +28,37 @@ impl Default for Fusion {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
 pub struct HybridOptions {
     pub fusion: Fusion,
     /// Candidates taken from each side before fusing; `None` uses `max(2 * limit, 20)`.
     pub candidates: Option<usize>,
+    /// Only documents tagged with any of these contexts; empty means all documents.
+    pub contexts: Vec<String>,
 }
 
 impl HybridOptions {
-    pub(crate) fn candidates(&self, limit: usize) -> usize {
+    pub fn fusion(mut self, fusion: Fusion) -> Self {
+        self.fusion = fusion;
+        self
+    }
+
+    pub fn candidates(mut self, candidates: usize) -> Self {
+        self.candidates = Some(candidates);
+        self
+    }
+
+    pub fn contexts<S: Into<String>>(mut self, contexts: impl IntoIterator<Item = S>) -> Self {
+        self.contexts = contexts.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub(crate) fn search_options(&self, limit: usize) -> crate::SearchOptions {
+        crate::SearchOptions::new(self.candidate_count(limit)).contexts(self.contexts.clone())
+    }
+
+    pub(crate) fn candidate_count(&self, limit: usize) -> usize {
         self.candidates.unwrap_or((2 * limit).max(20)).max(limit)
     }
 
@@ -53,15 +77,36 @@ impl HybridOptions {
 
 /// A fused result. `kind` is the lexical match kind when the document matched lexically,
 /// otherwise [`MatchKind::Semantic`].
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct HybridSuggestion {
     pub id: u64,
+    pub key: Option<String>,
+    pub text: String,
     pub score: f64,
     pub kind: MatchKind,
     pub lexical_score: Option<f64>,
     pub semantic_score: Option<f64>,
-    /// Layer of the hit that decided `kind`, for engine searches.
+    /// Byte ranges of `text` that matched lexically.
+    pub highlights: Vec<Range<usize>>,
+    /// Layer of the suggestion that decided `kind`, for engine searches.
     pub layer: usize,
+}
+
+impl HybridSuggestion {
+    fn from_suggestion(s: &Suggestion, layer: usize) -> Self {
+        Self {
+            id: s.id,
+            key: s.key.clone(),
+            text: s.text.clone(),
+            score: 0.0,
+            kind: s.kind,
+            lexical_score: None,
+            semantic_score: None,
+            highlights: s.highlights.clone(),
+            layer,
+        }
+    }
 }
 
 /// Fuses ranked lexical and semantic lists of `(hit, layer)`, best first, ties by id.
@@ -82,12 +127,8 @@ pub(crate) fn fuse(
         position.insert(hit.id, entries.len());
         entries.push(Entry {
             hit: HybridSuggestion {
-                id: hit.id,
-                score: 0.0,
-                kind: hit.kind,
                 lexical_score: Some(hit.score),
-                semantic_score: None,
-                layer: *layer,
+                ..HybridSuggestion::from_suggestion(hit, *layer)
             },
             lexical_rank: Some(rank + 1),
             semantic_rank: None,
@@ -103,12 +144,9 @@ pub(crate) fn fuse(
                 position.insert(hit.id, entries.len());
                 entries.push(Entry {
                     hit: HybridSuggestion {
-                        id: hit.id,
-                        score: 0.0,
                         kind: MatchKind::Semantic,
-                        lexical_score: None,
                         semantic_score: Some(hit.score),
-                        layer: *layer,
+                        ..HybridSuggestion::from_suggestion(hit, *layer)
                     },
                     lexical_rank: None,
                     semantic_rank: Some(rank + 1),
@@ -145,20 +183,23 @@ pub(crate) fn fuse(
 }
 
 impl Index {
-    /// Lexical autocomplete on `text` fused with vector search on `vector`.
+    /// Lexical completion of `text` fused with vector search on `vector`.
     pub fn hybrid_search(
         &self,
         text: &str,
         vector: &[f32],
         limit: usize,
-        options: HybridOptions,
+        options: &HybridOptions,
     ) -> Result<Vec<HybridSuggestion>, Error> {
         options.validate()?;
-        let n = options.candidates(limit);
-        let lexical: Vec<(Suggestion, usize)> =
-            self.complete(text, n).into_iter().map(|h| (h, 0)).collect();
+        let search = options.search_options(limit);
+        let lexical: Vec<(Suggestion, usize)> = self
+            .complete_with(text, &search)
+            .into_iter()
+            .map(|h| (h, 0))
+            .collect();
         let semantic: Vec<(Suggestion, usize)> = self
-            .vector_search(vector, n)?
+            .vector_search_with(vector, &search)?
             .into_iter()
             .map(|h| (h, 0))
             .collect();
@@ -171,7 +212,15 @@ mod tests {
     use super::*;
 
     fn hit(id: u64, score: f64, kind: MatchKind) -> (Suggestion, usize) {
-        (Suggestion { id, score, kind }, 0)
+        let suggestion = Suggestion {
+            id,
+            key: None,
+            text: String::new(),
+            score,
+            kind,
+            highlights: Vec::new(),
+        };
+        (suggestion, 0)
     }
 
     #[test]

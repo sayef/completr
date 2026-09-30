@@ -10,8 +10,8 @@ Thanks for your interest in strato. Bug reports, benchmarks, documentation fixes
 
 ## Development setup
 
-You need a stable Rust toolchain and, for the Python bindings, Python 3.11+ with
-[maturin](https://www.maturin.rs/).
+You need Rust 1.94.1 or newer (the minimum supported version, checked in CI) and, for the Python
+bindings, Python 3.11+ with [maturin](https://www.maturin.rs/).
 
 ```sh
 git clone https://github.com/sayef/strato && cd strato
@@ -32,8 +32,11 @@ STRATO_TEST_S3_URL=s3://your-bucket/strato-tests cargo test --release -p strato 
 ## Checklist for a pull request
 
 - `cargo fmt --all` and `cargo clippy --all-targets --features store -- -D warnings` are clean.
+- `cargo deny check` passes (licences, advisories and sources; install with `cargo install cargo-deny --locked`).
 - New behaviour has tests. Ranking changes include before-and-after results on the benchmark
   (`cargo run --release -p strato --example bench`).
+- Performance changes include criterion results (`cargo bench -p strato --bench search`); CI also posts a
+  base-against-head comparison to the job summary of each pull request.
 - Determinism holds: the same input gives bit-identical results, whatever the segmentation or thread
   count. Break ties explicitly (by id) in any new ordering.
 - Changes to the segment format bump its version, and loading rejects what it cannot validate.
