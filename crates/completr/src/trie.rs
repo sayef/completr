@@ -348,9 +348,10 @@ impl Trie {
         let mut ids = vec![0u32; keys.len()];
         let mut terminals = 0u32;
         // (first key, end key, depth) per node, breadth first.
-        let mut queue = std::collections::VecDeque::from([(0usize, keys.len(), 0usize)]);
+        let mut queue = std::collections::VecDeque::from([(0u32, keys.len() as u32, 0u32)]);
         let mut node = 0usize;
         while let Some((lo, hi, depth)) = queue.pop_front() {
+            let (lo, hi, depth) = (lo as usize, hi as usize, depth as usize);
             let mut start = lo;
             if start < hi && keys[start].len() == depth {
                 set(&mut terminal, node);
@@ -377,7 +378,7 @@ impl Trie {
                     set(&mut has_tail, child);
                     node_tails.push(&first[depth + 1..common]);
                 }
-                queue.push_back((i, j, common));
+                queue.push_back((i as u32, j as u32, common as u32));
                 i = j;
             }
             push_bit(&mut louds, false);
@@ -404,16 +405,13 @@ impl Trie {
         // Sorted by reversed bytes and walked backwards, each tail follows the tail it may end.
         let rev_cmp = |a: &[u8], b: &[u8]| a.iter().rev().cmp(b.iter().rev());
         // Node tails sorted by reversed bytes, grouped into unique tails in ascending order.
+        let tail = |t: u32| node_tails[t as usize];
         let mut order: Vec<u32> = (0..node_tails.len() as u32).collect();
-        order
-            .par_sort_unstable_by(|&a, &b| rev_cmp(node_tails[a as usize], node_tails[b as usize]));
+        order.par_sort_unstable_by(|&a, &b| rev_cmp(tail(a), tail(b)));
         let mut unique_of = vec![0u32; node_tails.len()];
         let mut unique: Vec<u32> = Vec::new();
         for &i in &order {
-            if unique
-                .last()
-                .is_none_or(|&u| node_tails[u as usize] != node_tails[i as usize])
-            {
+            if unique.last().is_none_or(|&u| tail(u) != tail(i)) {
                 unique.push(i);
             }
             unique_of[i as usize] = unique.len() as u32 - 1;
@@ -422,7 +420,7 @@ impl Trie {
         if nested {
             let reversed: Vec<Vec<u8>> = unique
                 .iter()
-                .map(|&u| node_tails[u as usize].iter().rev().copied().collect())
+                .map(|&u| tail(u).iter().rev().copied().collect())
                 .collect();
             let refs: Vec<&[u8]> = reversed.iter().map(Vec::as_slice).collect();
             let mut inner = Writer::default();
@@ -443,7 +441,7 @@ impl Trie {
             let mut offset_of = vec![0u32; unique.len()];
             let mut last: Option<(&[u8], usize)> = None;
             for (u, &i) in unique.iter().enumerate().rev() {
-                let tail = node_tails[i as usize];
+                let tail = tail(i);
                 let offset = match last {
                     Some((prev, at)) if prev.ends_with(tail) => at + prev.len() - tail.len(),
                     _ => {

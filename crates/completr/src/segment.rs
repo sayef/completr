@@ -1359,22 +1359,29 @@ impl WordTable {
         for (word, id) in words {
             out.keys.extend_from_slice(word.as_bytes());
             out.keys.push(TERMINATOR);
-            out.key_ends.push(out.keys.len());
+            out.key_ends
+                .push(offset(out.keys.len()).expect("words under 4 GiB"));
             out.postings
                 .extend_from_slice(&std::mem::take(&mut postings[id as usize]));
-            out.posting_ends.push(out.postings.len());
+            out.posting_ends
+                .push(offset(out.postings.len()).expect("postings under 4 GiB"));
             out.freqs.push(self.freqs[id as usize]);
         }
         out
     }
 }
 
+/// An arena offset as stored, 32 bits.
+fn offset(at: usize) -> Result<u32, Error> {
+    u32::try_from(at).map_err(|_| Error::input("over 4 GiB of keys or postings in one segment"))
+}
+
 /// Words in term-key order: keys with their terminator in one arena, postings in another.
 struct SortedWords {
     keys: Vec<u8>,
-    key_ends: Vec<usize>,
+    key_ends: Vec<u32>,
     postings: Vec<u32>,
-    posting_ends: Vec<usize>,
+    posting_ends: Vec<u32>,
     freqs: Vec<u32>,
 }
 
@@ -1410,8 +1417,10 @@ impl SortedWords {
     }
 
     fn key(&self, ordinal: usize) -> &[u8] {
-        let start = ordinal.checked_sub(1).map_or(0, |o| self.key_ends[o]);
-        &self.keys[start..self.key_ends[ordinal]]
+        let start = ordinal
+            .checked_sub(1)
+            .map_or(0, |o| self.key_ends[o] as usize);
+        &self.keys[start..self.key_ends[ordinal] as usize]
     }
 
     fn word(&self, ordinal: usize) -> &str {
@@ -1421,8 +1430,10 @@ impl SortedWords {
     }
 
     fn postings(&self, ordinal: usize) -> &[u32] {
-        let start = ordinal.checked_sub(1).map_or(0, |o| self.posting_ends[o]);
-        &self.postings[start..self.posting_ends[ordinal]]
+        let start = ordinal
+            .checked_sub(1)
+            .map_or(0, |o| self.posting_ends[o] as usize);
+        &self.postings[start..self.posting_ends[ordinal] as usize]
     }
 }
 
