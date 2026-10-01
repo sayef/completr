@@ -24,7 +24,7 @@ segment involves no parsing or copying beyond a few structural checks.
 
 ```
 magic "COMPLETR\0\0" | version | settings | layout
-ids (sorted) | weights | text lengths | single-word flags | deletes
+ids (sorted, blocked) | weights | text shapes (length, single word; bit-packed) | deletes
 document store     zstd blocks of 128 documents' aliases and contexts, with block offsets
 titles             dictionary: normalised title -> postings
 words              dictionary: title word -> postings, with word frequencies and texts
@@ -39,9 +39,12 @@ xxh3 checksum of everything above
 
 - **Postings.** A key with a single posting stores it inline in its dictionary value (bit 63 set).
   Otherwise the value packs `start << 24 | len` into a shared, bit-packed postings column.
-- **Variants.** Each word's delete variants are hashed into about three buckets per word; a bucket
-  holds bit-packed word ordinals, each with a 6-bit fingerprint of its variant. No variant is stored, so
-  a lookup checks that the query variant really is a subsequence of the candidate word.
+- **Variants.** Each word's delete variants are hashed into about three buckets per word. The entries
+  `bucket * words + ordinal` form one sorted sequence, stored with Elias-Fano coding (as in Lucene and
+  PISA) at about 20 bits per entry. No variant is stored, so a lookup checks that the query variant
+  really is a subsequence of each word in its bucket.
+- **Blocked columns.** Ids and text offsets are stored in blocks of 128, each bit-packed as offsets from
+  the block's minimum, like tantivy's bitpacked fast fields; any value reads in constant time.
 - **Key order.** Keys are stored as `text + 0xff`, so a key sorts after all of its extensions. This lets
   a prefix scan emit shorter completions in a stable order.
 - **Validation.** `Segment::open` checks the structure only (magic, version, section lengths and
