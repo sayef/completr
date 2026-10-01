@@ -89,4 +89,6 @@ if FRAME >= 0:
     svg = re.sub(r'<rect y="42"([^>]*)><animate attributeName="x"[^>]*values="[0-9.]+;[0-9.]+;([0-9.]+);[^"]*"/>',
                  r'<rect y="42" x="\2"\1>', svg)
 Path("assets/demo.svg" if FRAME < 0 else f"assets/frame{FRAME}.svg").write_text(svg)
+if FRAME < 0 and Path("docs/assets").is_dir():
+    Path("docs/assets/demo.svg").write_text(svg)
 print(len(svg) // 1024, "KB")

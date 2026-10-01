@@ -121,4 +121,9 @@ social = f"""<rect width="1280" height="640" fill="#0B1020"/>
 <g transform="translate({left + 308} 390)"><path d="{tag}" fill="#94A3B8"/></g>
 <g transform="translate({left + 308} 446)"><path d="{kinds}" fill="{CARET}"/></g>"""
 (OUT / "social-preview.svg").write_text(svg(1280, 640, social, "completr"))
+# The docs site serves its own copies of the logo and banners.
+DOCS = Path("docs/assets")
+if DOCS.is_dir():
+    for name in ("logo.svg", "banner-light.svg", "banner-dark.svg"):
+        (DOCS / name).write_text((OUT / name).read_text())
 print("written to", OUT)
