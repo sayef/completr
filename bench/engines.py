@@ -48,7 +48,9 @@ TOKEN = re.compile(r"[^\W_]+")
 
 
 class Tantivy:
-    """Autocomplete emulation: complete tokens as terms, the last token as a prefix, fuzzy fallback below 10 hits."""
+    """Autocomplete emulation: complete tokens as terms, the last token as a prefix, fuzzy fallback below 10 hits.
+
+    The title is stored and read with each hit, as a suggestion needs its text."""
     name = "tantivy"
     in_process = True
 
@@ -60,7 +62,7 @@ class Tantivy:
         import tantivy
         sb = tantivy.SchemaBuilder()
         sb.add_unsigned_field("id", stored=True)
-        sb.add_text_field("title", tokenizer_name="default")
+        sb.add_text_field("title", stored=True, tokenizer_name="default")
         sb.add_unsigned_field("score", fast=True)
         return sb.build()
 
@@ -109,7 +111,8 @@ class Tantivy:
         for fuzzy in (False, True):
             res = self.searcher.search(self._query(toks, prefix_last, fuzzy), LIMIT, count=False, weight_by_field="score")
             for _, addr in res.hits:
-                i = self.searcher.doc(addr)["id"][0]
+                doc = self.searcher.doc(addr)
+                i, _title = doc["id"][0], doc["title"][0]
                 if i not in seen:
                     seen.add(i)
                     ids.append(i)

@@ -108,6 +108,8 @@ flowchart LR
 - **Hybrid completion** with reciprocal rank fusion, weighted blending or lexical-first ordering, chosen per
   request.
 - **Context filters**: restrict any request to documents tagged with a category, tenant or language.
+- **Your own ids**: integers or strings such as UUIDs, returned with every suggestion as given. Documents
+  with the same title stay separate results.
 
 **Ranking**
 - **Popularity** through a per-document weight, combined with match kind, text length and whole-word
@@ -387,8 +389,8 @@ wanted title best of the engines tested, both while typing cleanly (MRR 0.861, a
 Meilisearch, 0.804 for tantivy and 0.784 for Typesense) and with a typo (0.827, against 0.804 for
 Meilisearch). In process it answers in 0.17 ms at the median and under 1 ms at p99 for every query set,
 and serves 30,000 queries per second on 8 threads. Its 23 MB segment opens in about a millisecond.
-Full tables, settings and caveats are in [docs/benchmarks.md](docs/benchmarks.md); the harness is in
-[`bench/`](bench/).
+Full tables, a capability comparison, where the bytes go, settings and caveats are in
+[docs/benchmarks.md](docs/benchmarks.md); the harness is in [`bench/`](bench/).
 
 **On a synthetic corpus.**
 
