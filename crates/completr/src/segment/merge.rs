@@ -60,26 +60,27 @@ fn union(
 #[derive(Default)]
 struct Groups {
     keys: Vec<u8>,
-    key_ends: Vec<usize>,
+    key_ends: Vec<u32>,
     values: Vec<u32>,
-    value_ends: Vec<usize>,
+    value_ends: Vec<u32>,
 }
 
 impl Groups {
-    fn push(&mut self, key: &[u8], values: &[u32]) {
+    fn push(&mut self, key: &[u8], values: &[u32]) -> Result<(), Error> {
         self.keys.extend_from_slice(key);
-        self.key_ends.push(self.keys.len());
+        self.key_ends.push(offset(self.keys.len())?);
         self.values.extend_from_slice(values);
-        self.value_ends.push(self.values.len());
+        self.value_ends.push(offset(self.values.len())?);
+        Ok(())
     }
 
     fn iter(&self) -> impl Iterator<Item = (&[u8], std::iter::Copied<std::slice::Iter<'_, u32>>)> {
         (0..self.key_ends.len()).map(|i| {
-            let k = i.checked_sub(1).map_or(0, |p| self.key_ends[p]);
-            let v = i.checked_sub(1).map_or(0, |p| self.value_ends[p]);
+            let k = i.checked_sub(1).map_or(0, |p| self.key_ends[p] as usize);
+            let v = i.checked_sub(1).map_or(0, |p| self.value_ends[p] as usize);
             (
-                &self.keys[k..self.key_ends[i]],
-                self.values[v..self.value_ends[i]].iter().copied(),
+                &self.keys[k..self.key_ends[i] as usize],
+                self.values[v..self.value_ends[i] as usize].iter().copied(),
             )
         })
     }
@@ -107,7 +108,7 @@ fn merge_keyed(
         postings.sort_unstable();
         postings.dedup();
         if !postings.is_empty() {
-            groups.push(key, &postings);
+            groups.push(key, &postings)?;
         }
         Ok(())
     })?;
@@ -341,9 +342,9 @@ impl Segment {
             }
             postings.sort_unstable();
             words.keys.extend_from_slice(key);
-            words.key_ends.push(words.keys.len());
+            words.key_ends.push(offset(words.keys.len())?);
             words.postings.extend_from_slice(&postings);
-            words.posting_ends.push(words.postings.len());
+            words.posting_ends.push(offset(words.postings.len())?);
             words.freqs.push(freq);
             Ok(())
         })?;
