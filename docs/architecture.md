@@ -92,6 +92,21 @@ titles and paragraphs, erring high; the writer starts a new segment file once th
 budget. tantivy bounds its indexing the same way, flushing a segment when its writer's memory budget fills,
 and Meilisearch by spilling sorted chunks to disk. The segments rank exactly like one.
 
+## Merging segments
+
+Compaction merges segments without rebuilding them from documents, the way tantivy's merger works:
+
+1. **Map** the live documents of every segment to their places in the merged one, in id order.
+2. **Union** each dictionary (titles, words, aliases, contexts) across the segments in key order, with
+   each key's postings remapped and those of hidden documents dropped. Word occurrences in hidden
+   documents are subtracted, and words left without a live document are dropped.
+3. **Copy** the per-document columns, the stored aliases and contexts, and the vector codes.
+4. **Recompute** only what depends on the whole: spelling variants from the merged words, and the FSST
+   table, trained on a sample of the merged texts read one at a time.
+
+The merged segment is byte for byte what building from the live documents gives, which the tests check,
+with less memory and time because no text is tokenised, lowercased or interned again.
+
 ## Query path
 
 1. **Normalise** the query: Unicode lowercase and trim; words split on Unicode whitespace.
