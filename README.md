@@ -118,7 +118,8 @@ flowchart LR
 **Serving**
 - **Fast**: p50 around 0.1 ms and p99 around 1 ms for typed queries on 200k documents, on one core.
 - **Zero-copy segments**: an aligned, checksummed binary format read in place through `mmap`. Opening a
-  20 MB segment takes about 5 ms. Texts are FSST-compressed and decoded one at a time.
+  segment takes under a millisecond and reads only its headers. Texts are FSST-compressed and decoded one
+  at a time.
 - **Compact dictionaries**: a purpose-built LOUDS trie for keys that are scanned, and
   [`fst`](https://crates.io/crates/fst) for keys that are looked up, chosen per key set.
 - **Override layers**: search a tenant's, a user's or an experiment's index on top of shared data, per
@@ -382,10 +383,12 @@ In Rust, `BuildOptions`, `IndexOptions`, `SearchOptions`, `HybridOptions`, `Comp
 ## Benchmarks
 
 **Against other engines.** On 124,440 Hacker News titles, typed character by character, completr ranks the
-wanted title best while typing cleanly (MRR 0.861, against 0.846 for Meilisearch, 0.804 for tantivy and
-0.784 for Typesense), and on par with the best when the title contains a typo (0.806, against 0.804 for
-Meilisearch). It answers in 0.26 ms at the median, in process. Full tables, settings and caveats are in
-[docs/benchmarks.md](docs/benchmarks.md); the harness is in [`bench/`](bench/).
+wanted title best of the engines tested, both while typing cleanly (MRR 0.861, against 0.846 for
+Meilisearch, 0.804 for tantivy and 0.784 for Typesense) and with a typo (0.827, against 0.804 for
+Meilisearch). In process it answers in 0.17 ms at the median and under 1 ms at p99 for every query set,
+and serves 30,000 queries per second on 8 threads. Its 23 MB segment opens in about a millisecond.
+Full tables, settings and caveats are in [docs/benchmarks.md](docs/benchmarks.md); the harness is in
+[`bench/`](bench/).
 
 **On a synthetic corpus.**
 
@@ -395,18 +398,20 @@ one core of an Apple M1 Pro. Reproduce with
 
 | Step | Result |
 |---|---|
-| Build a segment | 447 ms, 20.0 MB |
-| Open a segment (memory-mapped, checksum verified) | 5.5 ms |
-| Build a delta segment of 1,000 upserts | 13.6 ms |
+| Build a segment | 317 ms, 11.6 MB |
+| Open a segment (memory-mapped) | 0.5 ms |
+| Build a delta segment of 1,000 upserts | 8.1 ms |
 
 | Query, limit 10 | p50 | p99 |
 |---|---|---|
-| Every prefix of 2,000 titles, as typed (33,744 queries) | 0.13 ms | 3.9 ms |
-| The same, with the short-query cache (default) | 0.08 ms | 0.99 ms |
-| The same, over a base plus a delta segment | 0.18 ms | 4.2 ms |
-| One-edit typos | 0.28 ms | 1.5 ms |
+| Every prefix of 2,000 titles, as typed (33,744 queries) | 0.07 ms | 4.0 ms |
+| The same, with the short-query cache (default) | 0.04 ms | 0.32 ms |
+| The same, over a base plus a delta segment | 0.09 ms | 4.3 ms |
+| One-edit typos | 0.15 ms | 0.67 ms |
 | Vector search, 256-d, 4-bit | 1.1 ms | 1.2 ms |
-| Hybrid search (RRF) | 1.3 ms | 5.2 ms |
+| Hybrid search (RRF) | 1.3 ms | 5.6 ms |
+
+The vector rows come from the same run with `--vectors`, whose segment is 38.8 MB.
 
 One- and two-character prefixes, which match large parts of the corpus, dominate the tail. The short-query
 cache serves them, and replicas carry its hottest entries across index versions.
@@ -418,8 +423,9 @@ cache serves them, and replicas carry its hottest entries across index versions.
   snapshot and on a freshly built index, and require bit-identical output.
 - **Concurrency**: readers never block. New index versions are published atomically, and a reader keeps
   the version it started with.
-- **Integrity**: every segment ends with an xxh3 checksum verified on load, and every section is validated
-  before use. Stable-Rust fuzz tests feed in truncated, bit-flipped and garbage segments, random Unicode
+- **Integrity**: every segment ends with an xxh3 checksum. `Segment::open` checks a local file's structure
+  only; `Segment::verify`, `Segment::from_bytes` and downloads into a store's cache check the checksum and
+  every section. Stable-Rust fuzz tests feed in truncated, bit-flipped and garbage segments, random Unicode
   queries and corrupted manifests.
 - **Memory**: replicas replace indexes group by group, and release old segments before loading the next
   group. In a soak test over thousands of versions, serving memory stayed flat.
@@ -479,9 +485,9 @@ search-engine names such as Solr. Its wordmark shows the name being completed as
 
 ## How it works
 
-A segment stores its documents in zstd-compressed blocks, and its keys in four dictionaries: titles,
-title words, aliases, and SymSpell delete variants for spelling correction. Popularity, title length and
-per-document word ordinals are kept in aligned columns. Queries run on primitives merged across segments
+A segment stores its documents in zstd-compressed blocks, and its keys in three dictionaries: titles,
+title words and aliases. SymSpell delete variants for spelling correction are hashed into buckets of word
+ordinals. Popularity and title length are kept in aligned columns, and postings are bit-packed. Queries run on primitives merged across segments
 (cursor merges over the sorted dictionaries), so an index of many segments ranks exactly like a single
 one. See [docs/architecture.md](docs/architecture.md) for the format, the ranking and the database
 protocol.

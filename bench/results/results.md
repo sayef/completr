@@ -1,17 +1,17 @@
-Measured 2026-09-30 on Apple M1 Pro, 10 cores, 17180 MB RAM, macOS 26.7, Python 3.13.7.
+Measured 2026-10-01 on Apple M1 Pro, 10 cores, 17180 MB RAM, macOS 26.7, Python 3.13.7.
 
 ## Indexing, size, memory
 
 | engine | version | index time | on disk | memory after open or index | memory after queries | open / restart to first hit |
 | --- | --- | --- | --- | --- | --- | --- |
-| completr | completr 0.1.0 | 1.11 s | 39 MB | 45 MB | 49 MB | 33.1 ms |
+| completr | completr 0.1.0 | 728.7 ms | 23 MB | 4 MB | 31 MB | 1.2 ms |
 | tantivy | tantivy-py 0.26.2 | 1.01 s | 5 MB | 3 MB | 13 MB | 0.5 ms |
 | typesense | typesense 30.2 | 3.74 s | 39 MB | 283 MB | 191 MB | 3.37 s |
 | typesense-buckets | typesense 30.2 | 3.66 s | 39 MB | 268 MB | 157 MB | 3.38 s |
 | meilisearch | meilisearch 1.54.2 | 2.08 s | 136 MB | 811 MB | 136 MB | 222.8 ms |
 | meilisearch-popfirst | meilisearch 1.54.2 | 1.93 s | 136 MB | 877 MB | 145 MB | 219.9 ms |
 
-completr with build_threads=8: 452.1 ms.
+completr with build_threads=8: 295.8 ms.
 
 In-process engines: RSS growth of a fresh process after opening, then after 5,000 prefix queries. Servers: RSS of the server process after indexing, then after all queries.
 
@@ -19,25 +19,25 @@ In-process engines: RSS growth of a fresh process after opening, then after 5,00
 
 | set | engine | in-process or round-trip p50 | p90 | p99 | mean | engine-reported p50 | p99 | mean |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| prefix (23292) | completr | 0.260 | 1.025 | 2.199 | 0.437 | - | - | - |
+| prefix (23292) | completr | 0.171 | 0.486 | 0.881 | 0.226 | - | - | - |
 | prefix (23292) | tantivy | 0.438 | 1.447 | 2.823 | 0.629 | - | - | - |
 | prefix (23292) | typesense | 1.470 | 9.159 | 41.659 | 4.114 | 0 | 40 | 2.96 |
 | prefix (23292) | typesense-buckets | 1.560 | 9.595 | 41.934 | 4.266 | 0 | 41 | 3.04 |
 | prefix (23292) | meilisearch | 1.894 | 5.971 | 10.000 | 2.814 | 1 | 5 | 0.88 |
 | prefix (23292) | meilisearch-popfirst | 1.591 | 2.299 | 3.011 | 1.666 | 0 | 2 | 0.45 |
-| typo1 (1000) | completr | 0.214 | 1.304 | 2.755 | 0.452 | - | - | - |
+| typo1 (1000) | completr | 0.161 | 0.510 | 0.854 | 0.235 | - | - | - |
 | typo1 (1000) | tantivy | 0.217 | 0.708 | 2.152 | 0.392 | - | - | - |
 | typo1 (1000) | typesense | 1.086 | 2.204 | 8.753 | 1.580 | 0 | 8 | 0.52 |
 | typo1 (1000) | typesense-buckets | 1.186 | 2.376 | 9.034 | 1.686 | 0 | 8 | 0.54 |
 | typo1 (1000) | meilisearch | 1.347 | 1.874 | 4.326 | 1.448 | 0 | 2 | 0.17 |
 | typo1 (1000) | meilisearch-popfirst | 1.286 | 1.681 | 2.357 | 1.321 | 0 | 1 | 0.13 |
-| typo2 (1000) | completr | 0.173 | 1.087 | 2.570 | 0.412 | - | - | - |
+| typo2 (1000) | completr | 0.136 | 0.561 | 0.895 | 0.231 | - | - | - |
 | typo2 (1000) | tantivy | 0.507 | 0.735 | 1.514 | 0.489 | - | - | - |
 | typo2 (1000) | typesense | 1.303 | 2.447 | 8.821 | 1.742 | 0 | 7 | 0.60 |
 | typo2 (1000) | typesense-buckets | 1.376 | 2.626 | 8.916 | 1.838 | 0 | 7 | 0.63 |
 | typo2 (1000) | meilisearch | 1.419 | 1.939 | 2.609 | 1.618 | 0 | 1 | 0.18 |
 | typo2 (1000) | meilisearch-popfirst | 1.275 | 1.589 | 2.053 | 1.288 | 0 | 1 | 0.09 |
-| multiword (2000) | completr | 0.167 | 0.647 | 1.210 | 0.261 | - | - | - |
+| multiword (2000) | completr | 0.126 | 0.291 | 0.463 | 0.151 | - | - | - |
 | multiword (2000) | tantivy | 0.225 | 0.734 | 1.749 | 0.373 | - | - | - |
 | multiword (2000) | typesense | 0.954 | 2.881 | 13.552 | 1.795 | 0 | 12 | 0.80 |
 | multiword (2000) | typesense-buckets | 1.006 | 3.026 | 13.430 | 1.864 | 0 | 12 | 0.82 |
@@ -48,7 +48,7 @@ In-process engines: RSS growth of a fresh process after opening, then after 5,00
 
 | engine | QPS | clients |
 | --- | --- | --- |
-| completr | 15964 | threads |
+| completr | 30096 | threads |
 | tantivy | 5329 | threads |
 | typesense | 1727 | processes |
 | typesense-buckets | 1640 | processes |
@@ -73,7 +73,7 @@ In-process engines: RSS growth of a fresh process after opening, then after 5,00
 
 | engine | n | mrr_over_prefixes | s@1_len3 | s@5_len3 | s@10_len3 | s@1_len5 | s@5_len5 | s@10_len5 | s@1_len8 | s@5_len8 | s@10_len8 | reached_top1 | keystrokes_top1 | reached_top5 | keystrokes_top5 | chars_saved_top5 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| completr | 488 | 0.806 | 0.170 | 0.342 | 0.414 | 0.320 | 0.557 | 0.648 | 0.484 | 0.744 | 0.801 | 0.992 | 8.5 | 0.996 | 5.5 | 0.857 |
+| completr | 488 | 0.827 | 0.172 | 0.346 | 0.422 | 0.367 | 0.592 | 0.668 | 0.590 | 0.803 | 0.848 | 0.996 | 7.8 | 0.996 | 5.2 | 0.863 |
 | tantivy | 488 | 0.735 | 0.082 | 0.174 | 0.242 | 0.197 | 0.385 | 0.469 | 0.352 | 0.572 | 0.672 | 0.959 | 10.3 | 0.969 | 7.3 | 0.787 |
 | typesense | 488 | 0.772 | 0.061 | 0.152 | 0.219 | 0.158 | 0.305 | 0.381 | 0.393 | 0.594 | 0.662 | 0.998 | 10.2 | 0.998 | 7.3 | 0.807 |
 | typesense-buckets | 488 | 0.774 | 0.076 | 0.160 | 0.225 | 0.168 | 0.318 | 0.385 | 0.402 | 0.600 | 0.664 | 0.996 | 10.0 | 0.998 | 7.3 | 0.807 |
@@ -84,7 +84,7 @@ In-process engines: RSS growth of a fresh process after opening, then after 5,00
 
 | engine | n | mrr_over_prefixes | s@1_len3 | s@5_len3 | s@10_len3 | s@1_len5 | s@5_len5 | s@10_len5 | s@1_len8 | s@5_len8 | s@10_len8 | reached_top1 | keystrokes_top1 | reached_top5 | keystrokes_top5 | chars_saved_top5 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| completr | 300 | 0.804 | 0.027 | 0.127 | 0.203 | 0.191 | 0.351 | 0.438 | 0.465 | 0.656 | 0.722 | 0.997 | 9.9 | 1.000 | 7.5 | 0.814 |
+| completr | 300 | 0.804 | 0.027 | 0.127 | 0.203 | 0.184 | 0.338 | 0.418 | 0.465 | 0.656 | 0.722 | 0.997 | 9.9 | 1.000 | 7.5 | 0.813 |
 | tantivy | 300 | 0.738 | 0.010 | 0.027 | 0.040 | 0.080 | 0.137 | 0.187 | 0.231 | 0.381 | 0.468 | 0.987 | 12.8 | 0.997 | 10.1 | 0.748 |
 | typesense | 300 | 0.755 | 0.017 | 0.023 | 0.037 | 0.084 | 0.157 | 0.197 | 0.278 | 0.455 | 0.522 | 1.000 | 11.6 | 1.000 | 9.5 | 0.761 |
 | typesense-buckets | 300 | 0.754 | 0.017 | 0.020 | 0.033 | 0.087 | 0.157 | 0.197 | 0.268 | 0.445 | 0.512 | 1.000 | 11.7 | 1.000 | 9.6 | 0.759 |
@@ -95,7 +95,7 @@ In-process engines: RSS growth of a fresh process after opening, then after 5,00
 
 | engine | n | mrr_over_prefixes | s@1_len3 | s@5_len3 | s@10_len3 | s@1_len5 | s@5_len5 | s@10_len5 | s@1_len8 | s@5_len8 | s@10_len8 | reached_top1 | keystrokes_top1 | reached_top5 | keystrokes_top5 | chars_saved_top5 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| completr | 298 | 0.747 | 0.023 | 0.104 | 0.174 | 0.148 | 0.289 | 0.362 | 0.302 | 0.470 | 0.534 | 0.980 | 11.5 | 0.990 | 8.6 | 0.786 |
+| completr | 298 | 0.766 | 0.023 | 0.104 | 0.174 | 0.138 | 0.272 | 0.352 | 0.342 | 0.534 | 0.607 | 0.983 | 10.8 | 0.990 | 8.2 | 0.795 |
 | tantivy | 298 | 0.683 | 0.007 | 0.020 | 0.034 | 0.074 | 0.124 | 0.158 | 0.188 | 0.319 | 0.386 | 0.943 | 13.1 | 0.953 | 10.4 | 0.717 |
 | typesense | 298 | 0.744 | 0.013 | 0.020 | 0.030 | 0.077 | 0.138 | 0.168 | 0.208 | 0.369 | 0.426 | 0.997 | 12.1 | 0.997 | 10.0 | 0.755 |
 | typesense-buckets | 298 | 0.743 | 0.013 | 0.017 | 0.027 | 0.081 | 0.138 | 0.168 | 0.201 | 0.362 | 0.409 | 0.997 | 12.2 | 0.997 | 10.1 | 0.753 |
