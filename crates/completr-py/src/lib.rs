@@ -887,10 +887,16 @@ impl Index {
         doc.map(Document)
     }
 
-    fn compact(&self, py: Python<'_>) -> PyResult<Segment> {
-        Ok(Segment(Arc::new(
-            py.detach(|| self.0.compact()).map_err(to_py_err)?,
-        )))
+    /// Merges the live documents into one segment; with `path`, written there as it is produced.
+    #[pyo3(signature = (path = None))]
+    fn compact(&self, py: Python<'_>, path: Option<PathBuf>) -> PyResult<Segment> {
+        let segment = py
+            .detach(|| match path {
+                Some(path) => self.0.compact_to(path),
+                None => self.0.compact(),
+            })
+            .map_err(to_py_err)?;
+        Ok(Segment(Arc::new(segment)))
     }
 
     fn segments(&self) -> Vec<Segment> {

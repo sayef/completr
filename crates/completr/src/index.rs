@@ -361,25 +361,21 @@ impl Index {
 
     /// Merges the live documents into one segment without deletes.
     pub fn compact(&self) -> Result<Segment, Error> {
-        self.merged_segment(Vec::new())
+        self.merged_segment(Vec::new(), None)
     }
 
-    /// The live documents, with their vector codes carried over, as one segment with `deletes`.
-    pub(crate) fn merged_segment(&self, deletes: Vec<u64>) -> Result<Segment, Error> {
-        let mut codes = crate::vectors::CarriedCodes::default();
-        for (i, seg) in self.segments.iter().enumerate() {
-            let Some(vectors) = &seg.vectors else {
-                continue;
-            };
-            let base = self.offsets[i] as usize;
-            for &local in vectors.locals() {
-                if self.live[base + local as usize] {
-                    let (code, scale) = vectors.row(local).expect("slot of a listed local");
-                    codes.insert(seg.ids()[local as usize], (code.to_vec(), scale));
-                }
-            }
-        }
-        let carried = self.vector_dim.map(|dim| (dim, &codes));
+    /// Like [`Index::compact`], writing the segment to `path` as it is produced and mapping it.
+    pub fn compact_to(&self, path: impl AsRef<std::path::Path>) -> Result<Segment, Error> {
+        self.merged_segment(Vec::new(), Some(path.as_ref()))
+    }
+
+    /// The live documents as one segment with `deletes`, merged from the segments' sorted
+    /// structures, in memory or into the file at `path`.
+    pub(crate) fn merged_segment(
+        &self,
+        deletes: Vec<u64>,
+        path: Option<&std::path::Path>,
+    ) -> Result<Segment, Error> {
         let bits = self
             .segments
             .iter()
@@ -388,7 +384,19 @@ impl Index {
             vector_bits: bits.unwrap_or(self.segment_config.vector_bits),
             ..self.segment_config
         };
-        Segment::build_inner(config, self.documents(), deletes, carried)
+        let parts: Vec<crate::segment::Part> = (0..self.segments.len())
+            .map(|i| crate::segment::Part {
+                segment: &self.segments[i],
+                live: self.segment_live(i),
+            })
+            .collect();
+        Segment::merge(config, &parts, deletes, path)
+    }
+
+    /// Which documents of the `i`th segment are live.
+    pub(crate) fn segment_live(&self, i: usize) -> &[bool] {
+        let base = self.offsets[i] as usize;
+        &self.live[base..base + self.segments[i].len()]
     }
 
     /// Maps all pages of all segments in advance.

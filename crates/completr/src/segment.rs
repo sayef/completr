@@ -8,9 +8,12 @@ use rustc_hash::FxHashMap;
 use crate::codec::{Bytes, Column, Reader, Writer};
 use crate::dict::{Dict, Dictionary};
 use crate::staged::Staged;
+
+mod merge;
 use crate::trie::Packed;
 use crate::vectors::{CarriedCodes, Row, Vectors};
 use crate::{fuzzy, text, Alias, AliasKind, Document, Error};
+pub(crate) use merge::Part;
 
 const MAGIC: &[u8; 8] = b"COMPLETR";
 const VERSION: u64 = 10;
@@ -111,6 +114,15 @@ impl Layout {
 }
 
 impl BuildOptions {
+    /// The layout segments are written with.
+    pub(crate) fn effective_layout(&self) -> Layout {
+        if self.compact_keys {
+            Layout::uniform(Dictionary::CompactTrie)
+        } else {
+            self.layout
+        }
+    }
+
     /// Whether segments built with `self` and `other` can be searched together.
     pub(crate) fn compatible(&self, other: &Self) -> bool {
         (
@@ -163,14 +175,30 @@ impl Keyed {
     /// Writes `arena`'s keys with their postings, one packed value per key.
     fn write_packed(w: &mut Writer, kind: Dictionary, mut arena: KeyArena) -> Result<(), Error> {
         let groups = arena.sorted_groups();
-        let mut keys = Vec::with_capacity(groups.len());
-        let mut packed_values = Vec::with_capacity(groups.len());
+        let arena = &arena;
+        let groups = groups.iter().map(|&(start, end)| {
+            (
+                arena.key(start),
+                arena.entries[start..end].iter().map(|e| e.2),
+            )
+        });
+        Self::write_groups(w, kind, groups)
+    }
+
+    /// Writes keys, in byte order and unique, with their sorted, unique postings.
+    fn write_groups<'k, P: IntoIterator<Item = u32>>(
+        w: &mut Writer,
+        kind: Dictionary,
+        groups: impl Iterator<Item = (&'k [u8], P)>,
+    ) -> Result<(), Error> {
+        let mut keys = Vec::new();
+        let mut packed_values = Vec::new();
         let mut values = Vec::new();
         let mut postings = Vec::new();
-        for &(start, end) in &groups {
-            keys.push(arena.key(start));
+        for (key, group) in groups {
+            keys.push(key);
             postings.clear();
-            postings.extend(arena.entries[start..end].iter().map(|e| e.2));
+            postings.extend(group);
             let value = match postings.as_slice() {
                 [one] => INLINE | u64::from(*one),
                 many => {
@@ -185,7 +213,7 @@ impl Keyed {
             packed_values.push(value);
         }
         Dict::write(w, kind, &keys, &packed_values)?;
-        Packed::write(w, &values.iter().map(|&v| u64::from(v)).collect::<Vec<_>>());
+        Packed::write(w, &values);
         Ok(())
     }
 
@@ -207,7 +235,7 @@ impl Keyed {
         let ordinals: Vec<u64> = (0..keys.len() as u64).collect();
         Dict::write(w, kind, &keys, &ordinals)?;
         w.column(&offsets);
-        Packed::write(w, &values.iter().map(|&v| u64::from(v)).collect::<Vec<_>>());
+        Packed::write(w, &values);
         Ok(())
     }
 
@@ -468,16 +496,32 @@ const FSST_MIN_BYTES: usize = 4096;
 const ESCAPE: u8 = 255;
 
 impl FsstColumn {
-    fn write<'a>(w: &mut Writer, items: impl IntoIterator<Item = &'a str>) -> Result<(), Error> {
-        let items: Vec<&[u8]> = items.into_iter().map(str::as_bytes).collect();
-        let raw: usize = items.iter().map(|i| i.len()).sum();
-        let compressor = (raw >= FSST_MIN_BYTES).then(|| fsst::Compressor::train(&items));
+    /// Writes `len` strings, `item(i, out)` appending the `i`th to `out`. Strings are read one at a
+    /// time, to measure, to sample for training and to compress, so they are never all held.
+    fn write(w: &mut Writer, len: usize, item: impl Fn(usize, &mut Vec<u8>)) -> Result<(), Error> {
+        // Only whether the strings pass the thresholds below matters, so measuring stops there.
+        let mut buf = Vec::new();
+        let mut total = 0;
+        for i in 0..len {
+            if total > FSST_SAMPLE_BYTES.max(FSST_MIN_BYTES) {
+                break;
+            }
+            buf.clear();
+            item(i, &mut buf);
+            total += buf.len();
+        }
+        let compressor = (total >= FSST_MIN_BYTES).then(|| {
+            let sample = fsst_sample(len, total, &item);
+            fsst::Compressor::train(&sample.iter().map(Vec::as_slice).collect())
+        });
         let mut data = Vec::new();
         let mut offsets = vec![0u64];
-        for item in &items {
+        for i in 0..len {
+            buf.clear();
+            item(i, &mut buf);
             match &compressor {
-                Some(c) => data.extend_from_slice(&c.compress(item)),
-                None => data.extend_from_slice(item),
+                Some(c) => data.extend_from_slice(&c.compress(&buf)),
+                None => data.extend_from_slice(&buf),
             }
             offsets.push(data.len() as u64);
         }
@@ -532,29 +576,75 @@ impl FsstColumn {
     }
 
     fn get(&self, i: usize) -> String {
+        let mut out = Vec::new();
+        self.append(i, &mut out);
+        String::from_utf8(out)
+            .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+    }
+
+    /// Appends the `i`th string's bytes to `out`; nothing for a truncated stream in a corrupt file.
+    fn append(&self, i: usize, out: &mut Vec<u8>) {
         let range = self.offsets.get(i) as usize..self.offsets.get(i + 1) as usize;
         let bytes = self.data.as_ref().get(range).unwrap_or(&[]);
-        match &self.symbols {
-            Some((symbols, lengths)) => {
-                // An escape code needs its literal byte; a truncated stream would read past it.
-                let mut i = 0;
-                while i < bytes.len() {
-                    i += if bytes[i] == ESCAPE { 2 } else { 1 };
-                }
-                if i > bytes.len() {
-                    return String::new();
-                }
-                let decoded = fsst::Decompressor::new(symbols, lengths).decompress(bytes);
-                String::from_utf8(decoded)
-                    .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
-            }
-            None => String::from_utf8_lossy(bytes).into_owned(),
+        let Some((symbols, lengths)) = &self.symbols else {
+            return out.extend_from_slice(bytes);
+        };
+        // An escape code needs its literal byte; a truncated stream would read past it.
+        let mut at = 0;
+        while at < bytes.len() {
+            at += if bytes[at] == ESCAPE { 2 } else { 1 };
         }
+        if at > bytes.len() {
+            return;
+        }
+        let decompressor = fsst::Decompressor::new(symbols, lengths);
+        let capacity = decompressor.max_decompression_capacity(bytes);
+        out.reserve(capacity);
+        let written =
+            decompressor.decompress_into(bytes, &mut out.spare_capacity_mut()[..capacity]);
+        // SAFETY: `decompress_into` initialised the first `written` spare bytes.
+        unsafe { out.set_len(out.len() + written) };
     }
 
     fn size(&self) -> usize {
         self.data.as_ref().len() + self.offsets.size() + self.symbols.map_or(0, |_| 255 * 9)
     }
+}
+
+/// Bytes of text FSST trains its symbol table on; just below its own sampling target, so it trains
+/// on exactly this sample.
+const FSST_SAMPLE_BYTES: usize = (1 << 14) - 1;
+
+/// Lines of up to 512 bytes drawn as FSST draws its training sample, or every string when they
+/// are fewer bytes than the sample.
+fn fsst_sample(len: usize, total: usize, item: &impl Fn(usize, &mut Vec<u8>)) -> Vec<Vec<u8>> {
+    let read = |i: usize| {
+        let mut out = Vec::new();
+        item(i, &mut out);
+        out
+    };
+    if total <= FSST_SAMPLE_BYTES {
+        return (0..len).map(read).collect();
+    }
+    let hash = |v: u64| v.wrapping_mul(2971215073) ^ v.wrapping_shr(15);
+    let (mut rnd, mut size, mut sample) = (hash(4637947), 0, Vec::new());
+    while size < FSST_SAMPLE_BYTES {
+        rnd = hash(rnd);
+        let start = rnd as usize % len;
+        let Some(line) = (start..len)
+            .chain(0..start)
+            .map(read)
+            .find(|l| !l.is_empty())
+        else {
+            break;
+        };
+        rnd = hash(rnd);
+        let chunk = 512 * (rnd as usize % (1 + (line.len() - 1) / 512));
+        let take = 512.min(line.len() - chunk).min(FSST_SAMPLE_BYTES - size);
+        sample.push(line[chunk..chunk + take].to_vec());
+        size += take;
+    }
+    sample
 }
 
 fn put_varint(buf: &mut Vec<u8>, mut v: usize) {
@@ -578,6 +668,21 @@ fn get_varint(buf: &[u8], pos: &mut usize) -> Option<usize> {
     None
 }
 
+/// Appends a document's aliases and contexts as a document block stores them.
+fn encode_stored(raw: &mut Vec<u8>, aliases: &[Alias], contexts: &[String]) {
+    put_varint(raw, aliases.len());
+    for alias in aliases {
+        raw.push(alias.kind as u8);
+        put_varint(raw, alias.text.len());
+        raw.extend_from_slice(alias.text.as_bytes());
+    }
+    put_varint(raw, contexts.len());
+    for context in contexts {
+        put_varint(raw, context.len());
+        raw.extend_from_slice(context.as_bytes());
+    }
+}
+
 /// A stored document's aliases and contexts.
 type StoredDoc = (Vec<Alias>, Vec<String>);
 
@@ -589,24 +694,27 @@ struct DocStore {
 
 impl DocStore {
     fn write(w: &mut Writer, docs: &Staged) -> Result<(), Error> {
-        let compressed: Vec<Result<Vec<u8>, Error>> = (0..docs.len().div_ceil(DOCS_PER_BLOCK))
+        Self::write_blocks(w, docs.len(), |first, end, raw| {
+            for doc in (first..end).map(|l| docs.get(l)) {
+                encode_stored(raw, doc.aliases, doc.contexts);
+            }
+            Ok(())
+        })
+    }
+
+    /// Writes `docs` documents in blocks; `fill(first, end, raw)` appends the stored parts of
+    /// documents `first..end`.
+    fn write_blocks(
+        w: &mut Writer,
+        docs: usize,
+        fill: impl Fn(usize, usize, &mut Vec<u8>) -> Result<(), Error> + Sync,
+    ) -> Result<(), Error> {
+        let compressed: Vec<Result<Vec<u8>, Error>> = (0..docs.div_ceil(DOCS_PER_BLOCK))
             .into_par_iter()
             .map(|block| {
                 let mut raw = Vec::new();
                 let first = block * DOCS_PER_BLOCK;
-                for doc in (first..docs.len().min(first + DOCS_PER_BLOCK)).map(|l| docs.get(l)) {
-                    put_varint(&mut raw, doc.aliases.len());
-                    for alias in doc.aliases {
-                        raw.push(alias.kind as u8);
-                        put_varint(&mut raw, alias.text.len());
-                        raw.extend_from_slice(alias.text.as_bytes());
-                    }
-                    put_varint(&mut raw, doc.contexts.len());
-                    for context in doc.contexts {
-                        put_varint(&mut raw, context.len());
-                        raw.extend_from_slice(context.as_bytes());
-                    }
-                }
+                fill(first, docs.min(first + DOCS_PER_BLOCK), &mut raw)?;
                 let mut block = (raw.len() as u32).to_le_bytes().to_vec();
                 block.extend_from_slice(&zstd::bulk::compress(&raw, ZSTD_LEVEL)?);
                 Ok(block)
@@ -835,7 +943,6 @@ impl Segment {
         if words.len() >> (32 - Variants::FINGERPRINT_BITS) != 0 {
             return Err(Error::input("too many distinct words for one segment"));
         }
-        let buckets = Variants::buckets_for(words.len());
 
         let mut sink = match path {
             Some(path) => Sink::file(path)?,
@@ -851,32 +958,16 @@ impl Segment {
                 ))
             }
         };
-        let mut put = |bytes: &[u8]| sink.put(bytes);
-        let mut w = Writer::spilling(&mut put);
-        w.raw(MAGIC);
-        w.u64(VERSION);
-        let layout = if config.compact_keys {
-            Layout::uniform(Dictionary::CompactTrie)
-        } else {
-            config.layout
-        };
-        w.raw(&[
-            config.min_word_chars,
-            config.max_edit_distance,
-            config.fuzzy_prefix_chars,
-            config.vector_bits,
-        ]);
-        w.raw(&[
-            layout.titles.code(),
-            layout.words.code(),
-            layout.aliases.code(),
-        ]);
-        w.column(&docs.iter().map(|d| d.id).collect::<Vec<_>>());
-        w.column(&docs.iter().map(|d| d.popularity).collect::<Vec<_>>());
-        w.column(&text_lens);
-        w.column(&single_word);
-        w.column(&deletes);
-        w.finish()?;
+        let layout = config.effective_layout();
+        write_header(
+            &mut sink,
+            config,
+            &docs.iter().map(|d| d.id).collect::<Vec<_>>(),
+            &docs.iter().map(|d| d.popularity).collect::<Vec<_>>(),
+            &text_lens,
+            &single_word,
+            &deletes,
+        )?;
         let dim = docs
             .iter()
             .find_map(|d| d.vector.map(<[f32]>::len))
@@ -893,56 +984,25 @@ impl Segment {
         }
         // Sections are independent, each starting and ending 8-byte aligned, so writing them one by
         // one and building them concurrently produce the same bytes.
-        type Section<'s> = Box<dyn FnOnce(&mut Writer) -> Result<(), Error> + Send + 's>;
         let (docs_ref, words_ref, rows_ref) = (&docs, &words, &rows);
         let sections: Vec<Section> = vec![
             Box::new(move |w| DocStore::write(w, docs_ref)),
             Box::new(move |w| Keyed::write_packed(w, layout.titles, title_keys)),
-            Box::new(move |w| {
-                Keyed::write_ordinal(
-                    w,
-                    layout.words,
-                    (0..words_ref.len()).map(|o| (words_ref.key(o), words_ref.postings(o))),
-                )?;
-                w.column(&words_ref.freqs);
-                StrColumn::write(w, (0..words_ref.len()).map(|o| words_ref.word(o)))
-            }),
+            Box::new(move |w| words_ref.write(w, layout.words)),
             Box::new(move |w| Keyed::write_packed(w, layout.aliases, alias_keys)),
-            // Computed only when written, so earlier sections never hold the variants.
-            Box::new(move |w| {
-                let (offsets, entries) = Variants::group(buckets, words_ref.len(), |ordinal, f| {
-                    fuzzy::for_each_delete_variant(
-                        words_ref.word(ordinal),
-                        config.max_edit_distance,
-                        config.fuzzy_prefix_chars as usize,
-                        |v| f(v.as_bytes()),
-                    )
-                });
-                Variants::write(w, buckets, &offsets, &entries);
-                Ok(())
-            }),
+            Box::new(move |w| words_ref.write_variants(w, config)),
             Box::new(move |w| Vectors::write(w, dim, config.vector_bits, rows_ref)),
             Box::new(move |w| {
-                FsstColumn::write(w, docs_ref.iter().map(|d| d.text))?;
-                FsstColumn::write(w, docs_ref.iter().map(|d| d.key.unwrap_or("")))?;
+                FsstColumn::write(w, docs_ref.len(), |i, out| {
+                    out.extend_from_slice(docs_ref.get(i).text.as_bytes())
+                })?;
+                FsstColumn::write(w, docs_ref.len(), |i, out| {
+                    out.extend_from_slice(docs_ref.get(i).key.unwrap_or("").as_bytes())
+                })?;
                 Keyed::write_packed(w, Dictionary::Fst, context_keys)
             }),
         ];
-        if config.build_threads == 1 {
-            let mut put = |bytes: &[u8]| sink.put(bytes);
-            for write in sections {
-                let mut w = Writer::spilling(&mut put);
-                write(&mut w)?;
-                w.align();
-                w.finish()?;
-            }
-        } else {
-            let parts: Vec<Result<Vec<u8>, Error>> =
-                sections.into_par_iter().map(section).collect();
-            for part in parts {
-                sink.put(&part?)?;
-            }
-        }
+        write_sections(&mut sink, config, sections)?;
         let bytes = sink.len();
         drop(rows);
         drop(docs);
@@ -1088,8 +1148,13 @@ impl Segment {
         self.word_freqs.len() as u32
     }
 
+    /// Occurrences of the word at `ordinal`; none for an ordinal out of range in a corrupt file.
     pub(crate) fn word_freq_at(&self, ordinal: u32) -> u32 {
-        self.word_freqs.as_slice()[ordinal as usize]
+        self.word_freqs
+            .as_slice()
+            .get(ordinal as usize)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Occurrences of `word` in this segment's texts, counting repeats within a text.
@@ -1314,6 +1379,32 @@ struct SortedWords {
 }
 
 impl SortedWords {
+    /// The words section: dictionary, postings, occurrences and texts.
+    fn write(&self, w: &mut Writer, kind: Dictionary) -> Result<(), Error> {
+        Keyed::write_ordinal(
+            w,
+            kind,
+            (0..self.len()).map(|o| (self.key(o), self.postings(o))),
+        )?;
+        w.column(&self.freqs);
+        StrColumn::write(w, (0..self.len()).map(|o| self.word(o)))
+    }
+
+    /// The variants section, computed only when written so earlier sections never hold it.
+    fn write_variants(&self, w: &mut Writer, config: BuildOptions) -> Result<(), Error> {
+        let buckets = Variants::buckets_for(self.len());
+        let (offsets, entries) = Variants::group(buckets, self.len(), |ordinal, f| {
+            fuzzy::for_each_delete_variant(
+                self.word(ordinal),
+                config.max_edit_distance,
+                config.fuzzy_prefix_chars as usize,
+                |v| f(v.as_bytes()),
+            )
+        });
+        Variants::write(w, buckets, &offsets, &entries);
+        Ok(())
+    }
+
     fn len(&self) -> usize {
         self.key_ends.len()
     }
@@ -1517,6 +1608,67 @@ impl Sink {
             }
         }
     }
+}
+
+/// A section of a segment, written in order or built concurrently.
+type Section<'s> = Box<dyn FnOnce(&mut Writer) -> Result<(), Error> + Send + 's>;
+
+/// The header and the per-document columns.
+fn write_header(
+    sink: &mut Sink,
+    config: BuildOptions,
+    ids: &[u64],
+    weights: &[f32],
+    text_lens: &[u16],
+    single_word: &[u8],
+    deletes: &[u64],
+) -> Result<(), Error> {
+    let layout = config.effective_layout();
+    let mut put = |bytes: &[u8]| sink.put(bytes);
+    let mut w = Writer::spilling(&mut put);
+    w.raw(MAGIC);
+    w.u64(VERSION);
+    w.raw(&[
+        config.min_word_chars,
+        config.max_edit_distance,
+        config.fuzzy_prefix_chars,
+        config.vector_bits,
+    ]);
+    w.raw(&[
+        layout.titles.code(),
+        layout.words.code(),
+        layout.aliases.code(),
+    ]);
+    w.column(ids);
+    w.column(weights);
+    w.column(text_lens);
+    w.column(single_word);
+    w.column(deletes);
+    w.finish()
+}
+
+/// Sections are independent, each starting and ending 8-byte aligned, so writing them one by one and
+/// building them concurrently produce the same bytes.
+fn write_sections(
+    sink: &mut Sink,
+    config: BuildOptions,
+    sections: Vec<Section>,
+) -> Result<(), Error> {
+    if config.build_threads == 1 {
+        let mut put = |bytes: &[u8]| sink.put(bytes);
+        for write in sections {
+            let mut w = Writer::spilling(&mut put);
+            write(&mut w)?;
+            w.align();
+            w.finish()?;
+        }
+    } else {
+        let parts: Vec<Result<Vec<u8>, Error>> = sections.into_par_iter().map(section).collect();
+        for part in parts {
+            sink.put(&part?)?;
+        }
+    }
+    Ok(())
 }
 
 /// One section written to its own buffer, ending aligned.

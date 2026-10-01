@@ -300,7 +300,7 @@ impl Ingestor {
                         ..IndexOptions::default()
                     },
                 )?;
-                view.merged_segment(deletes)?
+                view.merged_segment(deletes, None)?
             };
             txn.append(&index, segment);
         }
