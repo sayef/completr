@@ -47,7 +47,7 @@ stable 64-bit id (`completr.key_id`) and returned as given. See [Documents](guid
 
 A `Segment` is an immutable, self-contained set of documents plus the ids it deletes from older segments.
 It is one file, 8-byte aligned and checksummed, and it is read in place through a memory map, so opening
-one costs validation, not parsing. Segments are never modified: updates are new, small segments.
+one costs a few structural checks, not parsing; `verify` checks the checksum and every section. Segments are never modified: updates are new, small segments.
 
 ## Indexes
 

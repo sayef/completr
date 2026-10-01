@@ -20,7 +20,7 @@ example `tenant/language`, and as layer lists.
 ## Segment format
 
 A segment is one file. Every section is 8-byte aligned and read in place from a memory map, so opening a
-segment involves no parsing or copying beyond validation.
+segment involves no parsing or copying beyond a few structural checks.
 
 ```
 magic "COMPLETR\0\0" | version | settings | layout
@@ -28,9 +28,8 @@ ids (sorted) | weights | text lengths | single-word flags | deletes
 document store     zstd blocks of 128 documents' aliases and contexts, with block offsets
 titles             dictionary: normalised title -> postings
 words              dictionary: title word -> postings, with word frequencies and texts
-forward index      per document, the ordinals of its words
 aliases            dictionary: alias -> postings (synonyms and abbreviations)
-variants           dictionary: SymSpell delete variant -> word ordinals
+variants           SymSpell delete variants hashed into buckets of word ordinals
 vectors            optional: TurboQuant codes, scales and slot mapping
 texts              original texts, read in place for suggestions
 keys               string keys, empty for numeric ids
@@ -39,12 +38,17 @@ xxh3 checksum of everything above
 ```
 
 - **Postings.** A key with a single posting stores it inline in its dictionary value (bit 63 set).
-  Otherwise the value packs `start << 24 | len` into a shared postings column.
+  Otherwise the value packs `start << 24 | len` into a shared, bit-packed postings column.
+- **Variants.** Each word's delete variants are hashed into about three buckets per word; a bucket
+  holds bit-packed word ordinals, each with a 6-bit fingerprint of its variant. No variant is stored, so
+  a lookup checks that the query variant really is a subsequence of the candidate word.
 - **Key order.** Keys are stored as `text + 0xff`, so a key sorts after all of its extensions. This lets
   a prefix scan emit shorter completions in a stable order.
-- **Validation.** The checksum is verified on load, then every column length, offset table and
-  dictionary structure is checked, so later reads cannot go out of bounds. Document blocks are
-  decompressed lazily, only when a document is fetched.
+- **Validation.** `Segment::open` checks the structure only (magic, version, section lengths and
+  dictionary headers) and reads nothing else, so opening is about a millisecond and touches few pages.
+  `Segment::verify`, `Segment::from_bytes` and segments downloaded into a store's cache also check the
+  checksum and every offset and posting. Document blocks are decompressed lazily, only when a document is
+  fetched.
 
 ### Dictionaries
 
@@ -54,7 +58,7 @@ option:
 | Key set | Dictionary | Why |
 |---|---|---|
 | titles, aliases | LOUDS trie | scanned by prefix on every keystroke; smaller and faster to scan |
-| words, variants | [`fst`](https://crates.io/crates/fst) | exact lookups only, where FSTs are fastest |
+| words | [`fst`](https://crates.io/crates/fst) | exact lookups only, where FSTs are fastest |
 
 The trie is written from scratch in the style of [marisa-trie](https://github.com/s-yata/marisa-trie):
 - path-compressed edges (a label plus a tail), with tails shared when one is a suffix of another;
@@ -75,14 +79,14 @@ in a nested trie, which is smaller but slower.
    - exact and prefix matches from a cursor merge over the title dictionaries;
    - infix matches through the word dictionaries;
    - abbreviation aliases, which match exactly;
-   - fuzzy candidates from delete variants, verified with Levenshtein distance
+   - fuzzy candidates from delete variants, verified with optimal string alignment distance
      ([rapidfuzz](https://github.com/rapidfuzz/rapidfuzz-rs)).
 
    Superseded and deleted ids are skipped through per-segment live masks. Because the merge happens below
    scoring, an index of many segments ranks exactly like one compacted segment.
 4. **Score.**
    - Base score by match kind: exact 150, prefix 90, infix 30, fuzzy `20 * 0.15^(distance - 1)` plus a
-     rank bonus.
+     rank bonus and a quarter of the corrected query's own score for the document, without popularity.
    - A length penalty of 0.1 per character, and +25 when a single-word query matches a whole word of a
      multi-word title.
    - A popularity multiplier, `1 + weight * popularity_weight * 10`.
