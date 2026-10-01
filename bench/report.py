@@ -31,6 +31,9 @@ def render(res):
     row(*["---"] * 8)
     for n, r in res.items():
         b = r["build"]
+        if b.get("status", "ok") != "ok":
+            row(n, r.get("version", "-"), b["status"], *["-"] * 5)
+            continue
         if "memory" in r:
             m0, m1 = r["memory"]["rss_delta_after_open_bytes"], r["memory"]["rss_delta_after_5000_queries_bytes"]
         else:
@@ -51,8 +54,9 @@ def render(res):
     out.append("\n## Latency, limit 10, single client (ms)\n")
     row("set", "engine", "in-process or round-trip p50", "p90", "p99", "mean", "engine-reported p50", "p99", "mean")
     row(*["---"] * 9)
+    done = {n: r for n, r in res.items() if "latency" in r}
     for s in ["prefix", "typo1", "typo2", "multiword"]:
-        for n, r in res.items():
+        for n, r in done.items():
             l = r["latency"][s]
             c = l.get("in_process_ms") or l["round_trip_ms"]
             e = l.get("engine_ms")
@@ -62,7 +66,7 @@ def render(res):
     out.append("\n## Throughput, 8 clients, prefix set\n")
     row("engine", "QPS", "clients")
     row("---", "---", "---")
-    for n, r in res.items():
+    for n, r in done.items():
         if "throughput" in r:
             row(n, f"{r['throughput']['qps']:.0f}", r["throughput"]["client_model"])
 
@@ -72,7 +76,7 @@ def render(res):
             out.append(f"\n### {sname} targets, {kind}\n")
             row("engine", "n", *QUALITY_COLS)
             row(*["---"] * (len(QUALITY_COLS) + 2))
-            for n, r in res.items():
+            for n, r in done.items():
                 q = r["quality"][sname][kind]
                 row(n, q["targets"], *[f"{q[c]:.1f}" if "keystrokes" in c else f"{q[c]:.3f}" for c in QUALITY_COLS])
     return "\n".join(out) + "\n"

@@ -136,10 +136,16 @@ def run(a):
                 res["build_8_threads"] = sub("build", a.engine, "8")
                 res["build_uuid"] = sub("build", a.engine, "uuid")
             res["build"] = sub("build", a.engine, a.variant)
+            if res["build"]["status"] != "ok":
+                return save(res, a)
             res["memory"] = sub("mem", a.engine, a.variant)
             res["open_s"] = e.open()
         else:
-            res["build"] = e.build(load_docs())
+            try:
+                res["build"] = {"status": "ok", **e.build(load_docs())}
+            except LimitExceeded as x:
+                res["build"] = {"status": str(x)}
+                return save(res, a)
             res["rss_after_index_bytes"] = e.rss()
         res["version"] = e.version
         for q in lat["prefix"][:3000] + lat["typo1"][:200] + lat["multiword"][:200]:
@@ -165,10 +171,14 @@ def run(a):
             res["rss_after_restart_bytes"] = e.rss()
     finally:
         e.close()
+    save(res, a)
+
+
+def save(res, a):
     results_dir().mkdir(parents=True, exist_ok=True)
     tag = a.engine + (f"-{a.variant}" if a.variant else "")
     (results_dir() / f"{tag}.json").write_text(json.dumps(res, indent=1) + "\n")
-    print(tag, res["version"], json.dumps(res["build"].get("index_s")), file=sys.stderr)
+    print(tag, res["build"].get("status"), json.dumps(res["build"].get("index_s")), file=sys.stderr)
 
 
 def scale(a):

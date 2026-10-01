@@ -39,6 +39,11 @@ class Watch:
         self.thread.join()
 
 
+def batches(docs, size=250_000):
+    for start in range(0, len(docs), size):
+        yield docs[start:start + size]
+
+
 def du(path):
     out = subprocess.run(["du", "-sk", str(path)], capture_output=True, text=True).stdout
     return int(out.split()[0]) * 1024
@@ -241,22 +246,25 @@ class Typesense(Server):
         schema = {"name": "hn", "fields": [{"name": "title", "type": "string"}, {"name": "score", "type": "int32"}],
                   "default_sorting_field": "score"}
         self.s.post(self.base + "/collections", headers=self.h, json=schema).raise_for_status()
-        body = "\n".join(json.dumps({"id": str(d["id"]), "title": d["title"], "score": d["score"]}) for d in docs).encode()
         t = time.perf_counter()
         with self.watch() as w:
-            try:
-                r = self.s.post(self.base + "/collections/hn/documents/import?action=create&batch_size=10000",
-                                headers=self.h, data=body, timeout=TIME_LIMIT_S)
-            except requests.Timeout:
-                raise LimitExceeded("timeout")
-            except requests.ConnectionError:
-                if w.exceeded:
-                    raise LimitExceeded("memory limit")
-                raise
-        r.raise_for_status()
+            for batch in batches(docs):
+                body = "\n".join(json.dumps({"id": str(d["id"]), "title": d["title"], "score": d["score"]})
+                                 for d in batch).encode()
+                left = TIME_LIMIT_S - (time.perf_counter() - t)
+                try:
+                    r = self.s.post(self.base + "/collections/hn/documents/import?action=create&batch_size=10000",
+                                    headers=self.h, data=body, timeout=max(left, 1))
+                except requests.Timeout:
+                    raise LimitExceeded("timeout")
+                except requests.ConnectionError:
+                    if w.exceeded:
+                        raise LimitExceeded("memory limit")
+                    raise
+                r.raise_for_status()
+                bad = [l for l in r.text.splitlines() if '"success":true' not in l]
+                assert not bad, bad[:3]
         index_s = time.perf_counter() - t
-        bad = [l for l in r.text.splitlines() if '"success":true' not in l]
-        assert not bad, bad[:3]
         n = self.s.get(self.base + "/collections/hn", headers=self.h).json()["num_documents"]
         assert n == len(docs), n
         return {"index_s": index_s, "disk_bytes": du(self.dir), "peak_rss_bytes": w.peak, "schema": schema,
@@ -311,13 +319,19 @@ class Meilisearch(Server):
         if self.variant == "popfirst":
             settings["rankingRules"] = ["words", "typo", "score:desc"] + [r for r in rules if r not in ("words", "typo")]
         self.wait_task(self.s.patch(self.base + "/indexes/hn/settings", headers=self.h, json=settings).json()["taskUid"])
-        body = "\n".join(json.dumps({"id": d["id"], "title": d["title"], "score": d["score"]}) for d in docs).encode()
         t = time.perf_counter()
         with self.watch() as w:
             try:
-                r = self.s.post(self.base + "/indexes/hn/documents",
-                                headers={**self.h, "Content-Type": "application/x-ndjson"}, data=body).json()
-                task = self.wait_task(r["taskUid"], deadline=t + TIME_LIMIT_S)
+                # Batches stay under the default 100 MB payload limit; tasks run in the order they were sent.
+                uids = []
+                for batch in batches(docs):
+                    body = "\n".join(json.dumps({"id": d["id"], "title": d["title"], "score": d["score"]})
+                                     for d in batch).encode()
+                    uids.append(self.s.post(self.base + "/indexes/hn/documents",
+                                            headers={**self.h, "Content-Type": "application/x-ndjson"},
+                                            data=body).json()["taskUid"])
+                for uid in uids:
+                    task = self.wait_task(uid, deadline=t + TIME_LIMIT_S)
             except requests.ConnectionError:
                 if w.exceeded:
                     raise LimitExceeded("memory limit")

@@ -1,4 +1,6 @@
 import asyncio
+import subprocess
+import sys
 
 import pytest
 
@@ -128,3 +130,18 @@ def test_streamed_and_budgeted_builds(tmp_path):
         assert [s.id for s in split.complete(q, 10)] == [s.id for s in one.complete(q, 10)]
     with pytest.raises(ValueError):
         writer.add(rows[0])
+
+
+def test_threaded_writer_logs_without_deadlock(tmp_path):
+    # Build events from worker threads need the GIL, which `add` must not hold while flushing.
+    code = f"""
+import logging, completr
+logging.basicConfig(level=logging.DEBUG)
+w = completr.SegmentWriter({str(tmp_path)!r}, memory_budget=200_000, build_threads=4)
+w.add({{"id": i, "text": f"item {{i}} alpha{{i % 7}}"}} for i in range(5000))
+print(len(w.finish()))
+"""
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    assert int(out.stdout) > 2
+    assert "built segment" in out.stderr

@@ -2,7 +2,7 @@
 
 The workload (BENCH_WORKLOAD, default hn) and an optional subset size (BENCH_SIZE) come from the environment,
 so the subprocesses bench.py starts measure the same data."""
-import json, math, os, pathlib, platform, random, re, subprocess
+import itertools, json, math, os, pathlib, platform, random, re, subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parent
 CACHE = ROOT / ".cache"
@@ -47,7 +47,13 @@ def load_hn():
     return sorted(best.values(), key=lambda d: d["id"])
 
 
-LOADERS = {"hn": load_hn}
+def load_wiki():
+    """English Wikipedia articles, not redirects, with a month of user pageviews as their score (see wiki.py)."""
+    with (CACHE / "data" / "wiki_titles.jsonl").open() as f:
+        return [json.loads(line) for line in f]
+
+
+LOADERS = {"hn": load_hn, "wiki": load_wiki}
 
 
 def load_docs(full=False):
@@ -144,10 +150,11 @@ def make_samples(docs):
             k = rng.randint(2, min(4, len(w)))
             s = rng.randrange(0, len(w) - k + 1)
             multi.append(" ".join(w[s:s + k]))
-    scores = [d["score"] for d in docs]
+    # Cumulative weights computed once draw exactly what `weights=` would, in a fraction of the time.
+    cum_scores = list(itertools.accumulate(d["score"] for d in docs))
     popular, seen = [], set()
     while len(popular) < 500:
-        i = rng.choices(range(len(docs)), weights=scores)[0]
+        i = rng.choices(range(len(docs)), cum_weights=cum_scores)[0]
         if i not in seen:
             seen.add(i)
             popular.append(i)
