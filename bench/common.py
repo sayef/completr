@@ -1,18 +1,41 @@
-"""Paths, data loading, the fixed-seed query samples and the metrics."""
+"""Workloads, paths, data loading, the fixed-seed query samples and the metrics.
+
+The workload (BENCH_WORKLOAD, default hn) and an optional subset size (BENCH_SIZE) come from the environment,
+so the subprocesses bench.py starts measure the same data."""
 import json, math, os, pathlib, platform, random, re, subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parent
 CACHE = ROOT / ".cache"
 DATA = CACHE / "data" / "hn_stories.jsonl"
 BIN = CACHE / "bin"
-WORK = CACHE / "work"
-RESULTS = ROOT / "results"
-SAMPLES = ROOT / "samples.json"
 LIMIT = 10
 SEED = 20260930
 
 
-def load_docs():
+def workload():
+    return os.environ.get("BENCH_WORKLOAD", "hn")
+
+
+def subset_size():
+    size = os.environ.get("BENCH_SIZE")
+    return int(size) if size else None
+
+
+def work_dir():
+    """Index data of the current workload and subset size."""
+    size = subset_size()
+    return CACHE / "work" / (workload() + (f"-{size}" if size else ""))
+
+
+def results_dir():
+    return ROOT / "results" / workload()
+
+
+def samples_path():
+    return ROOT / ("samples.json" if workload() == "hn" else f"samples-{workload()}.json")
+
+
+def load_hn():
     """Stories deduplicated by lowercased title, keeping the highest-scored copy, sorted by id."""
     best = {}
     for line in DATA.open():
@@ -22,6 +45,20 @@ def load_docs():
         if key not in best or d["score"] > best[key]["score"]:
             best[key] = d
     return sorted(best.values(), key=lambda d: d["id"])
+
+
+LOADERS = {"hn": load_hn}
+
+
+def load_docs(full=False):
+    """The workload's documents `{id, title, score}`; with BENCH_SIZE, a seeded subset, each one nested in the next."""
+    docs = LOADERS[workload()]()
+    size = None if full else subset_size()
+    if size is None or size >= len(docs):
+        return docs
+    order = list(range(len(docs)))
+    random.Random(SEED).shuffle(order)
+    return [docs[i] for i in sorted(order[:size])]
 
 
 def weight(score, max_score):
@@ -133,7 +170,7 @@ def make_samples(docs):
 
 
 def load_samples():
-    return json.loads(SAMPLES.read_text())
+    return json.loads(samples_path().read_text())
 
 
 def pct(xs, p):
