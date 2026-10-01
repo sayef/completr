@@ -300,8 +300,8 @@ impl Variants {
     const FINGERPRINT_BITS: u32 = 6;
 
     /// About eight words per bucket at the default settings.
-    fn buckets_for(words: usize) -> u64 {
-        (words as u64 * 3).max(1)
+    fn buckets_for(words: usize) -> u32 {
+        (words as u32).saturating_mul(3).max(1)
     }
 
     /// The bucket in the high bits, and the fingerprint in the low ones.
@@ -311,27 +311,56 @@ impl Variants {
         (bucket, h & ((1 << Self::FINGERPRINT_BITS) - 1))
     }
 
-    /// An entry of `ordinal` under `variant`, sorting by bucket.
-    fn entry(variant: &[u8], buckets: u64, ordinal: u32) -> u64 {
-        let (bucket, fingerprint) = Self::slot(variant, buckets);
-        bucket << 32 | u64::from(ordinal) << Self::FINGERPRINT_BITS | fingerprint
+    /// The bucket of `variant`, and the entry of `ordinal` in it.
+    fn entry(variant: &[u8], buckets: u32, ordinal: u32) -> (u32, u32) {
+        let (bucket, fingerprint) = Self::slot(variant, u64::from(buckets));
+        (
+            bucket as u32,
+            ordinal << Self::FINGERPRINT_BITS | fingerprint as u32,
+        )
     }
 
-    /// Writes `entries`, sorted and unique values from [`Variants::entry`].
-    fn write(w: &mut Writer, buckets: u64, entries: &[u64]) {
-        let mut offsets = vec![0u64; buckets as usize + 1];
-        for &e in entries {
-            offsets[(e >> 32) as usize + 1] += 1;
+    /// Bucket offsets and the entries of each bucket, sorted and unique, by a counting sort that
+    /// consumes `chunks` one at a time.
+    fn group(buckets: u32, chunks: Vec<Vec<(u32, u32)>>) -> (Vec<u32>, Vec<u32>) {
+        let mut offsets = vec![0u32; buckets as usize + 1];
+        for &(bucket, _) in chunks.iter().flatten() {
+            offsets[bucket as usize + 1] += 1;
         }
         for i in 1..offsets.len() {
             offsets[i] += offsets[i - 1];
         }
-        w.u64(buckets);
-        Packed::write(w, &offsets);
-        Packed::write(
-            w,
-            &entries.iter().map(|&e| e & 0xffff_ffff).collect::<Vec<_>>(),
-        );
+        let mut entries = vec![0u32; offsets[buckets as usize] as usize];
+        let mut next = offsets.clone();
+        for chunk in chunks {
+            for (bucket, entry) in chunk {
+                let at = &mut next[bucket as usize];
+                entries[*at as usize] = entry;
+                *at += 1;
+            }
+        }
+        drop(next);
+        let mut kept = 0;
+        for b in 0..buckets as usize {
+            let (start, end) = (offsets[b] as usize, offsets[b + 1] as usize);
+            entries[start..end].sort_unstable();
+            offsets[b] = kept as u32;
+            for i in start..end {
+                if i == start || entries[i] != entries[i - 1] {
+                    entries[kept] = entries[i];
+                    kept += 1;
+                }
+            }
+        }
+        offsets[buckets as usize] = kept as u32;
+        entries.truncate(kept);
+        (offsets, entries)
+    }
+
+    fn write(w: &mut Writer, buckets: u32, offsets: &[u32], entries: &[u32]) {
+        w.u64(u64::from(buckets));
+        Packed::write(w, offsets);
+        Packed::write(w, entries);
     }
 
     fn read(r: &mut Reader, word_bound: u32, full: bool) -> Result<Self, Error> {
@@ -827,23 +856,39 @@ impl Segment {
             return Err(Error::input("too many distinct words for one segment"));
         }
         let buckets = Variants::buckets_for(words.len());
-        let mut variant_entries: Vec<u64> = words
-            .par_iter()
+        const CHUNK: usize = 4096;
+        let variant_chunks: Vec<Vec<(u32, u32)>> = words
+            .par_chunks(CHUNK)
             .enumerate()
-            .flat_map_iter(|(ordinal, (_, word, _, _))| {
-                fuzzy::delete_variants(
-                    word,
-                    config.max_edit_distance,
-                    config.fuzzy_prefix_chars as usize,
-                )
-                .into_iter()
-                .map(move |v| Variants::entry(v.as_bytes(), buckets, ordinal as u32))
+            .map(|(c, chunk)| {
+                let mut out = Vec::new();
+                for (j, (_, word, _, _)) in chunk.iter().enumerate() {
+                    let ordinal = (c * CHUNK + j) as u32;
+                    for v in fuzzy::delete_variants(
+                        word,
+                        config.max_edit_distance,
+                        config.fuzzy_prefix_chars as usize,
+                    ) {
+                        out.push(Variants::entry(v.as_bytes(), buckets, ordinal));
+                    }
+                }
+                out
             })
             .collect();
-        variant_entries.par_sort_unstable();
-        variant_entries.dedup();
+        let (variant_offsets, variant_entries) = Variants::group(buckets, variant_chunks);
 
         let mut w = Writer::default();
+        // Reserved generously, so the buffer never copies itself while growing; untouched pages cost nothing.
+        let text_bytes: usize = docs
+            .iter()
+            .map(|d| d.text.len() + d.key.as_ref().map_or(0, String::len))
+            .sum();
+        w.buf.reserve(
+            text_bytes * 3
+                + (variant_entries.len() + variant_offsets.len()) * 4
+                + docs.len() * 64
+                + (1 << 20),
+        );
         w.raw(MAGIC);
         w.u64(VERSION);
         let layout = if config.compact_keys {
@@ -899,7 +944,7 @@ impl Segment {
             }),
             Box::new(move |w| Keyed::write_packed(w, layout.aliases, alias_keys)),
             Box::new(move |w| {
-                Variants::write(w, buckets, &variant_entries);
+                Variants::write(w, buckets, &variant_offsets, &variant_entries);
                 Ok(())
             }),
             Box::new(move |w| Vectors::write(w, dim, config.vector_bits, rows_ref)),
