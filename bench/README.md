@@ -77,7 +77,8 @@ none, so `fetch.py` pins the SHA-256 of the archives as downloaded on 2026-09-30
 
 **tantivy autocomplete emulation.** tantivy is a search library without an autocomplete mode, so the adapter
 builds one: the `title` field uses the default tokenizer, every complete token must match as a term and
-the last token, unless followed by a space, as a prefix. Results are weighted by the `score` fast field. When
+the last token, unless followed by a space, as a prefix. The title is a stored field and is read with every
+hit, since a suggestion needs its text; the other engines store their documents too. Results are weighted by the `score` fast field. When
 fewer than 10 documents match, a second pass adds fuzzy matches with Meilisearch's typo thresholds: 1 edit
 for tokens of 5 to 8 characters and 2 edits from 9 characters, with transpositions costing one edit.
 
