@@ -1105,9 +1105,12 @@ impl Segment {
         Self::decode(self.data.clone(), true).map(drop)
     }
 
-    /// Maps every page of the segment in advance, so first queries do not pay page faults.
+    /// Maps every page and builds the vector index in advance, so first queries pay for neither.
     pub fn warm(&self) {
         self.data.touch();
+        if let Some(vectors) = &self.vectors {
+            let _ = vectors.index();
+        }
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), Error> {
@@ -1179,7 +1182,7 @@ impl Segment {
         let word_bound =
             u32::try_from(word_freqs.len()).map_err(|_| Error::Corrupt("too many words".into()))?;
         let variants = Variants::read(&mut r, word_bound, full)?;
-        let vectors = Vectors::read(&mut r, n)?;
+        let vectors = Vectors::read(&mut r, n, full)?;
         let texts = FsstColumn::read(&mut r, n, full)?;
         let keys = FsstColumn::read(&mut r, n, full)?;
         let contexts = Keyed::read(&mut r, Dictionary::Fst, false, local_bound, full)?;
