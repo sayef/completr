@@ -217,15 +217,16 @@ impl Packed {
         self.words.len() * 8 + 8
     }
 
-    pub(crate) fn write(w: &mut Writer, values: &[u64]) {
+    pub(crate) fn write<T: Copy + Into<u64>>(w: &mut Writer, values: &[T]) {
         let width = values
             .iter()
-            .map(|&v| 64 - v.leading_zeros())
+            .map(|&v| 64 - v.into().leading_zeros())
             .max()
             .unwrap_or(0)
             .max(1);
         let mut words = vec![0u64; (values.len() * width as usize).div_ceil(64)];
-        for (i, &v) in values.iter().enumerate() {
+        for (i, v) in values.iter().enumerate() {
+            let v: u64 = (*v).into();
             let at = i * width as usize;
             words[at / 64] |= v << (at % 64);
             if at % 64 + width as usize > 64 {
@@ -384,72 +385,6 @@ impl Trie {
         }
         let nodes = node;
 
-        // Store each tail once; a tail that ends another shares its bytes.
-        // Sorted by reversed bytes and walked backwards, each tail follows the tail it may end.
-        let mut reversed_bytes: Vec<u8> = Vec::new();
-        let mut reversed: Vec<(u32, u32)> = Vec::with_capacity(node_tails.len());
-        for tail in &node_tails {
-            reversed.push((reversed_bytes.len() as u32, tail.len() as u32));
-            reversed_bytes.extend(tail.iter().rev());
-        }
-        let rev = |i: u32| {
-            let (start, len) = reversed[i as usize];
-            &reversed_bytes[start as usize..(start + len) as usize]
-        };
-        // Node tails sorted by reversed bytes, grouped into unique tails in ascending order.
-        let mut order: Vec<u32> = (0..node_tails.len() as u32).collect();
-        order.par_sort_unstable_by(|&a, &b| rev(a).cmp(rev(b)));
-        let mut unique_of = vec![0u32; node_tails.len()];
-        let mut unique: Vec<u32> = Vec::new();
-        for &i in &order {
-            if unique.last().is_none_or(|&u| rev(u) != rev(i)) {
-                unique.push(i);
-            }
-            unique_of[i as usize] = unique.len() as u32 - 1;
-        }
-        let mut tail_section = Writer::default();
-        if nested {
-            let refs: Vec<&[u8]> = unique.iter().map(|&u| rev(u)).collect();
-            let mut inner = Writer::default();
-            let ids = Self::write_with(&mut inner, &refs, false)?;
-            let tail_ids: Vec<u64> = unique_of
-                .iter()
-                .map(|&u| u64::from(ids[u as usize]))
-                .collect();
-            tail_section.raw(&[1]);
-            Packed::write(&mut tail_section, &tail_ids);
-            tail_section.align();
-            tail_section.raw(&inner.buf);
-        } else {
-            // Walked from the largest reversed tail down, each tail follows the one it may end.
-            let mut blob: Vec<u8> = Vec::new();
-            let mut ends = Vec::new();
-            let mut offset_of = vec![0u64; unique.len()];
-            let mut last: Option<(&[u8], usize)> = None;
-            for (u, &i) in unique.iter().enumerate().rev() {
-                let reversed = rev(i);
-                let offset = match last {
-                    Some((prev, at)) if prev.starts_with(reversed) => {
-                        at + prev.len() - reversed.len()
-                    }
-                    _ => {
-                        let at = blob.len();
-                        blob.extend(reversed.iter().rev());
-                        set(&mut ends, blob.len() - 1);
-                        last = Some((reversed, at));
-                        at
-                    }
-                };
-                offset_of[u] = offset as u64;
-            }
-            let tail_offsets: Vec<u64> = unique_of.iter().map(|&u| offset_of[u as usize]).collect();
-            ends.resize(blob.len().div_ceil(64), 0);
-            tail_section.raw(&[0]);
-            Packed::write(&mut tail_section, &tail_offsets);
-            tail_section.column(&blob);
-            tail_section.column(&ends);
-        }
-
         let bitvec = |words: &mut Vec<u64>, bits: usize| words.resize(bits.div_ceil(64), 0);
         bitvec(&mut terminal, nodes);
         bitvec(&mut has_tail, nodes);
@@ -463,7 +398,72 @@ impl Trie {
         w.column(&has_tail);
         w.column(&leaf);
         w.align();
-        w.raw(&tail_section.buf);
+        drop((louds, labels, terminal, has_tail, leaf));
+
+        // Store each tail once; a tail that ends another shares its bytes.
+        // Sorted by reversed bytes and walked backwards, each tail follows the tail it may end.
+        let rev_cmp = |a: &[u8], b: &[u8]| a.iter().rev().cmp(b.iter().rev());
+        // Node tails sorted by reversed bytes, grouped into unique tails in ascending order.
+        let mut order: Vec<u32> = (0..node_tails.len() as u32).collect();
+        order
+            .par_sort_unstable_by(|&a, &b| rev_cmp(node_tails[a as usize], node_tails[b as usize]));
+        let mut unique_of = vec![0u32; node_tails.len()];
+        let mut unique: Vec<u32> = Vec::new();
+        for &i in &order {
+            if unique
+                .last()
+                .is_none_or(|&u| node_tails[u as usize] != node_tails[i as usize])
+            {
+                unique.push(i);
+            }
+            unique_of[i as usize] = unique.len() as u32 - 1;
+        }
+        drop(order);
+        if nested {
+            let reversed: Vec<Vec<u8>> = unique
+                .iter()
+                .map(|&u| node_tails[u as usize].iter().rev().copied().collect())
+                .collect();
+            let refs: Vec<&[u8]> = reversed.iter().map(Vec::as_slice).collect();
+            let mut inner = Writer::default();
+            let ids = Self::write_with(&mut inner, &refs, false)?;
+            let tail_ids: Vec<u64> = unique_of
+                .iter()
+                .map(|&u| u64::from(ids[u as usize]))
+                .collect();
+            w.raw(&[1]);
+            Packed::write(w, &tail_ids);
+            w.align();
+            w.raw(&inner.buf);
+        } else {
+            // Walked from the largest reversed tail down, each tail is a suffix of the previous one
+            // when it ends that tail.
+            let mut blob: Vec<u8> = Vec::new();
+            let mut ends = Vec::new();
+            let mut offset_of = vec![0u32; unique.len()];
+            let mut last: Option<(&[u8], usize)> = None;
+            for (u, &i) in unique.iter().enumerate().rev() {
+                let tail = node_tails[i as usize];
+                let offset = match last {
+                    Some((prev, at)) if prev.ends_with(tail) => at + prev.len() - tail.len(),
+                    _ => {
+                        let at = blob.len();
+                        blob.extend_from_slice(tail);
+                        set(&mut ends, blob.len() - 1);
+                        last = Some((tail, at));
+                        at
+                    }
+                };
+                offset_of[u] =
+                    u32::try_from(offset).map_err(|_| Error::input("trie tails over 4 GiB"))?;
+            }
+            let tail_offsets: Vec<u32> = unique_of.iter().map(|&u| offset_of[u as usize]).collect();
+            ends.resize(blob.len().div_ceil(64), 0);
+            w.raw(&[0]);
+            Packed::write(w, &tail_offsets);
+            w.column(&blob);
+            w.column(&ends);
+        }
         w.align();
         Ok(ids)
     }
