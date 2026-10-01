@@ -479,12 +479,13 @@ impl SegmentWriter {
             .as_mut()
             .ok_or_else(|| PyValueError::new_err("the writer is finished"))?;
         let one;
-        let documents = if documents.cast::<PyDict>().is_ok() || documents.cast::<Document>().is_ok() {
-            one = PyList::new(py, [documents])?;
-            one.as_any()
-        } else {
-            documents
-        };
+        let documents =
+            if documents.cast::<PyDict>().is_ok() || documents.cast::<Document>().is_ok() {
+                one = PyList::new(py, [documents])?;
+                one.as_any()
+            } else {
+                documents
+            };
         // Documents are read with the GIL and added without it: a flush builds a segment on worker
         // threads whose log events need the GIL.
         let mut batch = Vec::with_capacity(WRITER_BATCH);

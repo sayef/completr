@@ -2,6 +2,7 @@
 | scale ENGINE [--variant V] --sizes N,N,..."""
 import argparse, datetime, gc, json, multiprocessing as mp, os, resource, shutil, subprocess, sys, threading, time
 import psutil
+import memory
 from common import (ROOT, load_docs, load_samples, machine, make_samples, quality, results_dir, samples_path,
                     summarize, work_dir)
 from engines import MEMORY_LIMIT_BYTES, TIME_LIMIT_S, LimitExceeded, Watch, make
@@ -75,13 +76,18 @@ def max_rss():
 
 
 def build(e):
-    """Index time and size, with the build's peak RSS above the RSS of the loaded documents."""
+    """Index time and size, with the peak RSS sampled during the build above the RSS of the loaded documents.
+
+    Sampling, not the lifetime peak, so the transient memory of parsing the documents is not counted."""
     docs = load_docs()
     gc.collect()
-    loaded = psutil.Process().memory_info().rss
-    stats = e.build(docs)
-    stats.update(docs=len(docs), input_rss_bytes=loaded, peak_rss_bytes=max_rss(),
-                 build_rss_bytes=max(0, max_rss() - loaded))
+    pid = os.getpid()
+    loaded = memory.used(pid)
+    with Watch(lambda: memory.used(pid), lambda: None, interval=0.02) as w:
+        stats = e.build(docs)
+    peak = max(w.peak, memory.used(pid))
+    stats.update(docs=len(docs), input_rss_bytes=loaded, peak_rss_bytes=peak,
+                 build_rss_bytes=max(0, peak - loaded))
     return stats
 
 
@@ -89,16 +95,16 @@ def mem(e):
     """RSS growth of a fresh process from opening the index and running 5,000 prefix queries, then warm latency."""
     prefixes = load_samples()["latency"]["prefix"]
     gc.collect()
-    proc = psutil.Process()
-    base = proc.memory_info().rss
+    pid = os.getpid()
+    base = memory.used(pid)
     t = time.perf_counter()
     e.open()
     open_s = time.perf_counter() - t
-    after_open = proc.memory_info().rss
+    after_open = memory.used(pid)
     for q in prefixes[:5000]:
         e.search(q)
     gc.collect()
-    after = proc.memory_info().rss
+    after = memory.used(pid)
     return {"baseline_rss_bytes": base, "rss_delta_after_open_bytes": after_open - base,
             "rss_delta_after_5000_queries_bytes": after - base, "peak_rss_bytes": max_rss(), "open_s": open_s,
             "warm_prefix_latency": latency(e, prefixes[5000:7000])}
@@ -111,7 +117,7 @@ def sub(cmd, engine, variant=None):
     args = [sys.executable, str(ROOT / "bench.py"), cmd, engine] + (["--variant", variant] if variant else [])
     proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     status = None
-    with Watch(lambda: psutil.Process(proc.pid).memory_info().rss, proc.kill) as w:
+    with Watch(lambda: memory.used(proc.pid), proc.kill) as w:
         try:
             out, err = proc.communicate(timeout=TIME_LIMIT_S)
         except subprocess.TimeoutExpired:
