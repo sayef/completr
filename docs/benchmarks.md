@@ -23,9 +23,9 @@ Results are measured on HN titles fetched from Meilisearch's public benchmark bu
   and under 1 ms at p99, and serves 30,000 queries per second with 8 threads, about 5 times tantivy and 8
   times the fastest server. The servers' round trips include about 1 ms of localhost HTTP, so this
   comparison favours completr.
-- **Indexing and footprint.** It builds its index fastest (0.72 s, 0.33 s with 8 threads), with a peak of
-  152 MB against 89 MB for tantivy, 280 MB for Typesense and about 1 GB for Meilisearch, and opens it in
-  about a millisecond. Its 23 MB segment and 31 MB of resident memory after queries are far less than the
+- **Indexing and footprint.** It builds its index fastest (0.38 s, 0.25 s with 8 threads) with the least
+  memory (a peak of 73 MB, against 89 MB for tantivy, 280 MB for Typesense and about 1 GB for
+  Meilisearch), and opens it in about a millisecond. Its 23 MB segment and 31 MB of resident memory after queries are far less than the
   servers', and about twice tantivy's 10 MB index and 19 MB, because completr also stores a title-prefix trie and precomputed
   spelling variants (see [where the bytes go](#where-the-bytes-go)).
 
@@ -76,12 +76,14 @@ popularity `log1p(points) / log1p(max points)`.
 
 | Engine | Index time | Peak memory while indexing | On disk | Memory after open or index | Memory after queries | Open or restart to first hit |
 |---|---|---|---|---|---|---|
-| completr | **717.3 ms** (325.2 ms with 8 threads) | 152 MB | 23 MB | 5 MB | 31 MB | 1.5 ms |
-| tantivy | 1.06 s | **89 MB** | **10 MB** | **3 MB** | **19 MB** | **0.5 ms** |
+| completr | **384.2 ms** (249.9 ms with 8 threads) | **73 MB** | 23 MB | 5 MB | 31 MB | 1.5 ms |
+| tantivy | 1.06 s | 89 MB | **10 MB** | **3 MB** | **19 MB** | **0.5 ms** |
 | Typesense | 3.62 s | 280 MB | 40 MB | 281 MB | 222 MB | 3.28 s |
 | Typesense, buckets | 3.63 s | 267 MB | 39 MB | 266 MB | 285 MB | 3.28 s |
 | Meilisearch | 1.94 s | 1034 MB | 136 MB | 1023 MB | 854 MB | 219 ms |
 | Meilisearch, popfirst | 1.99 s | 1122 MB | 136 MB | 1117 MB | 662 MB | 222 ms |
+
+With UUID strings as ids instead of integers, completr's segment is 26 MB and takes 816.3 ms to build.
 
 With UUID strings as ids instead of integers, completr's segment is 26 MB and takes 1.12 s to build.
 
@@ -94,15 +96,16 @@ its peak RSS while indexing. completr opens a local segment without reading it w
 
 ### Growing the corpus
 
-The same measurements on seeded, nested subsets of the corpus show how each engine scales. completr builds
-one segment per million documents, so its build memory stays bounded on larger corpora; tantivy flushes a
-segment whenever its 256 MB writer budget fills. Million-document workloads follow in later runs.
+The same measurements on seeded, nested subsets of the corpus show how each engine scales. completr streams
+documents into its builder and writes each section to the file as it is produced, and builds one segment per
+million documents, so its build memory stays bounded on larger corpora; tantivy flushes a segment whenever
+its 256 MB writer budget fills. Million-document workloads follow in later runs.
 
 | Engine | Documents | Index time | Peak memory while indexing | On disk |
 |---|---|---|---|---|
-| completr | 25,000 | 221 ms | 31 MB | 6 MB |
-| completr | 50,000 | 357 ms | 57 MB | 11 MB |
-| completr | 124,440 | 747 ms | 151 MB | 23 MB |
+| completr | 25,000 | 106 ms | 21 MB | 6 MB |
+| completr | 50,000 | 172 ms | 30 MB | 11 MB |
+| completr | 124,440 | 380 ms | 75 MB | 23 MB |
 | tantivy | 25,000 | 624 ms | 72 MB | 2 MB |
 | tantivy | 50,000 | 667 ms | 81 MB | 4 MB |
 | tantivy | 124,440 | 977 ms | 88 MB | 10 MB |
@@ -135,19 +138,19 @@ round trip over localhost HTTP and the time the engine reports (whole millisecon
 
 | Set | Engine | p50 | p90 | p99 | Engine-reported p50 | Engine-reported p99 |
 |---|---|---|---|---|---|---|
-| Prefixes as typed (23,292) | completr | **0.17** | **0.49** | **0.89** | - | - |
+| Prefixes as typed (23,292) | completr | **0.17** | **0.49** | **0.88** | - | - |
 |  | tantivy | 0.43 | 1.42 | 2.73 | - | - |
 |  | Typesense | 1.38 | 9.08 | 41.30 | 0 | 40 |
 |  | Typesense, buckets | 1.46 | 9.19 | 41.76 | 0 | 40 |
 |  | Meilisearch | 1.46 | 2.07 | 2.78 | 0 | 1 |
 |  | Meilisearch, popfirst | 1.51 | 2.10 | 2.72 | 0 | 2 |
-| One-edit typos (1,000) | completr | **0.16** | **0.52** | **0.84** | - | - |
+| One-edit typos (1,000) | completr | **0.16** | **0.52** | **0.85** | - | - |
 |  | tantivy | 0.22 | 0.69 | 2.17 | - | - |
 |  | Typesense | 1.09 | 2.18 | 8.71 | 0 | 8 |
 |  | Typesense, buckets | 1.12 | 2.27 | 8.78 | 0 | 8 |
 |  | Meilisearch | 1.26 | 1.71 | 2.34 | 0 | 1 |
 |  | Meilisearch, popfirst | 1.29 | 1.70 | 2.28 | 0 | 1 |
-| Two-edit typos (1,000) | completr | **0.14** | **0.56** | **0.90** | - | - |
+| Two-edit typos (1,000) | completr | **0.14** | **0.59** | **0.98** | - | - |
 |  | tantivy | 0.51 | 0.73 | 1.47 | - | - |
 |  | Typesense | 1.26 | 2.39 | 8.84 | 0 | 8 |
 |  | Typesense, buckets | 1.32 | 2.50 | 8.86 | 0 | 8 |
@@ -167,7 +170,7 @@ client processes over HTTP for the servers.
 
 | Engine | Queries per second |
 |---|---|
-| completr | **30,213** |
+| completr | **30,541** |
 | tantivy | 5,655 |
 | Typesense | 1,725 |
 | Typesense, buckets | 1,680 |
@@ -219,9 +222,9 @@ and the raw numbers in [`bench/results/hn/`](https://github.com/sayef/completr/t
   completr for over 98%.
 - **Footprint against tantivy.** completr's segment is about twice the size of tantivy's index and uses
   more memory after queries, because it stores hashed spelling variants and a title trie for prefix scans
-  (see [where the bytes go](#where-the-bytes-go)). It opens in 1.5 ms against 0.5 ms for tantivy, and its
-  build memory grows with the segment, about 1.2 KB per document, where tantivy's is capped by its writer
-  budget.
+  (see [where the bytes go](#where-the-bytes-go)). It opens in 1.5 ms against 0.5 ms for tantivy. Its
+  build memory grows with the segment, about 0.5 KB per document, where tantivy's is capped by its writer
+  budget, so tantivy needs less above roughly 150,000 documents per segment.
 - **tantivy's merge.** tantivy merges segments in the background, so its size varies between runs (10 to
   11 MB here).
 - **Recommended settings, not tuning.** Each engine runs with the configuration its documentation

@@ -69,6 +69,26 @@ The trie is written from scratch in the style of [marisa-trie](https://github.co
 Loading validates the structure in one byte-wise pass. The optional `compact_keys` setting stores tails
 in a nested trie, which is smaller but slower.
 
+## Building a segment
+
+`SegmentBuilder` keeps what it is given compactly: every text in one byte arena and a 32-byte entry per
+document, with keys, aliases, contexts and vectors boxed only for documents that have them. Building then
+runs in a fixed order, each step freeing what the next does not need:
+
+1. **Order** the entries by id, keeping the last added of each id.
+2. **Scan** each text once: lowercase it for the title key, and intern its words into a table of postings
+   and occurrences, without allocating per occurrence.
+3. **Sort** the words into term-key order, in flat arrays for keys and postings.
+4. **Write** the sections in file order. Each is produced only when it is written: the spelling variants,
+   for instance, are generated twice per word, once to count each bucket and once to place the entries, so
+   no intermediate list exists. A section's bytes pass to the output a megabyte at a time.
+
+With `SegmentBuilder::write`, the output is the file itself, hashed as it is written and then mapped, so the
+encoded segment is never held in memory. The bytes are the same as those of an in-memory build. The same
+approach bounds memory in tantivy (a segment is flushed when its writer's memory budget fills) and
+Meilisearch (sorted chunks spill to disk), which completr follows by building large corpora as several
+segments that rank exactly like one.
+
 ## Query path
 
 1. **Normalise** the query: Unicode lowercase and trim; words split on Unicode whitespace.
