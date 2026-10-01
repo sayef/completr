@@ -432,6 +432,9 @@ impl Document {
     }
 }
 
+/// Documents a `SegmentWriter` reads before adding them without the GIL.
+const WRITER_BATCH: usize = 4096;
+
 /// Writes documents into segment files in a directory, starting a new segment whenever building
 /// the current one would take more than `memory_budget` bytes.
 #[pyclass(module = "completr")]
@@ -475,11 +478,28 @@ impl SegmentWriter {
             .0
             .as_mut()
             .ok_or_else(|| PyValueError::new_err("the writer is finished"))?;
-        if documents.cast::<PyDict>().is_ok() || documents.cast::<Document>().is_ok() {
-            let one = PyList::new(py, [documents])?;
-            return for_each_document(py, one.as_any(), |doc| writer.add(doc).map_err(to_py_err));
-        }
-        for_each_document(py, documents, |doc| writer.add(doc).map_err(to_py_err))
+        let one;
+        let documents = if documents.cast::<PyDict>().is_ok() || documents.cast::<Document>().is_ok() {
+            one = PyList::new(py, [documents])?;
+            one.as_any()
+        } else {
+            documents
+        };
+        // Documents are read with the GIL and added without it: a flush builds a segment on worker
+        // threads whose log events need the GIL.
+        let mut batch = Vec::with_capacity(WRITER_BATCH);
+        let mut add = |batch: &mut Vec<completr_rs::Document>| {
+            py.detach(|| batch.drain(..).try_for_each(|doc| writer.add(doc)))
+                .map_err(to_py_err)
+        };
+        for_each_document(py, documents, |doc| {
+            batch.push(doc);
+            if batch.len() == WRITER_BATCH {
+                add(&mut batch)?;
+            }
+            Ok(())
+        })?;
+        add(&mut batch)
     }
 
     /// Writes what is left and returns every segment written, in order.

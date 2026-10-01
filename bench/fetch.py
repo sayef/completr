@@ -103,8 +103,11 @@ def fetch_binaries():
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("what", nargs="?", choices=["all", "data", "bin"], default="all")
+    ap.add_argument("what", nargs="?", choices=["all", "data", "bin", "wiki"], default="all")
     a = ap.parse_args()
+    if a.what == "wiki":
+        import wiki
+        wiki.main()
     if a.what in ("all", "data"):
         fetch_dataset()
     if a.what in ("all", "bin"):

@@ -58,6 +58,21 @@ harness downloads it at run time, for measurement only.
 `samples.json` holds the generated queries and targets (titles and ids), so a run can be checked against
 the committed sample with `python bench.py samples --check`.
 
+### Wikipedia (`--workload wiki`)
+
+Every English Wikipedia article that is not a redirect, with its views by users in August 2026 as its
+popularity. `python fetch.py wiki` downloads the page table of the
+[2026-09-01 dump](https://dumps.wikimedia.org/enwiki/20260901/) (2.4 GB, checked against Wikimedia's
+published SHA-1) and the [August 2026 pageviews](https://dumps.wikimedia.org/other/pageview_complete/monthly/2026/2026-08/)
+(5.0 GB; Wikimedia publishes no checksum, so `wiki.py` pins the SHA-256 as downloaded), keeps the
+main-namespace pages that are not redirects, sums each title's views over access methods, and writes
+`.cache/data/wiki_titles.jsonl`. Ids are page ids. Articles without views keep a popularity of zero.
+
+**Licence.** Wikipedia article titles are © Wikipedia contributors under
+[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/); the pageview counts are released under
+[CC0](https://creativecommons.org/publicdomain/zero/1.0/) by the Wikimedia Foundation. The harness downloads
+both at run time; `samples-wiki.json` holds a few thousand titles drawn from them, under the same licence.
+
 ## Engine settings
 
 Each competitor uses the settings its documentation recommends for ranking by popularity, and nothing
