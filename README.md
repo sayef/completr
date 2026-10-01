@@ -129,7 +129,8 @@ flowchart LR
   124,440 HN titles takes 0.4 s and peaks at 73 MB.
 - **Bounded indexing memory**: a `SegmentWriter` starts a new segment file whenever building the current
   one would pass its memory budget (256 MB by default), so any corpus indexes in bounded memory: 4 million
-  titles in 9 s at about 300 MB. The segments rank exactly like one.
+  titles in 9 s at about 300 MB. The segments rank exactly like one, and compaction merges them through
+  their sorted dictionaries, byte for byte as a rebuild would, in a third less time.
 - **Override layers**: search a tenant's, a user's or an experiment's index on top of shared data, per
   document id, without copying it.
 - A **short-query cache** for one- to three-character prefixes, carried across index versions.
