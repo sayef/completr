@@ -16,6 +16,7 @@
 //! # Ok::<(), completr::Error>(())
 //! ```
 
+mod blocked;
 mod codec;
 /// Chainable setters named after the fields of a non-exhaustive options struct.
 macro_rules! setters {
@@ -36,6 +37,7 @@ pub(crate) use setters;
 mod database;
 mod dict;
 mod document;
+mod elias_fano;
 mod engine;
 mod fuzzy;
 mod highlight;

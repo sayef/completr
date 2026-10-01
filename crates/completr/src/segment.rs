@@ -5,8 +5,10 @@ use std::sync::Arc;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
+use crate::blocked::Blocked;
 use crate::codec::{Bytes, Column, Reader, Writer};
 use crate::dict::{Dict, Dictionary};
+use crate::elias_fano::EliasFano;
 use crate::staged::Staged;
 
 mod merge;
@@ -16,7 +18,7 @@ use crate::{fuzzy, text, Alias, AliasKind, Document, Error};
 pub(crate) use merge::Part;
 
 const MAGIC: &[u8; 8] = b"COMPLETR";
-const VERSION: u64 = 10;
+const VERSION: u64 = 11;
 const DOCS_PER_BLOCK: usize = 128;
 const ZSTD_LEVEL: i32 = 3;
 
@@ -317,41 +319,29 @@ impl Keyed {
     }
 }
 
-/// Delete variants hashed into buckets of word ordinals, each with a fingerprint of its variant;
-/// a bucket can still hold words of other variants, which the caller discards.
+/// Delete variants hashed into buckets of word ordinals; a bucket can also hold words of other
+/// variants, which the caller discards.
 pub(crate) struct Variants {
     buckets: u64,
-    offsets: Packed,
-    words: Packed,
+    words: u64,
+    /// `bucket * words + ordinal`, sorted.
+    entries: EliasFano,
 }
 
 impl Variants {
-    const FINGERPRINT_BITS: u32 = 6;
-
     /// About eight words per bucket at the default settings.
     fn buckets_for(words: usize) -> u32 {
         (words as u32).saturating_mul(3).max(1)
     }
 
-    /// The bucket in the high bits, and the fingerprint in the low ones.
-    fn slot(variant: &[u8], buckets: u64) -> (u64, u64) {
+    fn bucket(variant: &[u8], buckets: u64) -> u64 {
         let h = xxhash_rust::xxh3::xxh3_64(variant);
-        let bucket = ((u128::from(h) * u128::from(buckets)) >> 64) as u64;
-        (bucket, h & ((1 << Self::FINGERPRINT_BITS) - 1))
+        ((u128::from(h) * u128::from(buckets)) >> 64) as u64
     }
 
-    /// The bucket of `variant`, and the entry of `ordinal` in it.
-    fn entry(variant: &[u8], buckets: u32, ordinal: u32) -> (u32, u32) {
-        let (bucket, fingerprint) = Self::slot(variant, u64::from(buckets));
-        (
-            bucket as u32,
-            ordinal << Self::FINGERPRINT_BITS | fingerprint as u32,
-        )
-    }
-
-    /// Bucket offsets and the entries of each bucket, sorted and unique. `variants(ordinal, f)` calls
-    /// `f` with each variant of a word; it runs twice per word, to count and then to place, so no
-    /// entry is held twice.
+    /// Bucket offsets and the ordinals of each bucket, sorted and unique. `variants(ordinal, f)`
+    /// calls `f` with each variant of a word; it runs twice per word, to count and then to place, so
+    /// no entry is held twice.
     fn group(
         buckets: u32,
         words: usize,
@@ -361,7 +351,7 @@ impl Variants {
         let counts: Vec<AtomicU32> = (0..=buckets).map(|_| AtomicU32::new(0)).collect();
         (0..words).into_par_iter().for_each(|ordinal| {
             variants(ordinal, &mut |v| {
-                counts[Self::entry(v, buckets, 0).0 as usize + 1].fetch_add(1, Relaxed);
+                counts[Self::bucket(v, u64::from(buckets)) as usize + 1].fetch_add(1, Relaxed);
             })
         });
         let mut offsets: Vec<u32> = counts.into_iter().map(AtomicU32::into_inner).collect();
@@ -374,8 +364,9 @@ impl Variants {
             .collect();
         (0..words).into_par_iter().for_each(|ordinal| {
             variants(ordinal, &mut |v| {
-                let (bucket, entry) = Self::entry(v, buckets, ordinal as u32);
-                slots[next[bucket as usize].fetch_add(1, Relaxed) as usize].store(entry, Relaxed);
+                let bucket = Self::bucket(v, u64::from(buckets));
+                slots[next[bucket as usize].fetch_add(1, Relaxed) as usize]
+                    .store(ordinal as u32, Relaxed);
             })
         });
         drop(next);
@@ -398,44 +389,41 @@ impl Variants {
         (offsets, entries)
     }
 
-    fn write(w: &mut Writer, buckets: u32, offsets: &[u32], entries: &[u32]) {
+    fn write(w: &mut Writer, buckets: u32, words: usize, offsets: &[u32], entries: &[u32]) {
+        let words = words as u64;
         w.u64(u64::from(buckets));
-        Packed::write(w, offsets);
-        Packed::write(w, entries);
+        w.u64(words);
+        EliasFano::write(w, entries.len(), u64::from(buckets) * words, || {
+            offsets.windows(2).enumerate().flat_map(move |(b, o)| {
+                entries[o[0] as usize..o[1] as usize]
+                    .iter()
+                    .map(move |&ordinal| b as u64 * words + u64::from(ordinal))
+            })
+        });
     }
 
     fn read(r: &mut Reader, word_bound: u32, full: bool) -> Result<Self, Error> {
-        let buckets = r.u64()?;
-        let offsets = Packed::read(r)?;
-        let words = Packed::read(r)?;
-        let valid = offsets.len as u64 == buckets.saturating_add(1)
-            && (!full
-                || (0..words.len)
-                    .all(|i| words.get(i) >> Self::FINGERPRINT_BITS < u64::from(word_bound))
-                    && (1..offsets.len).all(|i| offsets.get(i - 1) <= offsets.get(i))
-                    && offsets.get(offsets.len - 1) == words.len as u64);
-        valid
+        let (buckets, words) = (r.u64()?, r.u64()?);
+        let entries = EliasFano::read(r, full)?;
+        (buckets > 0 && words == u64::from(word_bound))
             .then_some(Self {
                 buckets,
-                offsets,
                 words,
+                entries,
             })
             .ok_or_else(|| Error::Corrupt("invalid variants".into()))
     }
 
-    /// Ordinals of the words in `variant`'s bucket with its fingerprint.
+    /// Ordinals of the words in `variant`'s bucket.
     pub(crate) fn get(&self, variant: &[u8]) -> impl Iterator<Item = u32> + '_ {
-        let (bucket, fingerprint) = Self::slot(variant, self.buckets);
-        let start = self.offsets.get(bucket as usize) as usize;
-        let end = (self.offsets.get(bucket as usize + 1) as usize).min(self.words.len);
-        (start.min(end)..end)
-            .map(|i| self.words.get(i))
-            .filter(move |&v| v & ((1 << Self::FINGERPRINT_BITS) - 1) == fingerprint)
-            .map(|v| (v >> Self::FINGERPRINT_BITS) as u32)
+        let start = Self::bucket(variant, self.buckets) * self.words;
+        self.entries
+            .range(start, start + self.words)
+            .map(move |v| (v - start) as u32)
     }
 
     fn size(&self) -> usize {
-        8 + self.offsets.size() + self.words.size()
+        16 + self.entries.size()
     }
 }
 
@@ -488,7 +476,7 @@ impl StrColumn {
 /// under `FSST_MIN_BYTES` are stored raw, where a symbol table would not pay for itself.
 struct FsstColumn {
     data: Bytes,
-    offsets: Packed,
+    offsets: Blocked,
     symbols: Option<([fsst::Symbol; 255], [u8; 255])>,
 }
 
@@ -538,7 +526,7 @@ impl FsstColumn {
         w.column(&symbols);
         w.column(&lengths);
         w.bytes(&data);
-        Packed::write(w, &offsets);
+        Blocked::write_with(w, offsets.len(), || offsets.iter().copied());
         Ok(())
     }
 
@@ -547,8 +535,8 @@ impl FsstColumn {
         let symbols: Column<u64> = r.column()?;
         let lengths: Column<u8> = r.column()?;
         let data = r.bytes()?;
-        let offsets = Packed::read(r)?;
-        let valid = offsets.len == n + 1
+        let offsets = Blocked::read(r)?;
+        let valid = offsets.len() == n + 1
             && offsets.get(0) == 0
             && offsets.get(n) as usize == data.as_ref().len()
             && (!full || (1..=n).all(|i| offsets.get(i - 1) <= offsets.get(i)));
@@ -827,10 +815,10 @@ fn parse_block(raw: &[u8]) -> Result<Vec<BorrowedDoc<'_>>, Error> {
 pub struct Segment {
     data: Bytes,
     config: BuildOptions,
-    ids: Column<u64>,
+    ids: Blocked,
     weights: Column<f32>,
-    text_lens: Column<u16>,
-    single_word: Column<u8>,
+    /// Per document, its text's length in chars `<< 1`, and whether it is a single word.
+    shapes: Packed,
     deletes: Column<u64>,
     docs: DocStore,
     pub(crate) titles: Keyed,
@@ -920,7 +908,7 @@ impl Segment {
             let local = local as u32;
             let lower = text::lower(doc.text);
             text_lens.push(u16::try_from(text::char_len(&lower)).unwrap_or(u16::MAX));
-            single_word.push(u8::from(text::words(&lower).count() == 1));
+            single_word.push(text::words(&lower).count() == 1);
             for word in indexed_words(&lower, config.min_word_chars) {
                 words.add(word, local);
             }
@@ -940,7 +928,7 @@ impl Segment {
         }
 
         let words = words.sorted();
-        if words.len() >> (32 - Variants::FINGERPRINT_BITS) != 0 {
+        if u32::try_from(words.len()).is_err() {
             return Err(Error::input("too many distinct words for one segment"));
         }
 
@@ -962,10 +950,10 @@ impl Segment {
         write_header(
             &mut sink,
             config,
-            &docs.iter().map(|d| d.id).collect::<Vec<_>>(),
-            &docs.iter().map(|d| d.popularity).collect::<Vec<_>>(),
-            &text_lens,
-            &single_word,
+            n,
+            |i| docs.get(i).id,
+            |i| docs.get(i).popularity,
+            |i| (text_lens[i], single_word[i]),
             &deletes,
         )?;
         let dim = docs
@@ -1029,8 +1017,24 @@ impl Segment {
     }
 
     /// Document ids in ascending order.
-    pub fn ids(&self) -> &[u64] {
-        self.ids.as_slice()
+    pub fn ids(&self) -> impl ExactSizeIterator<Item = u64> + '_ {
+        self.ids.iter()
+    }
+
+    pub fn id(&self, local: usize) -> u64 {
+        self.ids.get(local)
+    }
+
+    pub(crate) fn local_of(&self, id: u64) -> Option<usize> {
+        self.ids.binary_search(id).ok()
+    }
+
+    pub(crate) fn text_len(&self, local: usize) -> u16 {
+        (self.shapes.get(local) >> 1) as u16
+    }
+
+    pub(crate) fn is_single_word(&self, local: usize) -> bool {
+        self.shapes.get(local) & 1 == 1
     }
 
     /// Ids this segment hides in older segments, ascending.
@@ -1046,7 +1050,13 @@ impl Segment {
     /// Approximate bytes per section, for diagnostics.
     pub fn section_sizes(&self) -> Vec<(&'static str, usize)> {
         vec![
-            ("columns", self.ids.len() * 15 + self.deletes.len() * 8),
+            (
+                "columns",
+                self.ids.size()
+                    + self.weights.len() * 4
+                    + self.shapes.size()
+                    + self.deletes.len() * 8,
+            ),
             (
                 "documents (zstd)",
                 self.docs.blocks.as_ref().len() + self.docs.offsets.len() * 8,
@@ -1078,7 +1088,7 @@ impl Segment {
 
     fn assemble(&self, local: usize, aliases: Vec<Alias>, contexts: Vec<String>) -> Document {
         Document {
-            id: self.ids()[local],
+            id: self.id(local),
             key: self.key(local),
             text: self.text(local),
             popularity: self.weights()[local],
@@ -1130,14 +1140,8 @@ impl Segment {
         self.weights.as_slice()
     }
 
-    /// Ids, weights, text lengths and single-word flags.
-    pub(crate) fn columns(&self) -> (Column<u64>, Column<f32>, Column<u16>, Column<u8>) {
-        (
-            self.ids.clone(),
-            self.weights.clone(),
-            self.text_lens.clone(),
-            self.single_word.clone(),
-        )
+    pub(crate) fn weight_column(&self) -> Column<f32> {
+        self.weights.clone()
     }
 
     pub(crate) fn word_text(&self, ordinal: u32) -> &str {
@@ -1245,13 +1249,12 @@ impl Segment {
             build_threads: 1,
             layout,
         };
-        let ids = r.column::<u64>()?;
+        let ids = Blocked::read(&mut r)?;
         let n = ids.len();
         let local_bound =
             u32::try_from(n).map_err(|_| Error::Corrupt("too many documents".into()))?;
         let weights = r.column()?;
-        let text_lens = r.column()?;
-        let single_word = r.column()?;
+        let shapes = Packed::read(&mut r)?;
         let deletes = r.column()?;
         let docs = DocStore::read(&mut r, n)?;
         let titles = Keyed::read(&mut r, layout.titles, false, local_bound, full)?;
@@ -1280,8 +1283,7 @@ impl Segment {
             config,
             ids,
             weights,
-            text_lens,
-            single_word,
+            shapes,
             deletes,
             docs,
             titles,
@@ -1296,11 +1298,10 @@ impl Segment {
             contexts,
         };
         let valid = segment.weights.len() == n
-            && segment.text_lens.len() == n
-            && segment.single_word.len() == n
+            && segment.shapes.len == n
             && (!full
                 || segment.weights().iter().all(|w| w.is_finite())
-                    && segment.ids().windows(2).all(|w| w[0] < w[1]))
+                    && (1..n).all(|i| segment.id(i - 1) < segment.id(i)))
             && segment.word_freqs.len() == segment.words.map.len()
             && segment.word_texts.offsets.len() == segment.words.map.len() + 1;
         valid
@@ -1408,7 +1409,7 @@ impl SortedWords {
                 |v| f(v.as_bytes()),
             )
         });
-        Variants::write(w, buckets, &offsets, &entries);
+        Variants::write(w, buckets, self.len(), &offsets, &entries);
         Ok(())
     }
 
@@ -1625,13 +1626,14 @@ impl Sink {
 type Section<'s> = Box<dyn FnOnce(&mut Writer) -> Result<(), Error> + Send + 's>;
 
 /// The header and the per-document columns.
+/// `shape(local)` is a document's text length in chars and whether it is a single word.
 fn write_header(
     sink: &mut Sink,
     config: BuildOptions,
-    ids: &[u64],
-    weights: &[f32],
-    text_lens: &[u16],
-    single_word: &[u8],
+    n: usize,
+    id: impl Fn(usize) -> u64,
+    weight: impl Fn(usize) -> f32,
+    shape: impl Fn(usize) -> (u16, bool),
     deletes: &[u64],
 ) -> Result<(), Error> {
     let layout = config.effective_layout();
@@ -1650,10 +1652,14 @@ fn write_header(
         layout.words.code(),
         layout.aliases.code(),
     ]);
-    w.column(ids);
-    w.column(weights);
-    w.column(text_lens);
-    w.column(single_word);
+    Blocked::write_with(&mut w, n, || (0..n).map(&id));
+    w.column_with(n, (0..n).map(weight));
+    Packed::write_with(&mut w, n, || {
+        (0..n).map(|i| {
+            let (len, single) = shape(i);
+            u64::from(len) << 1 | u64::from(single)
+        })
+    });
     w.column(deletes);
     w.finish()
 }
@@ -1749,7 +1755,7 @@ mod tests {
     #[test]
     fn keeps_last_duplicate_in_id_order() {
         let seg = sample();
-        assert_eq!(seg.ids(), [3, 7]);
+        assert_eq!(seg.ids().collect::<Vec<_>>(), [3, 7]);
         assert_eq!(seg.document(1).text, "Machine learning");
         assert_eq!(seg.deletes(), [1, 9]);
         assert_eq!(seg.word_freq("machine"), 1);

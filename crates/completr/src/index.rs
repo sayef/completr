@@ -120,10 +120,7 @@ pub struct Index {
     pub(crate) segment_config: BuildOptions,
     segments: Vec<Arc<Segment>>,
     offsets: Vec<u32>,
-    pub(crate) ids: DocColumn<u64>,
     pub(crate) weights: DocColumn<f32>,
-    pub(crate) text_lens: DocColumn<u16>,
-    pub(crate) single_word: DocColumn<u8>,
     live: Vec<bool>,
     live_count: usize,
     hidden_word_freqs: FxHashMap<String, u32>,
@@ -158,10 +155,7 @@ impl Index {
             offsets.push(base);
             base += seg.len() as u32;
         }
-        let ids = DocColumn::of(&segments, |s| s.columns().0);
-        let weights = DocColumn::of(&segments, |s| s.columns().1);
-        let text_lens = DocColumn::of(&segments, |s| s.columns().2);
-        let single_word = DocColumn::of(&segments, |s| s.columns().3);
+        let weights = DocColumn::of(&segments, Segment::weight_column);
 
         let mut live = vec![true; total];
         hide_superseded(&segments, &offsets, &mut live)?;
@@ -208,10 +202,7 @@ impl Index {
             has_words: segments.iter().any(|s| !s.words.is_empty()),
             segments,
             offsets,
-            ids,
             weights,
-            text_lens,
-            single_word,
             live,
             hidden_word_freqs,
             short_cache: Mutex::default(),
@@ -261,6 +252,34 @@ impl Index {
     }
 
     /// Number of live documents.
+    pub(crate) fn id(&self, doc: u32) -> u64 {
+        let (i, local) = self.locate(doc);
+        self.segments[i].id(local)
+    }
+
+    /// Orders documents by id; a lone segment holds its documents in id order.
+    pub(crate) fn id_cmp(&self, a: u32, b: u32) -> std::cmp::Ordering {
+        match self.segments.len() {
+            1 => a.cmp(&b),
+            _ => self.id(a).cmp(&self.id(b)),
+        }
+    }
+
+    pub(crate) fn text_len(&self, doc: u32) -> u16 {
+        let (i, local) = self.locate(doc);
+        self.segments[i].text_len(local)
+    }
+
+    pub(crate) fn is_single_word(&self, doc: u32) -> bool {
+        let (i, local) = self.locate(doc);
+        self.segments[i].is_single_word(local)
+    }
+
+    /// Documents in all segments, live or not.
+    pub(crate) fn doc_count(&self) -> usize {
+        self.live.len()
+    }
+
     pub fn len(&self) -> usize {
         self.live_count
     }
@@ -271,7 +290,7 @@ impl Index {
 
     pub fn document(&self, id: u64) -> Option<Document> {
         self.segments.iter().enumerate().rev().find_map(|(i, seg)| {
-            let local = seg.ids().binary_search(&id).ok()?;
+            let local = seg.local_of(id)?;
             self.live[self.offsets[i] as usize + local].then(|| seg.document(local))
         })
     }
@@ -280,7 +299,7 @@ impl Index {
     pub(crate) fn covers(&self, id: u64) -> bool {
         self.segments
             .iter()
-            .any(|s| s.ids().binary_search(&id).is_ok() || s.deletes().binary_search(&id).is_ok())
+            .any(|s| s.local_of(id).is_some() || s.deletes().binary_search(&id).is_ok())
     }
 
     /// The live document with string key `key`.
@@ -291,7 +310,10 @@ impl Index {
 
     /// Segment and local position of document number `doc`.
     fn locate(&self, doc: u32) -> (usize, usize) {
-        let i = self.offsets.partition_point(|&o| o <= doc) - 1;
+        let i = match self.segments.len() {
+            1 => 0,
+            _ => self.offsets.partition_point(|&o| o <= doc) - 1,
+        };
         (i, (doc - self.offsets[i]) as usize)
     }
 
@@ -310,7 +332,7 @@ impl Index {
         if contexts.is_empty() {
             return None;
         }
-        let mut bits = vec![0u64; self.ids.len().div_ceil(64)];
+        let mut bits = vec![0u64; self.doc_count().div_ceil(64)];
         for (seg, &base) in self.segments.iter().zip(&self.offsets) {
             for context in contexts {
                 if let Some(postings) = seg.contexts.get(&term_key(context)) {
@@ -453,10 +475,7 @@ impl Index {
                 hits.push((base + local, f64::from(score)));
             }
         }
-        hits.sort_unstable_by(|a, b| {
-            b.1.total_cmp(&a.1)
-                .then(self.ids[a.0 as usize].cmp(&self.ids[b.0 as usize]))
-        });
+        hits.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then(self.id_cmp(a.0, b.0)));
         hits.truncate(k);
         Ok(hits
             .into_iter()
@@ -467,16 +486,16 @@ impl Index {
     /// The 99th percentile of exact-match scores over live documents.
     pub fn estimate_max_score(&self) -> f64 {
         let factor = self.config.popularity_weight * 10.0;
-        let (lens, single, weights) = (&*self.text_lens, &*self.single_word, &*self.weights);
+        let weights = &*self.weights;
         let scores = || {
-            lens.par_iter()
-                .zip(single.par_iter())
-                .zip(weights.par_iter())
-                .zip(self.live.par_iter())
-                .filter(|(_, &live)| live)
-                .map(move |(((&len, &single), &weight), _)| {
-                    let base = 150.0 - f64::from(len) * 0.1 + if single == 1 { 25.0 } else { 0.0 };
-                    let weight = f64::from(weight);
+            (0..self.live.len())
+                .into_par_iter()
+                .filter(|&d| self.live[d])
+                .map(move |d| {
+                    let doc = d as u32;
+                    let single = if self.is_single_word(doc) { 25.0 } else { 0.0 };
+                    let base = 150.0 - f64::from(self.text_len(doc)) * 0.1 + single;
+                    let weight = f64::from(weights[d]);
                     base * if weight > 0.0 {
                         1.0 + weight * factor
                     } else {
@@ -609,7 +628,7 @@ impl Index {
             }
             cursors.retain_mut(|(_, cursor)| cursor.key() != key.as_slice() || cursor.advance());
             if sources > 1 {
-                entries.sort_by_key(|&(doc, kind)| (self.ids[doc as usize], kind));
+                entries.sort_by(|a, b| self.id_cmp(a.0, b.0).then(a.1.cmp(&b.1)));
             }
             for &(doc, kind) in &entries {
                 f(&key, doc, kind);
@@ -641,7 +660,7 @@ impl Index {
             }
         }
         if sources > 1 {
-            entries.sort_by_key(|&(doc, kind)| (self.ids[doc as usize], kind));
+            entries.sort_by(|a, b| self.id_cmp(a.0, b.0).then(a.1.cmp(&b.1)));
         }
         entries
     }
@@ -740,15 +759,23 @@ fn hide_superseded(
 ) -> Result<(), Error> {
     use std::cmp::Reverse;
     // (id, segment, is a delete, position)
-    let column = |seg: usize, delete: bool| -> &[u64] {
+    let at = |seg: usize, delete: bool, pos: usize| -> Option<u64> {
+        let seg = &segments[seg];
         if delete {
-            segments[seg].deletes()
+            seg.deletes().get(pos).copied()
         } else {
-            segments[seg].ids()
+            (pos < seg.len()).then(|| seg.id(pos))
         }
     };
     // Only segments whose id range meets a newer segment's ids or deletes can hide anything.
-    let range = |c: &[u64]| c.first().zip(c.last()).map(|(&a, &b)| (a, b));
+    let range = |seg: usize, delete: bool| {
+        let len = if delete {
+            segments[seg].deletes().len()
+        } else {
+            segments[seg].len()
+        };
+        at(seg, delete, 0).zip(at(seg, delete, len.wrapping_sub(1)))
+    };
     let meets = |a: Option<(u64, u64)>, b: Option<(u64, u64)>| {
         a.zip(b)
             .is_some_and(|((a0, a1), (b0, b1))| a0 <= b1 && b0 <= a1)
@@ -756,10 +783,8 @@ fn hide_superseded(
     let mut involved = vec![false; segments.len()];
     for older in 0..segments.len() {
         for newer in older + 1..segments.len() {
-            let ids = range(segments[older].ids());
-            if meets(ids, range(segments[newer].ids()))
-                || meets(ids, range(segments[newer].deletes()))
-            {
+            let ids = range(older, false);
+            if meets(ids, range(newer, false)) || meets(ids, range(newer, true)) {
                 involved[older] = true;
                 involved[newer] = true;
             }
@@ -768,7 +793,7 @@ fn hide_superseded(
     let mut heap = std::collections::BinaryHeap::new();
     for seg in (0..segments.len()).filter(|&s| involved[s]) {
         for delete in [false, true] {
-            if let Some(&id) = column(seg, delete).first() {
+            if let Some(id) = at(seg, delete, 0) {
                 heap.push(Reverse((id, seg, delete, 0usize)));
             }
         }
@@ -782,7 +807,7 @@ fn hide_superseded(
             group.push((s, d, p));
         }
         for &(s, d, p) in &group {
-            if let Some(&next) = column(s, d).get(p + 1) {
+            if let Some(next) = at(s, d, p + 1) {
                 heap.push(Reverse((next, s, d, p + 1)));
             }
         }

@@ -609,7 +609,7 @@ impl Segment {
 
     /// Numeric ids of the documents, ascending.
     fn ids(&self) -> Vec<u64> {
-        self.0.ids().to_vec()
+        self.0.ids().collect()
     }
 
     /// Numeric ids this segment deletes from older segments.

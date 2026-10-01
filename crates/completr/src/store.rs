@@ -600,12 +600,33 @@ mod tests {
         let v1 = Segment::build([Document::new(1, "Rust", 0.5)], []).unwrap();
         let v2 = Segment::build([Document::new(2, "Python", 0.5)], []).unwrap();
         store.put_segment("segments/a.seg", &v1).unwrap();
-        assert_eq!(store.get_segment("segments/a.seg").unwrap().ids(), [1]);
+        assert_eq!(
+            store
+                .get_segment("segments/a.seg")
+                .unwrap()
+                .ids()
+                .collect::<Vec<_>>(),
+            [1]
+        );
         let cached = || walk(dir.path());
         assert_eq!(cached().len(), 1);
-        assert_eq!(store.get_segment("segments/a.seg").unwrap().ids(), [1]);
+        assert_eq!(
+            store
+                .get_segment("segments/a.seg")
+                .unwrap()
+                .ids()
+                .collect::<Vec<_>>(),
+            [1]
+        );
         store.put_segment("segments/a.seg", &v2).unwrap();
-        assert_eq!(store.get_segment("segments/a.seg").unwrap().ids(), [2]);
+        assert_eq!(
+            store
+                .get_segment("segments/a.seg")
+                .unwrap()
+                .ids()
+                .collect::<Vec<_>>(),
+            [2]
+        );
         assert_eq!(cached().len(), 2);
         store.put_segment("segments/b.seg", &v1).unwrap();
         store.get_segment("segments/b.seg").unwrap();
@@ -618,7 +639,8 @@ mod tests {
             store
                 .get_immutable_segment("segments/c.seg", None)
                 .unwrap()
-                .ids(),
+                .ids()
+                .collect::<Vec<_>>(),
             [1]
         );
         store.put_segment("segments/c.seg", &v2).unwrap();
@@ -626,7 +648,8 @@ mod tests {
             store
                 .get_immutable_segment("segments/c.seg", None)
                 .unwrap()
-                .ids(),
+                .ids()
+                .collect::<Vec<_>>(),
             [1]
         );
         let size = Some(v2.size_bytes() as u64 + 1);

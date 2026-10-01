@@ -154,21 +154,21 @@ impl Segment {
         for part in 0..parts.len() {
             if let Some(l) = advance(part, 0) {
                 next[part] = l;
-                heap.push(Reverse((parts[part].segment.ids()[l], Reverse(part))));
+                heap.push(Reverse((parts[part].segment.id(l), Reverse(part))));
             }
         }
         while let Some(Reverse((id, Reverse(part)))) = heap.pop() {
             let local = next[part];
             if order
                 .last()
-                .is_none_or(|&(p, l)| parts[p as usize].segment.ids()[l as usize] != id)
+                .is_none_or(|&(p, l)| parts[p as usize].segment.id(l as usize) != id)
             {
                 remap[part][local] = order.len() as u32;
                 order.push((part as u32, local as u32));
             }
             if let Some(l) = advance(part, local + 1) {
                 next[part] = l;
-                heap.push(Reverse((parts[part].segment.ids()[l], Reverse(part))));
+                heap.push(Reverse((parts[part].segment.id(l), Reverse(part))));
             }
         }
         let n = order.len();
@@ -209,30 +209,19 @@ impl Segment {
         write_header(
             &mut sink,
             config,
-            &(0..n)
-                .map(|i| {
-                    let (s, l) = doc(i);
-                    s.ids()[l]
-                })
-                .collect::<Vec<_>>(),
-            &(0..n)
-                .map(|i| {
-                    let (s, l) = doc(i);
-                    s.weights()[l]
-                })
-                .collect::<Vec<_>>(),
-            &(0..n)
-                .map(|i| {
-                    let (s, l) = doc(i);
-                    s.text_lens.as_slice()[l]
-                })
-                .collect::<Vec<_>>(),
-            &(0..n)
-                .map(|i| {
-                    let (s, l) = doc(i);
-                    s.single_word.as_slice()[l]
-                })
-                .collect::<Vec<_>>(),
+            n,
+            |i| {
+                let (s, l) = doc(i);
+                s.id(l)
+            },
+            |i| {
+                let (s, l) = doc(i);
+                s.weights()[l]
+            },
+            |i| {
+                let (s, l) = doc(i);
+                (s.text_len(l), s.is_single_word(l))
+            },
             &deletes,
         )?;
         let layout = config.effective_layout();
@@ -348,7 +337,7 @@ impl Segment {
             words.freqs.push(freq);
             Ok(())
         })?;
-        if words.len() >> (32 - Variants::FINGERPRINT_BITS) != 0 {
+        if u32::try_from(words.len()).is_err() {
             return Err(Error::input("too many distinct words for one segment"));
         }
         Ok(words)
@@ -392,7 +381,7 @@ mod tests {
                 for &local in vectors.locals() {
                     if index.segment_live(i)[local as usize] {
                         let (code, scale) = vectors.row(local).unwrap();
-                        codes.insert(seg.ids()[local as usize], (code.to_vec(), scale));
+                        codes.insert(seg.id(local as usize), (code.to_vec(), scale));
                     }
                 }
             }

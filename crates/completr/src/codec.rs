@@ -208,12 +208,83 @@ impl<'s> Writer<'s> {
         self.align();
     }
 
+    /// As [`Writer::column`], from `len` elements of `values`.
+    pub(crate) fn column_with<T: Pod>(&mut self, len: usize, values: impl Iterator<Item = T>) {
+        self.align();
+        self.u64(len as u64);
+        for v in values {
+            self.push(as_bytes(std::slice::from_ref(&v)));
+        }
+        self.align();
+    }
+
     /// An element count and the elements, aligned for in-place reads.
     pub(crate) fn column<T: Pod>(&mut self, v: &[T]) {
         self.align();
         self.u64(v.len() as u64);
         self.push(as_bytes(v));
         self.align();
+    }
+}
+
+/// A column of `u64` words filled bit by bit.
+pub(crate) struct BitWriter<'w, 's> {
+    w: &'w mut Writer<'s>,
+    word: u64,
+    filled: u32,
+    left: usize,
+}
+
+impl<'w, 's> BitWriter<'w, 's> {
+    pub(crate) fn new(w: &'w mut Writer<'s>, bits: usize) -> Self {
+        let words = bits.div_ceil(64);
+        w.align();
+        w.u64(words as u64);
+        Self {
+            w,
+            word: 0,
+            filled: 0,
+            left: words,
+        }
+    }
+
+    fn emit(&mut self) {
+        self.w.raw(&self.word.to_le_bytes());
+        self.left -= 1;
+        (self.word, self.filled) = (0, 0);
+    }
+
+    /// `v`, which fits in `width` bits, `width` below 64.
+    pub(crate) fn push(&mut self, v: u64, width: u32) {
+        self.word |= v << self.filled;
+        self.filled += width;
+        if self.filled >= 64 {
+            let spilled = self.filled - 64;
+            self.emit();
+            if spilled > 0 {
+                self.word = v >> (width - spilled);
+                self.filled = spilled;
+            }
+        }
+    }
+
+    pub(crate) fn zeros(&mut self, mut n: usize) {
+        while n > 0 {
+            let take = n.min(64 - self.filled as usize);
+            self.filled += take as u32;
+            n -= take;
+            if self.filled == 64 {
+                self.emit();
+            }
+        }
+    }
+
+    pub(crate) fn finish(mut self) {
+        if self.filled > 0 {
+            self.emit();
+        }
+        debug_assert_eq!(self.left, 0);
+        self.w.align();
     }
 }
 

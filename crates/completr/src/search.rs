@@ -178,7 +178,7 @@ impl Index {
             _ => Vec::new(),
         };
         Suggestion {
-            id: self.ids[doc as usize],
+            id: self.id(doc),
             key: self.doc_key(doc),
             text,
             score,
@@ -213,7 +213,7 @@ impl Index {
         });
         hits.into_iter()
             .map(|(doc, score)| AliasSuggestion {
-                id: self.ids[doc as usize],
+                id: self.id(doc),
                 key: self.doc_key(doc),
                 text: self.doc_text(doc),
                 score,
@@ -270,7 +270,7 @@ impl Index {
         self.weights[b]
             .partial_cmp(&self.weights[a])
             .unwrap_or(Ordering::Equal)
-            .then(self.ids[a].cmp(&self.ids[b]))
+            .then(self.id_cmp(a as u32, b as u32))
     }
 
     fn top_by_weight(&self, mut docs: Vec<u32>, k: usize) -> Vec<u32> {
@@ -330,7 +330,7 @@ impl Index {
                 let mut docs = std::mem::take(&mut lists[0]);
                 docs.sort_unstable();
                 docs.dedup();
-                let mut marks = vec![0u64; self.ids.len().div_ceil(64)];
+                let mut marks = vec![0u64; self.doc_count().div_ceil(64)];
                 for list in &lists[1..] {
                     if docs.is_empty() {
                         break;
@@ -607,7 +607,7 @@ impl Index {
         hits.sort_unstable_by(|a, b| {
             b.1.partial_cmp(&a.1)
                 .unwrap_or(Ordering::Equal)
-                .then(self.ids[a.0 as usize].cmp(&self.ids[b.0 as usize]))
+                .then(self.id_cmp(a.0, b.0))
         });
         hits.truncate(max_results);
         hits
@@ -777,8 +777,8 @@ impl Index {
                 } else {
                     30.0
                 };
-                score -= f64::from(self.text_lens[d]) * 0.1;
-                if single_word_query && self.single_word[d] == 0 && word_bonus.contains(&doc) {
+                score -= f64::from(self.text_len(doc)) * 0.1;
+                if single_word_query && !self.is_single_word(doc) && word_bonus.contains(&doc) {
                     score += 25.0;
                 }
                 score *= multiplier;
@@ -788,8 +788,8 @@ impl Index {
         scored.sort_unstable_by(|a, b| {
             b.0.partial_cmp(&a.0)
                 .unwrap_or(Ordering::Equal)
-                .then(self.text_lens[a.1 as usize].cmp(&self.text_lens[b.1 as usize]))
-                .then(self.ids[a.1 as usize].cmp(&self.ids[b.1 as usize]))
+                .then(self.text_len(a.1).cmp(&self.text_len(b.1)))
+                .then(self.id_cmp(a.1, b.1))
         });
         scored.truncate(max_results);
 

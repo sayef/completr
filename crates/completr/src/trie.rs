@@ -5,7 +5,7 @@
 
 use rayon::slice::ParallelSliceMut;
 
-use crate::codec::{Column, Reader, Writer};
+use crate::codec::{BitWriter, Column, Reader, Writer};
 use crate::Error;
 
 /// Every this many zeros of the LOUDS bits, the position is sampled for `select0`.
@@ -30,7 +30,7 @@ const SELECT_IN_BYTE: [[u8; 8]; 256] = {
 };
 
 /// Position of the `k`-th set bit of `x`, which has more than `k` set bits.
-fn select_in_word(x: u64, mut k: usize) -> usize {
+pub(crate) fn select_in_word(x: u64, mut k: usize) -> usize {
     for byte in 0..8 {
         let b = (x >> (byte * 8)) as u8;
         let count = b.count_ones() as usize;
@@ -218,23 +218,31 @@ impl Packed {
     }
 
     pub(crate) fn write<T: Copy + Into<u64>>(w: &mut Writer, values: &[T]) {
-        let width = values
-            .iter()
-            .map(|&v| 64 - v.into().leading_zeros())
+        Self::write_with(w, values.len(), || values.iter().map(|&v| v.into()));
+    }
+
+    /// Writes `len` values; `values` is called twice, for the width and then the bits.
+    pub(crate) fn write_with<I: Iterator<Item = u64>>(
+        w: &mut Writer,
+        len: usize,
+        values: impl Fn() -> I,
+    ) {
+        let width = values()
+            .map(|v| 64 - v.leading_zeros())
             .max()
             .unwrap_or(0)
             .max(1);
-        let mut words = vec![0u64; (values.len() * width as usize).div_ceil(64)];
-        for (i, v) in values.iter().enumerate() {
-            let v: u64 = (*v).into();
-            let at = i * width as usize;
-            words[at / 64] |= v << (at % 64);
-            if at % 64 + width as usize > 64 {
-                words[at / 64 + 1] |= v >> (64 - at % 64);
+        w.u64(u64::from(width) | (len as u64) << 8);
+        let mut bits = BitWriter::new(w, len * width as usize);
+        for v in values() {
+            if width == 64 {
+                bits.push(v & u64::from(u32::MAX), 32);
+                bits.push(v >> 32, 32);
+            } else {
+                bits.push(v, width);
             }
         }
-        w.u64(u64::from(width) | (values.len() as u64) << 8);
-        w.column(&words);
+        bits.finish();
     }
 
     pub(crate) fn read(r: &mut Reader) -> Result<Self, Error> {
