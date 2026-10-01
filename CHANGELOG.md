@@ -21,6 +21,10 @@ All notable changes to this project are documented here. The format follows
 - Corrected results are ranked by how well the corrected query matches them, and the word being typed is
   corrected when the query as typed matches nothing.
 - Multi-word queries intersect postings through a bitset, roughly halving tail latency.
+- Segment builds stream: `SegmentBuilder` keeps documents in a text arena with a small entry each,
+  sections are written to the file as they are produced (`SegmentBuilder::write`, `Segment.build(path=...)`
+  in Python), and spelling variants are generated without allocating, counted, then placed. Building the
+  same segment takes about half the time and half the peak memory, with identical bytes.
 
 ### Added
 

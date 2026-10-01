@@ -4,15 +4,15 @@ Measured 2026-10-01 on Apple M1 Pro, 10 cores, 17180 MB RAM, macOS 26.7, Python 
 
 | engine | version | index time | peak memory while indexing | on disk | memory after open or index | memory after queries | open / restart to first hit |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| completr | completr 0.1.0 | 717.3 ms | 152 MB | 23 MB | 5 MB | 31 MB | 1.5 ms |
+| completr | completr 0.1.0 | 384.2 ms | 73 MB | 23 MB | 5 MB | 31 MB | 1.5 ms |
 | tantivy | tantivy-py 0.26.2 | 1.06 s | 89 MB | 10 MB | 3 MB | 19 MB | 0.5 ms |
 | typesense | typesense 30.2 | 3.62 s | 280 MB | 40 MB | 281 MB | 222 MB | 3.28 s |
 | typesense-buckets | typesense 30.2 | 3.63 s | 267 MB | 39 MB | 266 MB | 285 MB | 3.28 s |
 | meilisearch | meilisearch 1.54.2 | 1.94 s | 1034 MB | 136 MB | 1023 MB | 854 MB | 219.2 ms |
 | meilisearch-popfirst | meilisearch 1.54.2 | 1.99 s | 1122 MB | 136 MB | 1117 MB | 662 MB | 222.0 ms |
 
-completr with build_threads=8: 325.2 ms.
-completr with UUID string ids: 26 MB on disk, 1.12 s to index.
+completr with build_threads=8: 249.9 ms.
+completr with UUID string ids: 26 MB on disk, 816.3 ms to index.
 
 In-process engines: RSS growth of a fresh process after opening, then after 5,000 prefix queries; peak memory while indexing is the build process's peak RSS above the loaded documents. Servers: RSS of the server process after indexing, then after all queries; peak memory is the server's peak RSS while indexing.
 
@@ -20,25 +20,25 @@ In-process engines: RSS growth of a fresh process after opening, then after 5,00
 
 | set | engine | in-process or round-trip p50 | p90 | p99 | mean | engine-reported p50 | p99 | mean |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| prefix (23292) | completr | 0.172 | 0.487 | 0.889 | 0.228 | - | - | - |
+| prefix (23292) | completr | 0.172 | 0.487 | 0.882 | 0.227 | - | - | - |
 | prefix (23292) | tantivy | 0.431 | 1.417 | 2.730 | 0.618 | - | - | - |
 | prefix (23292) | typesense | 1.379 | 9.080 | 41.300 | 4.030 | 0 | 40 | 2.91 |
 | prefix (23292) | typesense-buckets | 1.456 | 9.188 | 41.755 | 4.093 | 0 | 40 | 2.93 |
 | prefix (23292) | meilisearch | 1.459 | 2.068 | 2.782 | 1.512 | 0 | 1 | 0.34 |
 | prefix (23292) | meilisearch-popfirst | 1.513 | 2.099 | 2.719 | 1.556 | 0 | 2 | 0.41 |
-| typo1 (1000) | completr | 0.165 | 0.515 | 0.844 | 0.238 | - | - | - |
+| typo1 (1000) | completr | 0.163 | 0.517 | 0.852 | 0.237 | - | - | - |
 | typo1 (1000) | tantivy | 0.220 | 0.690 | 2.166 | 0.394 | - | - | - |
 | typo1 (1000) | typesense | 1.085 | 2.181 | 8.705 | 1.573 | 0 | 8 | 0.50 |
 | typo1 (1000) | typesense-buckets | 1.121 | 2.272 | 8.778 | 1.631 | 0 | 8 | 0.51 |
 | typo1 (1000) | meilisearch | 1.260 | 1.714 | 2.344 | 1.307 | 0 | 1 | 0.09 |
 | typo1 (1000) | meilisearch-popfirst | 1.294 | 1.704 | 2.279 | 1.325 | 0 | 1 | 0.12 |
-| typo2 (1000) | completr | 0.136 | 0.563 | 0.899 | 0.231 | - | - | - |
+| typo2 (1000) | completr | 0.144 | 0.589 | 0.984 | 0.242 | - | - | - |
 | typo2 (1000) | tantivy | 0.511 | 0.734 | 1.475 | 0.489 | - | - | - |
 | typo2 (1000) | typesense | 1.257 | 2.394 | 8.837 | 1.712 | 0 | 8 | 0.57 |
 | typo2 (1000) | typesense-buckets | 1.325 | 2.497 | 8.859 | 1.775 | 0 | 8 | 0.59 |
 | typo2 (1000) | meilisearch | 1.298 | 1.749 | 2.277 | 1.339 | 0 | 1 | 0.10 |
 | typo2 (1000) | meilisearch-popfirst | 1.327 | 1.688 | 2.288 | 1.344 | 0 | 1 | 0.10 |
-| multiword (2000) | completr | 0.122 | 0.283 | 0.465 | 0.148 | - | - | - |
+| multiword (2000) | completr | 0.123 | 0.284 | 0.464 | 0.149 | - | - | - |
 | multiword (2000) | tantivy | 0.237 | 0.736 | 1.766 | 0.388 | - | - | - |
 | multiword (2000) | typesense | 0.958 | 2.874 | 15.267 | 1.824 | 0 | 14 | 0.82 |
 | multiword (2000) | typesense-buckets | 0.991 | 2.920 | 13.297 | 1.837 | 0 | 12 | 0.81 |
@@ -49,7 +49,7 @@ In-process engines: RSS growth of a fresh process after opening, then after 5,00
 
 | engine | QPS | clients |
 | --- | --- | --- |
-| completr | 30213 | threads |
+| completr | 30541 | threads |
 | tantivy | 5655 | threads |
 | typesense | 1725 | processes |
 | typesense-buckets | 1680 | processes |
@@ -107,9 +107,9 @@ In-process engines: RSS growth of a fresh process after opening, then after 5,00
 
 | engine | documents | status | index time | peak memory while indexing | on disk | memory after open or index | warm prefix p50 / p99 (ms) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| completr | 25,000 | ok | 220.7 ms | 31 MB | 6 MB | 4 MB | 0.11 / 0.46 |
-| completr | 50,000 | ok | 356.8 ms | 57 MB | 11 MB | 4 MB | 0.14 / 0.67 |
-| completr | 124,440 | ok | 747.2 ms | 151 MB | 23 MB | 6 MB | 0.18 / 1.58 |
+| completr | 25,000 | ok | 105.9 ms | 21 MB | 6 MB | 4 MB | 0.10 / 0.45 |
+| completr | 50,000 | ok | 172.0 ms | 30 MB | 11 MB | 4 MB | 0.14 / 0.67 |
+| completr | 124,440 | ok | 380.5 ms | 75 MB | 23 MB | 5 MB | 0.18 / 1.61 |
 | tantivy | 25,000 | ok | 624.2 ms | 72 MB | 2 MB | 3 MB | 0.22 / 1.17 |
 | tantivy | 50,000 | ok | 667.5 ms | 81 MB | 4 MB | 3 MB | 0.27 / 1.66 |
 | tantivy | 124,440 | ok | 977.4 ms | 88 MB | 10 MB | 3 MB | 0.36 / 2.63 |

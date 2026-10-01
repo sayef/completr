@@ -47,7 +47,8 @@ def du(path):
 class Completr:
     """The installed completr package with default Index settings: one segment, or one per SEGMENT_DOCS documents.
 
-    Segments bound the memory a build needs; an index of several ranks exactly like one."""
+    Documents stream into each segment, which is written to its file as it is built. Segments bound the memory
+    a build needs; an index of several ranks exactly like one."""
     name = "completr"
     in_process = True
     SEGMENT_DOCS = int(os.environ.get("BENCH_COMPLETR_SEGMENT_DOCS", 1_000_000))
@@ -69,10 +70,10 @@ class Completr:
         doc_id = (lambda d: str(uuid.uuid5(uuid.NAMESPACE_URL, f"doc:{d['id']}"))) if self.uuid_ids else (lambda d: d["id"])
         t = time.perf_counter()
         for n, start in enumerate(range(0, len(docs), self.SEGMENT_DOCS)):
-            rows = [{"id": doc_id(d), "text": d["title"], "popularity": weight(d["score"], m)}
-                    for d in docs[start:start + self.SEGMENT_DOCS]]
-            completr.Segment.build(rows, build_threads=self.threads).save(self.dir / f"{n:04}.seg")
-            del rows
+            # Rows stream into the builder, which writes the segment to its file as it goes.
+            rows = ({"id": doc_id(d), "text": d["title"], "popularity": weight(d["score"], m)}
+                    for d in docs[start:start + self.SEGMENT_DOCS])
+            completr.Segment.build(rows, build_threads=self.threads, path=self.dir / f"{n:04}.seg")
         build_s = time.perf_counter() - t
         return {"index_s": build_s, "disk_bytes": sum(os.path.getsize(p) for p in self.paths()),
                 "segments": len(self.paths()), "build_threads": self.threads,

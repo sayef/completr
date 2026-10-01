@@ -121,6 +121,8 @@ and warm prefix latency, then deletes that index data. Results go to `results/NA
 **completr segments.** completr builds one segment per `BENCH_COMPLETR_SEGMENT_DOCS` documents (default
 1,000,000), the way an application indexes a large corpus: an index of several segments ranks exactly like
 one, and each build needs memory for one segment only. Below that size, as for HN, it is a single segment.
+Rows stream from a generator into `Segment.build(..., path=...)`, which writes the segment to its file as it
+is built.
 
 Run it in the foreground on an idle machine: background jobs get a lower scheduling priority, which skews
 timings. Servers are stopped at the end of each run; the index data stays in `bench/.cache/work/`.

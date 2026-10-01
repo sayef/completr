@@ -124,6 +124,9 @@ flowchart LR
   at a time.
 - **Compact dictionaries**: a purpose-built LOUDS trie for keys that are scanned, and
   [`fst`](https://crates.io/crates/fst) for keys that are looked up, chosen per key set.
+- **Streaming builds**: documents stream into a `SegmentBuilder` (`Segment.build(rows, path=...)` in
+  Python), which keeps them compactly and writes each section to the file as it is produced. Indexing the
+  124,440 HN titles takes 0.38 s and peaks at 73 MB.
 - **Override layers**: search a tenant's, a user's or an experiment's index on top of shared data, per
   document id, without copying it.
 - A **short-query cache** for one- to three-character prefixes, carried across index versions.
@@ -370,7 +373,7 @@ Every error derives from `completr.CompletrError`: `ConflictError`, `CorruptionE
 
 | Where | Settings |
 |---|---|
-| `Segment.build` / `Index.from_documents` / `connect(...)` | `min_word_chars`, `max_edit_distance`, `fuzzy_prefix_chars`, `vector_bits`, `compact_keys`, `build_threads` |
+| `Segment.build` / `Index.from_documents` / `connect(...)` | `min_word_chars`, `max_edit_distance`, `fuzzy_prefix_chars`, `vector_bits`, `compact_keys`, `build_threads`; `Segment.build` also `path` |
 | `Index(...)` / `db.open_index(...)` / `db.engine(...)` | `max_score`, `popularity_weight`, `short_query_chars`, `short_query_limit`, `short_query_cache_entries`, `vector_threads` |
 | `complete`, `complete_aliases`, `vector_search` | `limit`, `contexts` |
 | `hybrid_search` | `limit`, `fusion`, `rrf_k`, `semantic_weight`, `candidates`, `contexts` |
