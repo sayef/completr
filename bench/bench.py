@@ -1,8 +1,10 @@
-"""Usage: bench.py samples [--check] | build ENGINE | mem ENGINE | run ENGINE [--variant V] [--throughput]"""
-import argparse, datetime, gc, json, multiprocessing as mp, resource, subprocess, sys, threading, time
+"""Usage: bench.py [--workload W] samples [--check] | build ENGINE | mem ENGINE | run ENGINE [--variant V] [--throughput]
+| scale ENGINE [--variant V] --sizes N,N,..."""
+import argparse, datetime, gc, json, multiprocessing as mp, os, resource, shutil, subprocess, sys, threading, time
 import psutil
-from common import RESULTS, ROOT, SAMPLES, load_docs, load_samples, machine, make_samples, quality, summarize
-from engines import make
+from common import (ROOT, load_docs, load_samples, machine, make_samples, quality, results_dir, samples_path,
+                    summarize, work_dir)
+from engines import MEMORY_LIMIT_BYTES, TIME_LIMIT_S, LimitExceeded, Watch, make
 
 CLIENTS = 8
 TP_SECONDS = 10
@@ -68,26 +70,59 @@ def throughput(e, name, variant, queries):
     return {"clients": CLIENTS, "qps": sum(counts) / TP_SECONDS, "client_model": "threads"}
 
 
+def max_rss():
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)
+
+
+def build(e):
+    """Index time and size, with the build's peak RSS above the RSS of the loaded documents."""
+    docs = load_docs()
+    gc.collect()
+    loaded = psutil.Process().memory_info().rss
+    stats = e.build(docs)
+    stats.update(docs=len(docs), input_rss_bytes=loaded, peak_rss_bytes=max_rss(),
+                 build_rss_bytes=max(0, max_rss() - loaded))
+    return stats
+
+
 def mem(e):
-    """RSS growth of a fresh process from opening the index and running 5,000 prefix queries."""
-    prefixes = load_samples()["latency"]["prefix"][:5000]
+    """RSS growth of a fresh process from opening the index and running 5,000 prefix queries, then warm latency."""
+    prefixes = load_samples()["latency"]["prefix"]
     gc.collect()
     proc = psutil.Process()
     base = proc.memory_info().rss
+    t = time.perf_counter()
     e.open()
+    open_s = time.perf_counter() - t
     after_open = proc.memory_info().rss
-    for q in prefixes:
+    for q in prefixes[:5000]:
         e.search(q)
     gc.collect()
+    after = proc.memory_info().rss
     return {"baseline_rss_bytes": base, "rss_delta_after_open_bytes": after_open - base,
-            "rss_delta_after_5000_queries_bytes": proc.memory_info().rss - base,
-            "peak_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)}
+            "rss_delta_after_5000_queries_bytes": after - base, "peak_rss_bytes": max_rss(), "open_s": open_s,
+            "warm_prefix_latency": latency(e, prefixes[5000:7000])}
 
 
 def sub(cmd, engine, variant=None):
-    """Run a bench.py subcommand in a fresh interpreter and parse its JSON output."""
+    """Run a bench.py subcommand in a fresh interpreter, within the time and memory limits, and parse its output.
+
+    A run past a limit, or one that fails, returns `{"status": ...}` instead."""
     args = [sys.executable, str(ROOT / "bench.py"), cmd, engine] + (["--variant", variant] if variant else [])
-    return json.loads(subprocess.run(args, capture_output=True, text=True, check=True).stdout)
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    status = None
+    with Watch(lambda: psutil.Process(proc.pid).memory_info().rss, proc.kill) as w:
+        try:
+            out, err = proc.communicate(timeout=TIME_LIMIT_S)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+            status = "timeout"
+    if status is None and w.exceeded:
+        status = "memory limit"
+    if status is None and proc.returncode != 0:
+        status = "killed" if proc.returncode < 0 else "failed: " + err.strip().splitlines()[-1][:200]
+    return {"status": status} if status else {"status": "ok", **json.loads(out)}
 
 
 def run(a):
@@ -99,6 +134,7 @@ def run(a):
         if e.in_process:
             if a.engine == "completr":
                 res["build_8_threads"] = sub("build", a.engine, "8")
+                res["build_uuid"] = sub("build", a.engine, "uuid")
             res["build"] = sub("build", a.engine, a.variant)
             res["memory"] = sub("mem", a.engine, a.variant)
             res["open_s"] = e.open()
@@ -129,29 +165,71 @@ def run(a):
             res["rss_after_restart_bytes"] = e.rss()
     finally:
         e.close()
-    RESULTS.mkdir(exist_ok=True)
+    results_dir().mkdir(parents=True, exist_ok=True)
     tag = a.engine + (f"-{a.variant}" if a.variant else "")
-    (RESULTS / f"{tag}.json").write_text(json.dumps(res, indent=1) + "\n")
+    (results_dir() / f"{tag}.json").write_text(json.dumps(res, indent=1) + "\n")
     print(tag, res["version"], json.dumps(res["build"].get("index_s")), file=sys.stderr)
+
+
+def scale(a):
+    """Index, open and query nested subsets of growing size; the index data of each size is deleted after it."""
+    tag = a.engine + (f"-{a.variant}" if a.variant else "")
+    path = results_dir() / f"scale-{tag}.json"
+    res = {"engine": a.engine, "variant": a.variant, "date": datetime.date.today().isoformat(), "machine": machine(),
+           "time_limit_s": TIME_LIMIT_S, "memory_limit_bytes": MEMORY_LIMIT_BYTES, "sizes": []}
+    prefixes = load_samples()["latency"]["prefix"]
+    for size in a.sizes:
+        os.environ["BENCH_SIZE"] = str(size)
+        e = make(a.engine, a.variant)
+        row = {"size": size}
+        if e.in_process:
+            row["build"] = sub("build", a.engine, a.variant)
+            if row["build"]["status"] == "ok":
+                row["memory"] = sub("mem", a.engine, a.variant)
+        else:
+            try:
+                docs = load_docs()
+                row["build"] = {"status": "ok", "docs": len(docs), **e.build(docs)}
+                row["rss_after_index_bytes"] = e.rss()
+                for q in prefixes[:2000]:
+                    e.search(q)
+                row["warm_prefix_latency"] = latency(e, prefixes[2000:4000])
+            except LimitExceeded as x:
+                row["build"] = {"status": str(x)}
+            finally:
+                e.close()
+        res["sizes"].append(row)
+        results_dir().mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(res, indent=1) + "\n")
+        shutil.rmtree(work_dir(), ignore_errors=True)
+        print(tag, size, row["build"]["status"], row["build"].get("index_s"), file=sys.stderr)
+        if row["build"]["status"] != "ok":
+            break
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("cmd", choices=["samples", "build", "mem", "run"])
+    ap.add_argument("--workload", default=os.environ.get("BENCH_WORKLOAD", "hn"))
+    ap.add_argument("cmd", choices=["samples", "build", "mem", "run", "scale"])
     ap.add_argument("engine", nargs="?")
     ap.add_argument("--variant")
     ap.add_argument("--throughput", action="store_true")
     ap.add_argument("--check", action="store_true", help="samples: fail if samples.json differs from a fresh draw")
+    ap.add_argument("--sizes", type=lambda v: [int(x.replace("_", "")) for x in v.split(",")], help="scale: subset sizes")
     a = ap.parse_args()
+    os.environ["BENCH_WORKLOAD"] = a.workload
     if a.cmd == "samples":
-        text = json.dumps(make_samples(load_docs()), indent=1) + "\n"
+        text = json.dumps(make_samples(load_docs(full=True)), indent=1) + "\n"
+        path = samples_path()
         if a.check:
-            sys.exit(0 if SAMPLES.exists() and SAMPLES.read_text() == text else "samples.json does not match the dataset")
-        SAMPLES.write_text(text)
+            sys.exit(0 if path.exists() and path.read_text() == text else f"{path.name} does not match the dataset")
+        path.write_text(text)
     elif a.cmd == "build":
-        print(json.dumps(make(a.engine, a.variant).build(load_docs())))
+        print(json.dumps(build(make(a.engine, a.variant))))
     elif a.cmd == "mem":
         print(json.dumps(mem(make(a.engine, a.variant))))
+    elif a.cmd == "scale":
+        scale(a)
     else:
         run(a)
 

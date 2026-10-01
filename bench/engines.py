@@ -1,8 +1,42 @@
 """One adapter per engine: build(docs) -> stats, open(), search(q) -> (ids, engine_ms or None), close()."""
 import importlib.metadata as md
-import json, os, re, secrets, shutil, subprocess, time
+import json, os, re, secrets, shutil, subprocess, threading, time, uuid
 import psutil, requests
-from common import BIN, LIMIT, WORK, weight
+from common import BIN, LIMIT, weight, work_dir
+
+TIME_LIMIT_S = float(os.environ.get("BENCH_TIME_LIMIT_S", 7200))
+MEMORY_LIMIT_BYTES = int(float(os.environ.get("BENCH_MEMORY_LIMIT_GB", 12)) * 1e9)
+
+
+class LimitExceeded(Exception):
+    """A build ran past the time or memory limit; the message is the status recorded for it."""
+
+
+class Watch:
+    """Samples `rss()` every 100 ms in the background, keeping the peak; past the memory limit it calls `stop()`."""
+
+    def __init__(self, rss, stop):
+        self.rss, self.stop, self.peak, self.exceeded = rss, stop, 0, False
+        self.done = threading.Event()
+        self.thread = threading.Thread(target=self.run, daemon=True)
+
+    def run(self):
+        while not self.done.wait(0.1):
+            try:
+                self.peak = max(self.peak, self.rss())
+            except psutil.Error:
+                continue
+            if self.peak > MEMORY_LIMIT_BYTES and not self.exceeded:
+                self.exceeded = True
+                self.stop()
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.done.set()
+        self.thread.join()
 
 
 def du(path):
@@ -11,30 +45,43 @@ def du(path):
 
 
 class Completr:
-    """The installed completr package: one segment file, opened with default Index settings."""
+    """The installed completr package with default Index settings: one segment, or one per SEGMENT_DOCS documents.
+
+    Segments bound the memory a build needs; an index of several ranks exactly like one."""
     name = "completr"
     in_process = True
+    SEGMENT_DOCS = int(os.environ.get("BENCH_COMPLETR_SEGMENT_DOCS", 1_000_000))
 
-    def __init__(self, threads=1):
+    def __init__(self, threads=1, uuid_ids=False):
         self.version = "completr " + md.version("completr")
-        self.path = WORK / "completr.seg"
+        self.uuid_ids = uuid_ids
+        self.dir = work_dir() / ("completr-uuid" if uuid_ids else "completr")
         self.threads = threads
+
+    def paths(self):
+        return sorted(self.dir.glob("*.seg"))
 
     def build(self, docs):
         import completr
+        shutil.rmtree(self.dir, ignore_errors=True)
+        self.dir.mkdir(parents=True)
         m = max(d["score"] for d in docs)
-        rows = [{"id": d["id"], "text": d["title"], "popularity": weight(d["score"], m)} for d in docs]
-        WORK.mkdir(parents=True, exist_ok=True)
+        doc_id = (lambda d: str(uuid.uuid5(uuid.NAMESPACE_URL, f"doc:{d['id']}"))) if self.uuid_ids else (lambda d: d["id"])
         t = time.perf_counter()
-        seg = completr.Segment.build(rows, build_threads=self.threads)
+        for n, start in enumerate(range(0, len(docs), self.SEGMENT_DOCS)):
+            rows = [{"id": doc_id(d), "text": d["title"], "popularity": weight(d["score"], m)}
+                    for d in docs[start:start + self.SEGMENT_DOCS]]
+            completr.Segment.build(rows, build_threads=self.threads).save(self.dir / f"{n:04}.seg")
+            del rows
         build_s = time.perf_counter() - t
-        seg.save(self.path)
-        return {"index_s": build_s, "disk_bytes": os.path.getsize(self.path), "build_threads": self.threads}
+        return {"index_s": build_s, "disk_bytes": sum(os.path.getsize(p) for p in self.paths()),
+                "segments": len(self.paths()), "build_threads": self.threads,
+                "ids": "uuid strings" if self.uuid_ids else "integers"}
 
     def open(self):
         import completr
         t = time.perf_counter()
-        self.index = completr.Index([completr.Segment.open(self.path)])
+        self.index = completr.Index([completr.Segment.open(p) for p in self.paths()])
         return time.perf_counter() - t
 
     def search(self, q):
@@ -56,7 +103,7 @@ class Tantivy:
 
     def __init__(self):
         self.version = "tantivy-py " + md.version("tantivy")
-        self.path = WORK / "tantivy"
+        self.path = work_dir() / "tantivy"
 
     def _schema(self):
         import tantivy
@@ -133,6 +180,11 @@ class Server:
         self.variant = variant
         self.key = key or secrets.token_hex(16)
         self.s = requests.Session()
+        self.dir = work_dir() / self.name
+
+    def watch(self):
+        """Peak RSS of the server while indexing; past the memory limit the server is killed."""
+        return Watch(self.rss, lambda: self.proc.kill())
 
     def rss(self):
         p = psutil.Process(self.proc.pid)
@@ -170,7 +222,6 @@ class Typesense(Server):
     """Typesense with points as default_sorting_field; variant "buckets" sorts by 10 text-match buckets, then points."""
     name = "typesense"
     base = "http://127.0.0.1:8108"
-    dir = WORK / "typesense"
 
     def __init__(self, variant="default", key=None):
         super().__init__(variant, key)
@@ -192,14 +243,24 @@ class Typesense(Server):
         self.s.post(self.base + "/collections", headers=self.h, json=schema).raise_for_status()
         body = "\n".join(json.dumps({"id": str(d["id"]), "title": d["title"], "score": d["score"]}) for d in docs).encode()
         t = time.perf_counter()
-        r = self.s.post(self.base + "/collections/hn/documents/import?action=create&batch_size=10000", headers=self.h, data=body)
+        with self.watch() as w:
+            try:
+                r = self.s.post(self.base + "/collections/hn/documents/import?action=create&batch_size=10000",
+                                headers=self.h, data=body, timeout=TIME_LIMIT_S)
+            except requests.Timeout:
+                raise LimitExceeded("timeout")
+            except requests.ConnectionError:
+                if w.exceeded:
+                    raise LimitExceeded("memory limit")
+                raise
         r.raise_for_status()
         index_s = time.perf_counter() - t
         bad = [l for l in r.text.splitlines() if '"success":true' not in l]
         assert not bad, bad[:3]
         n = self.s.get(self.base + "/collections/hn", headers=self.h).json()["num_documents"]
         assert n == len(docs), n
-        return {"index_s": index_s, "disk_bytes": du(self.dir), "schema": schema, "search_params": self.params("<q>")}
+        return {"index_s": index_s, "disk_bytes": du(self.dir), "peak_rss_bytes": w.peak, "schema": schema,
+                "search_params": self.params("<q>")}
 
     def params(self, q):
         p = {"q": q, "query_by": "title", "per_page": LIMIT, "include_fields": "id", "highlight_fields": "none"}
@@ -216,7 +277,6 @@ class Meilisearch(Server):
     """Meilisearch with default ranking rules plus score:desc; variant "popfirst" puts score:desc right after typo."""
     name = "meilisearch"
     base = "http://127.0.0.1:7700"
-    dir = WORK / "meili"
 
     def __init__(self, variant="default", key=None):
         super().__init__(variant, key)
@@ -232,8 +292,10 @@ class Meilisearch(Server):
         self.wait_ready(self.base + "/health")
         self.version = "meilisearch " + self.s.get(self.base + "/version", headers=self.h).json()["pkgVersion"]
 
-    def wait_task(self, uid):
+    def wait_task(self, uid, deadline=None):
         while True:
+            if deadline and time.perf_counter() > deadline:
+                raise LimitExceeded("timeout")
             t = self.s.get(f"{self.base}/tasks/{uid}", headers=self.h).json()
             if t["status"] in ("succeeded", "failed", "canceled"):
                 assert t["status"] == "succeeded", t
@@ -251,14 +313,20 @@ class Meilisearch(Server):
         self.wait_task(self.s.patch(self.base + "/indexes/hn/settings", headers=self.h, json=settings).json()["taskUid"])
         body = "\n".join(json.dumps({"id": d["id"], "title": d["title"], "score": d["score"]}) for d in docs).encode()
         t = time.perf_counter()
-        r = self.s.post(self.base + "/indexes/hn/documents", headers={**self.h, "Content-Type": "application/x-ndjson"},
-                        data=body).json()
-        task = self.wait_task(r["taskUid"])
+        with self.watch() as w:
+            try:
+                r = self.s.post(self.base + "/indexes/hn/documents",
+                                headers={**self.h, "Content-Type": "application/x-ndjson"}, data=body).json()
+                task = self.wait_task(r["taskUid"], deadline=t + TIME_LIMIT_S)
+            except requests.ConnectionError:
+                if w.exceeded:
+                    raise LimitExceeded("memory limit")
+                raise
         index_s = time.perf_counter() - t
         n = self.s.get(self.base + "/indexes/hn/stats", headers=self.h).json()["numberOfDocuments"]
         assert n == len(docs), n
         return {"index_s": index_s, "engine_index_duration": task.get("duration"), "disk_bytes": du(self.dir / "data.ms"),
-                "settings": settings}
+                "peak_rss_bytes": w.peak, "settings": settings}
 
     def search(self, q):
         r = self.s.post(self.base + "/indexes/hn/search", headers=self.h,
@@ -268,7 +336,8 @@ class Meilisearch(Server):
 
 def make(name, variant=None, key=None):
     if name == "completr":
-        return Completr(threads=int(variant) if variant else 1)
+        v = variant or ""
+        return Completr(threads=int(v) if v.isdigit() else 1, uuid_ids=v == "uuid")
     if name == "tantivy":
         return Tantivy()
     if name == "typesense":

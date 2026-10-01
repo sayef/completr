@@ -3,7 +3,7 @@
 This harness compares completr with [Typesense](https://typesense.org), [Meilisearch](https://www.meilisearch.com)
 and [tantivy](https://github.com/quickwit-oss/tantivy) (through tantivy-py) as autocompletion engines. Every
 engine indexes the same documents and answers the same queries. The latest results are in
-[`docs/benchmarks.md`](../docs/benchmarks.md) and [`results/results.md`](results/results.md).
+[`docs/benchmarks.md`](../docs/benchmarks.md) and [`results/hn/results.md`](results/hn/results.md).
 
 ## What is measured, and why
 
@@ -12,8 +12,9 @@ really sends and whether the wanted suggestion appears early.
 
 | Measurement | How |
 |---|---|
-| Indexing | Wall time to build the index from all documents; completr also with `build_threads=8` |
-| Size | Bytes on disk of the index (completr: the segment file; others: their data directory) |
+| Indexing | Wall time to build the index from all documents; completr also with `build_threads=8`, and with UUID strings as ids |
+| Indexing memory | Peak RSS while indexing: for in-process engines, of the build process above the loaded documents; for servers, of the server process |
+| Size | Bytes on disk of the index (completr: its segment files; others: their data directory) |
 | Memory | In-process engines: RSS growth of a fresh process after opening the index, then after 5,000 prefix queries. Servers: RSS of the server process after indexing and after all queries |
 | Open or restart | completr and tantivy: time to open the index. Servers: time from a restart to the first hit |
 | Latency | One client, limit 10, after a warm-up. In-process time for completr and tantivy; round-trip time over localhost HTTP and the engine-reported time (`search_time_ms`, `processingTimeMs`) for the servers |
@@ -94,7 +95,7 @@ PYTHON=.venv/bin/python bench/run.sh
 ```
 
 `run.sh` downloads the dataset and binaries into `bench/.cache/` (ignored by git), checks the sample,
-runs every engine, writes `results/<engine>.json` and renders `results/results.md`. A full run takes about
+runs every engine, writes `results/hn/<engine>.json` and renders `results/hn/results.md`. A full run takes about
 30 minutes on an M1 Pro, mostly for the quality sets against the servers. Single steps:
 
 ```sh
@@ -102,8 +103,24 @@ cd bench
 python fetch.py                                       # dataset and binaries
 python bench.py run completr --throughput               # one engine
 python bench.py run typesense --variant buckets       # a variant
+python bench.py scale completr --sizes 25000,50000,124440   # nested subsets of growing size
 python report.py
 ```
+
+**Workloads.** `--workload NAME` (default `hn`) selects the corpus; each has its own samples file, index
+data under `.cache/work/` and results under `results/NAME/`. `report.py --workload NAME` renders them.
+
+**Scale runs.** `scale` indexes seeded, nested subsets of the corpus, so each size contains the previous
+one. For every size it records index time, peak memory while indexing, size on disk, memory after opening
+and warm prefix latency, then deletes that index data. Results go to `results/NAME/scale-<engine>.json`.
+
+**Limits.** Every build runs under a time and a memory limit, `BENCH_TIME_LIMIT_S` (default 7,200) and
+`BENCH_MEMORY_LIMIT_GB` (default 12). A build past either limit is stopped and recorded as `timeout` or
+`memory limit` rather than dropped, and a scale run stops at the first size that fails.
+
+**completr segments.** completr builds one segment per `BENCH_COMPLETR_SEGMENT_DOCS` documents (default
+1,000,000), the way an application indexes a large corpus: an index of several segments ranks exactly like
+one, and each build needs memory for one segment only. Below that size, as for HN, it is a single segment.
 
 Run it in the foreground on an idle machine: background jobs get a lower scheduling priority, which skews
 timings. Servers are stopped at the end of each run; the index data stays in `bench/.cache/work/`.

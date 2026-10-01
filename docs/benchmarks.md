@@ -23,9 +23,10 @@ Results are measured on HN titles fetched from Meilisearch's public benchmark bu
   and under 1 ms at p99, and serves 30,000 queries per second with 8 threads, about 5 times tantivy and 8
   times the fastest server. The servers' round trips include about 1 ms of localhost HTTP, so this
   comparison favours completr.
-- **Footprint.** It builds its index fastest (0.73 s) and opens it in about a millisecond. Its 23 MB
-  segment and 31 MB of resident memory after queries are far less than the servers', and about twice
-  tantivy's 10 MB index and 18 MB, because completr also stores a title-prefix trie and precomputed
+- **Indexing and footprint.** It builds its index fastest (0.72 s, 0.33 s with 8 threads), with a peak of
+  152 MB against 89 MB for tantivy, 280 MB for Typesense and about 1 GB for Meilisearch, and opens it in
+  about a millisecond. Its 23 MB segment and 31 MB of resident memory after queries are far less than the
+  servers', and about twice tantivy's 10 MB index and 19 MB, because completr also stores a title-prefix trie and precomputed
   spelling variants (see [where the bytes go](#where-the-bytes-go)).
 
 ## Capabilities
@@ -56,8 +57,8 @@ ids add their bytes to completr's key column.
 
 | | |
 |---|---|
-| Date | 2026-09-30; completr and tantivy re-measured 2026-10-01 on the same machine |
-| Machine | Apple M1 Pro, 10 cores, 16 GiB RAM, macOS 26.7, Python 3.12.11 (3.13.7 for the re-runs) |
+| Date | 2026-10-01 |
+| Machine | Apple M1 Pro, 10 cores, 16 GiB RAM, macOS 26.7, Python 3.13.7 |
 | Engines | completr 0.1.0; tantivy-py 0.26.2; Typesense 30.2; Meilisearch 1.54.2 (official release binaries) |
 | Corpus | 124,440 deduplicated HN story titles, points as popularity |
 | Queries | Limit 10; the fixed-seed sample in [`bench/samples.json`](https://github.com/sayef/completr/blob/main/bench/samples.json) |
@@ -73,18 +74,44 @@ popularity `log1p(points) / log1p(max points)`.
 
 ## Indexing, size and memory
 
-| Engine | Index time | On disk | Memory after open or index | Memory after queries | Open or restart to first hit |
-|---|---|---|---|---|---|
-| completr | **0.73 s** (0.30 s with 8 threads) | 23 MB | 4 MB | 31 MB | 1.2 ms |
-| tantivy | 1.02 s | **10 MB** | **3 MB** | **18 MB** | **0.6 ms** |
-| Typesense | 3.74 s | 39 MB | 283 MB | 191 MB | 3.37 s |
-| Typesense, buckets | 3.66 s | 39 MB | 268 MB | 157 MB | 3.38 s |
-| Meilisearch | 2.08 s | 136 MB | 811 MB | 136 MB | 223 ms |
-| Meilisearch, popfirst | 1.93 s | 136 MB | 877 MB | 145 MB | 220 ms |
+| Engine | Index time | Peak memory while indexing | On disk | Memory after open or index | Memory after queries | Open or restart to first hit |
+|---|---|---|---|---|---|---|
+| completr | **717.3 ms** (325.2 ms with 8 threads) | 152 MB | 23 MB | 5 MB | 31 MB | 1.5 ms |
+| tantivy | 1.06 s | **89 MB** | **10 MB** | **3 MB** | **19 MB** | **0.5 ms** |
+| Typesense | 3.62 s | 280 MB | 40 MB | 281 MB | 222 MB | 3.28 s |
+| Typesense, buckets | 3.63 s | 267 MB | 39 MB | 266 MB | 285 MB | 3.28 s |
+| Meilisearch | 1.94 s | 1034 MB | 136 MB | 1023 MB | 854 MB | 219 ms |
+| Meilisearch, popfirst | 1.99 s | 1122 MB | 136 MB | 1117 MB | 662 MB | 222 ms |
+
+With UUID strings as ids instead of integers, completr's segment is 26 MB and takes 1.12 s to build.
+
+With UUID strings as ids instead of integers, completr's segment is 26 MB and takes 1.12 s to build.
 
 For completr and tantivy, memory is the RSS growth of a fresh process after opening the index and after
-5,000 prefix queries; for the servers, it is the RSS of the server process after indexing and after all
-queries. completr opens a local segment without reading it whole; `Segment::verify` checks its checksum.
+5,000 prefix queries, and peak memory while indexing is the build process's peak RSS above the loaded
+documents; for the servers, it is the RSS of the server process after indexing and after all queries, and
+its peak RSS while indexing. completr opens a local segment without reading it whole; `Segment::verify` checks its checksum.
+
+### Growing the corpus
+
+The same measurements on seeded, nested subsets of the corpus show how each engine scales. completr builds
+one segment per million documents, so its build memory stays bounded on larger corpora; tantivy flushes a
+segment whenever its 256 MB writer budget fills. Million-document workloads follow in later runs.
+
+| Engine | Documents | Index time | Peak memory while indexing | On disk |
+|---|---|---|---|---|
+| completr | 25,000 | 221 ms | 31 MB | 6 MB |
+| completr | 50,000 | 357 ms | 57 MB | 11 MB |
+| completr | 124,440 | 747 ms | 151 MB | 23 MB |
+| tantivy | 25,000 | 624 ms | 72 MB | 2 MB |
+| tantivy | 50,000 | 667 ms | 81 MB | 4 MB |
+| tantivy | 124,440 | 977 ms | 88 MB | 10 MB |
+| Typesense | 25,000 | 709 ms | 175 MB | 7 MB |
+| Typesense | 50,000 | 1.43 s | 235 MB | 16 MB |
+| Typesense | 124,440 | 3.66 s | 273 MB | 39 MB |
+| Meilisearch | 25,000 | 557 ms | 669 MB | 29 MB |
+| Meilisearch | 50,000 | 853 ms | 819 MB | 53 MB |
+| Meilisearch | 124,440 | 1.86 s | 1137 MB | 136 MB |
 
 ### Where the bytes go
 
@@ -108,30 +135,30 @@ round trip over localhost HTTP and the time the engine reports (whole millisecon
 
 | Set | Engine | p50 | p90 | p99 | Engine-reported p50 | Engine-reported p99 |
 |---|---|---|---|---|---|---|
-| Prefixes as typed (23,292) | completr | **0.17** | **0.49** | **0.88** | - | - |
-| | tantivy | 0.43 | 1.43 | 2.75 | - | - |
-| | Typesense | 1.47 | 9.16 | 41.66 | 0 | 40 |
-| | Typesense, buckets | 1.56 | 9.60 | 41.93 | 0 | 41 |
-| | Meilisearch | 1.89 | 5.97 | 10.00 | 1 | 5 |
-| | Meilisearch, popfirst | 1.59 | 2.30 | 3.01 | 0 | 2 |
-| One-edit typos (1,000) | completr | **0.16** | **0.51** | **0.85** | - | - |
-| | tantivy | 0.22 | 0.70 | 2.14 | - | - |
-| | Typesense | 1.09 | 2.20 | 8.75 | 0 | 8 |
-| | Typesense, buckets | 1.19 | 2.38 | 9.03 | 0 | 8 |
-| | Meilisearch | 1.35 | 1.87 | 4.33 | 0 | 2 |
-| | Meilisearch, popfirst | 1.29 | 1.68 | 2.36 | 0 | 1 |
+| Prefixes as typed (23,292) | completr | **0.17** | **0.49** | **0.89** | - | - |
+|  | tantivy | 0.43 | 1.42 | 2.73 | - | - |
+|  | Typesense | 1.38 | 9.08 | 41.30 | 0 | 40 |
+|  | Typesense, buckets | 1.46 | 9.19 | 41.76 | 0 | 40 |
+|  | Meilisearch | 1.46 | 2.07 | 2.78 | 0 | 1 |
+|  | Meilisearch, popfirst | 1.51 | 2.10 | 2.72 | 0 | 2 |
+| One-edit typos (1,000) | completr | **0.16** | **0.52** | **0.84** | - | - |
+|  | tantivy | 0.22 | 0.69 | 2.17 | - | - |
+|  | Typesense | 1.09 | 2.18 | 8.71 | 0 | 8 |
+|  | Typesense, buckets | 1.12 | 2.27 | 8.78 | 0 | 8 |
+|  | Meilisearch | 1.26 | 1.71 | 2.34 | 0 | 1 |
+|  | Meilisearch, popfirst | 1.29 | 1.70 | 2.28 | 0 | 1 |
 | Two-edit typos (1,000) | completr | **0.14** | **0.56** | **0.90** | - | - |
-| | tantivy | 0.51 | 0.73 | 1.56 | - | - |
-| | Typesense | 1.30 | 2.45 | 8.82 | 0 | 7 |
-| | Typesense, buckets | 1.38 | 2.63 | 8.92 | 0 | 7 |
-| | Meilisearch | 1.42 | 1.94 | 2.61 | 0 | 1 |
-| | Meilisearch, popfirst | 1.28 | 1.59 | 2.05 | 0 | 1 |
-| Multi-word (2,000) | completr | **0.13** | **0.29** | **0.46** | - | - |
-| | tantivy | 0.24 | 0.75 | 1.77 | - | - |
-| | Typesense | 0.95 | 2.88 | 13.55 | 0 | 12 |
-| | Typesense, buckets | 1.01 | 3.03 | 13.43 | 0 | 12 |
-| | Meilisearch | 1.44 | 1.89 | 2.59 | 0 | 1 |
-| | Meilisearch, popfirst | 1.44 | 1.84 | 2.47 | 0 | 1 |
+|  | tantivy | 0.51 | 0.73 | 1.47 | - | - |
+|  | Typesense | 1.26 | 2.39 | 8.84 | 0 | 8 |
+|  | Typesense, buckets | 1.32 | 2.50 | 8.86 | 0 | 8 |
+|  | Meilisearch | 1.30 | 1.75 | 2.28 | 0 | 1 |
+|  | Meilisearch, popfirst | 1.33 | 1.69 | 2.29 | 0 | 1 |
+| Multi-word (2,000) | completr | **0.12** | **0.28** | **0.46** | - | - |
+|  | tantivy | 0.24 | 0.74 | 1.77 | - | - |
+|  | Typesense | 0.96 | 2.87 | 15.27 | 0 | 14 |
+|  | Typesense, buckets | 0.99 | 2.92 | 13.30 | 0 | 12 |
+|  | Meilisearch | 1.39 | 1.83 | 2.42 | 0 | 1 |
+|  | Meilisearch, popfirst | 1.46 | 1.89 | 2.50 | 0 | 1 |
 
 ## Throughput
 
@@ -140,12 +167,12 @@ client processes over HTTP for the servers.
 
 | Engine | Queries per second |
 |---|---|
-| completr | **30,096** |
-| tantivy | 5,718 |
-| Typesense | 1,727 |
-| Typesense, buckets | 1,640 |
-| Meilisearch | 3,955 |
-| Meilisearch, popfirst | 3,757 |
+| completr | **30,213** |
+| tantivy | 5,655 |
+| Typesense | 1,725 |
+| Typesense, buckets | 1,680 |
+| Meilisearch | 3,791 |
+| Meilisearch, popfirst | 3,762 |
 
 ## Quality
 
@@ -160,7 +187,7 @@ are 300 drawn uniformly. The typo'd variants have one edit in the first word of 
 | Engine | MRR | S@1, 3 chars | S@1, 5 chars | S@5, 5 chars | S@1, 8 chars | Keystrokes to top 5 | MRR, typo | S@1, 5 chars, typo | S@1, 8 chars, typo | Reached top 1, typo |
 |---|---|---|---|---|---|---|---|---|---|---|
 | completr | **0.861** | **0.204** | **0.413** | **0.681** | **0.663** | **4.8** | **0.827** | **0.367** | **0.590** | 0.996 |
-| tantivy | 0.804 | 0.096 | 0.230 | 0.437 | 0.460 | 7.0 | 0.734 | 0.197 | 0.352 | 0.959 |
+| tantivy | 0.804 | 0.094 | 0.230 | 0.437 | 0.460 | 7.0 | 0.734 | 0.197 | 0.352 | 0.959 |
 | Typesense | 0.784 | 0.066 | 0.192 | 0.375 | 0.456 | 6.9 | 0.772 | 0.158 | 0.393 | **0.998** |
 | Typesense, buckets | 0.787 | 0.084 | 0.202 | 0.387 | 0.462 | 6.8 | 0.774 | 0.168 | 0.402 | 0.996 |
 | Meilisearch | 0.846 | 0.152 | 0.383 | 0.627 | 0.653 | 5.2 | 0.804 | 0.348 | **0.590** | 0.969 |
@@ -171,14 +198,14 @@ are 300 drawn uniformly. The typo'd variants have one edit in the first word of 
 | Engine | MRR | S@1, 3 chars | S@1, 5 chars | S@5, 5 chars | S@1, 8 chars | Keystrokes to top 5 | MRR, typo | S@1, 5 chars, typo | S@1, 8 chars, typo | Reached top 1, typo |
 |---|---|---|---|---|---|---|---|---|---|---|
 | completr | **0.804** | 0.027 | **0.184** | **0.338** | **0.465** | **7.5** | **0.766** | 0.138 | 0.342 | 0.983 |
-| tantivy | 0.737 | 0.007 | 0.077 | 0.137 | 0.234 | 10.2 | 0.683 | 0.070 | 0.195 | 0.943 |
+| tantivy | 0.738 | 0.007 | 0.080 | 0.137 | 0.234 | 10.2 | 0.683 | 0.074 | 0.191 | 0.943 |
 | Typesense | 0.755 | 0.017 | 0.084 | 0.157 | 0.278 | 9.5 | 0.744 | 0.077 | 0.208 | **0.997** |
 | Typesense, buckets | 0.754 | 0.017 | 0.087 | 0.157 | 0.268 | 9.6 | 0.743 | 0.081 | 0.201 | **0.997** |
 | Meilisearch | 0.798 | **0.030** | 0.181 | 0.331 | 0.438 | 7.6 | 0.762 | **0.144** | **0.369** | 0.950 |
 | Meilisearch, popfirst | 0.731 | 0.013 | 0.070 | 0.134 | 0.214 | 10.2 | 0.699 | 0.064 | 0.185 | 0.936 |
 
-All metrics, including S@10 and characters saved, are in [`bench/results/results.md`](https://github.com/sayef/completr/blob/main/bench/results/results.md),
-and the raw numbers in [`bench/results/`](https://github.com/sayef/completr/tree/main/bench/results).
+All metrics, including S@10 and characters saved, are in [`bench/results/hn/results.md`](https://github.com/sayef/completr/blob/main/bench/results/hn/results.md),
+and the raw numbers in [`bench/results/hn/`](https://github.com/sayef/completr/tree/main/bench/results/hn).
 
 ## Caveats
 
@@ -192,7 +219,9 @@ and the raw numbers in [`bench/results/`](https://github.com/sayef/completr/tree
   completr for over 98%.
 - **Footprint against tantivy.** completr's segment is about twice the size of tantivy's index and uses
   more memory after queries, because it stores hashed spelling variants and a title trie for prefix scans
-  (see [where the bytes go](#where-the-bytes-go)). It opens in 1.2 ms against 0.6 ms for tantivy.
+  (see [where the bytes go](#where-the-bytes-go)). It opens in 1.5 ms against 0.5 ms for tantivy, and its
+  build memory grows with the segment, about 1.2 KB per document, where tantivy's is capped by its writer
+  budget.
 - **tantivy's merge.** tantivy merges segments in the background, so its size varies between runs (10 to
   11 MB here).
 - **Recommended settings, not tuning.** Each engine runs with the configuration its documentation
