@@ -54,6 +54,63 @@ pub(crate) fn is_variant(
     rest.peek().is_none() && len - kept <= max_distance as usize && (kept > 0 || len == 0)
 }
 
+/// Calls `f` with each of `word`'s [`delete_variants`], without allocating; a variant reachable
+/// in several ways comes several times.
+pub(crate) fn for_each_delete_variant(
+    word: &str,
+    max_distance: u8,
+    prefix_length: usize,
+    mut f: impl FnMut(&str),
+) {
+    let mut chars = [char::default(); 64];
+    let mut n = 0;
+    for c in word.chars().take(prefix_length) {
+        if n == chars.len() {
+            return delete_variants(word, max_distance, prefix_length)
+                .iter()
+                .for_each(|v| f(v));
+        }
+        chars[n] = c;
+        n += 1;
+    }
+    let mut buf = String::with_capacity(n * 4);
+    // Deleting from a single char is not allowed, so at least one char stays.
+    let most = (max_distance as usize).min(n.saturating_sub(1));
+    let mut removed = [0usize; 8];
+    fn visit(
+        chars: &[char],
+        removed: &mut [usize],
+        depth: usize,
+        start: usize,
+        most: usize,
+        buf: &mut String,
+        f: &mut impl FnMut(&str),
+    ) {
+        buf.clear();
+        let mut skip = removed[..depth].iter().peekable();
+        for (i, &c) in chars.iter().enumerate() {
+            if skip.peek() == Some(&&i) {
+                skip.next();
+            } else {
+                buf.push(c);
+            }
+        }
+        f(buf);
+        if depth < most {
+            for i in start..chars.len() {
+                removed[depth] = i;
+                visit(chars, removed, depth + 1, i + 1, most, buf, f);
+            }
+        }
+    }
+    if most > removed.len() {
+        return delete_variants(word, max_distance, prefix_length)
+            .iter()
+            .for_each(|v| f(v));
+    }
+    visit(&chars[..n], &mut removed, 0, 0, most, &mut buf, &mut f);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,6 +157,31 @@ mod tests {
                     for v in &variants {
                         assert!(is_variant(v, q, d, pc), "{v:?} {q:?} {d} {pc}");
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn variant_generator_matches_variant_sets() {
+        for w in [
+            "",
+            "a",
+            "ab",
+            "aab",
+            "abc",
+            "kitten",
+            "machinery",
+            "ärzte",
+            "日本語",
+        ] {
+            for d in 0..4 {
+                for pc in [2, 7] {
+                    let mut got = FxHashSet::default();
+                    for_each_delete_variant(w, d, pc, |v| {
+                        got.insert(v.to_owned());
+                    });
+                    assert_eq!(got, delete_variants(w, d, pc), "{w:?} {d} {pc}");
                 }
             }
         }

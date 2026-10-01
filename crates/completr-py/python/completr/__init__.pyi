@@ -116,6 +116,7 @@ class Segment:
         vector_bits: int = 4,
         compact_keys: bool = False,
         build_threads: int = 1,
+        path: str | PathLike[str] | None = None,
     ) -> Segment: ...
     @property
     def vector_dim(self) -> int | None: ...
