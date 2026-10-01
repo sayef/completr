@@ -118,11 +118,10 @@ and warm prefix latency, then deletes that index data. Results go to `results/NA
 `BENCH_MEMORY_LIMIT_GB` (default 12). A build past either limit is stopped and recorded as `timeout` or
 `memory limit` rather than dropped, and a scale run stops at the first size that fails.
 
-**completr segments.** completr builds one segment per `BENCH_COMPLETR_SEGMENT_DOCS` documents (default
-1,000,000), the way an application indexes a large corpus: an index of several segments ranks exactly like
-one, and each build needs memory for one segment only. Below that size, as for HN, it is a single segment.
-Rows stream from a generator into `Segment.build(..., path=...)`, which writes the segment to its file as it
-is built.
+**completr segments.** completr indexes through a `SegmentWriter` with a memory budget of
+`BENCH_COMPLETR_MEMORY_BUDGET_MB` (default 256, as tantivy's writer here): rows stream in from a generator,
+and the writer starts a new segment file whenever building more would pass the budget. An index of several
+segments ranks exactly like one. HN fits in a single segment.
 
 Run it in the foreground on an idle machine: background jobs get a lower scheduling priority, which skews
 timings. Servers are stopped at the end of each run; the index data stays in `bench/.cache/work/`.

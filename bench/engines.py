@@ -45,13 +45,14 @@ def du(path):
 
 
 class Completr:
-    """The installed completr package with default Index settings: one segment, or one per SEGMENT_DOCS documents.
+    """The installed completr package with default Index settings, built through a SegmentWriter.
 
-    Documents stream into each segment, which is written to its file as it is built. Segments bound the memory
-    a build needs; an index of several ranks exactly like one."""
+    Documents stream into the writer, which writes a segment file whenever building more would pass its
+    memory budget, as tantivy's writer flushes a segment when its budget fills. An index of several segments
+    ranks exactly like one."""
     name = "completr"
     in_process = True
-    SEGMENT_DOCS = int(os.environ.get("BENCH_COMPLETR_SEGMENT_DOCS", 1_000_000))
+    MEMORY_BUDGET = int(float(os.environ.get("BENCH_COMPLETR_MEMORY_BUDGET_MB", 256)) * (1 << 20))
 
     def __init__(self, threads=1, uuid_ids=False):
         self.version = "completr " + md.version("completr")
@@ -69,14 +70,12 @@ class Completr:
         m = max(d["score"] for d in docs)
         doc_id = (lambda d: str(uuid.uuid5(uuid.NAMESPACE_URL, f"doc:{d['id']}"))) if self.uuid_ids else (lambda d: d["id"])
         t = time.perf_counter()
-        for n, start in enumerate(range(0, len(docs), self.SEGMENT_DOCS)):
-            # Rows stream into the builder, which writes the segment to its file as it goes.
-            rows = ({"id": doc_id(d), "text": d["title"], "popularity": weight(d["score"], m)}
-                    for d in docs[start:start + self.SEGMENT_DOCS])
-            completr.Segment.build(rows, build_threads=self.threads, path=self.dir / f"{n:04}.seg")
+        writer = completr.SegmentWriter(self.dir, memory_budget=self.MEMORY_BUDGET, build_threads=self.threads)
+        writer.add({"id": doc_id(d), "text": d["title"], "popularity": weight(d["score"], m)} for d in docs)
+        writer.finish()
         build_s = time.perf_counter() - t
         return {"index_s": build_s, "disk_bytes": sum(os.path.getsize(p) for p in self.paths()),
-                "segments": len(self.paths()), "build_threads": self.threads,
+                "segments": len(self.paths()), "memory_budget_bytes": self.MEMORY_BUDGET, "build_threads": self.threads,
                 "ids": "uuid strings" if self.uuid_ids else "integers"}
 
     def open(self):

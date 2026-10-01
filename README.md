@@ -126,7 +126,10 @@ flowchart LR
   [`fst`](https://crates.io/crates/fst) for keys that are looked up, chosen per key set.
 - **Streaming builds**: documents stream into a `SegmentBuilder` (`Segment.build(rows, path=...)` in
   Python), which keeps them compactly and writes each section to the file as it is produced. Indexing the
-  124,440 HN titles takes 0.38 s and peaks at 73 MB.
+  124,440 HN titles takes 0.4 s and peaks at 73 MB.
+- **Bounded indexing memory**: a `SegmentWriter` starts a new segment file whenever building the current
+  one would pass its memory budget (256 MB by default), so any corpus indexes in bounded memory: 4 million
+  titles in 9 s at about 300 MB. The segments rank exactly like one.
 - **Override layers**: search a tenant's, a user's or an experiment's index on top of shared data, per
   document id, without copying it.
 - A **short-query cache** for one- to three-character prefixes, carried across index versions.
@@ -391,7 +394,7 @@ In Rust, `BuildOptions`, `IndexOptions`, `SearchOptions`, `HybridOptions`, `Comp
 wanted title best of the engines tested, both while typing cleanly (MRR 0.861, against 0.846 for
 Meilisearch, 0.804 for tantivy and 0.784 for Typesense) and with a typo (0.827, against 0.804 for
 Meilisearch). In process it answers in 0.17 ms at the median and under 1 ms at p99 for every query set,
-and serves 30,000 queries per second on 8 threads. Its 23 MB segment opens in about a millisecond.
+and serves 28,000 queries per second on 8 threads. Its 23 MB segment opens in about a millisecond.
 Full tables, a capability comparison, where the bytes go, settings and caveats are in
 [docs/benchmarks.md](docs/benchmarks.md); the harness is in [`bench/`](bench/).
 

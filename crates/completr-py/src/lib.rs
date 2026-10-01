@@ -5,10 +5,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use pyo3::buffer::PyBuffer;
-use pyo3::exceptions::PyTypeError;
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyBytes, PyDict, PyString, PyType};
+use pyo3::types::{PyBytes, PyDict, PyList, PyString, PyType};
 
 fn error_class(py: Python<'_>, name: &str) -> PyResult<Py<PyType>> {
     static MODULE: PyOnceLock<Py<PyModule>> = PyOnceLock::new();
@@ -429,6 +429,67 @@ impl Document {
             .filter(|a| a.kind == kind)
             .map(|a| a.text.clone())
             .collect()
+    }
+}
+
+/// Writes documents into segment files in a directory, starting a new segment whenever building
+/// the current one would take more than `memory_budget` bytes.
+#[pyclass(module = "completr")]
+struct SegmentWriter(Option<completr_rs::SegmentWriter>);
+
+#[pymethods]
+impl SegmentWriter {
+    #[new]
+    #[pyo3(signature = (
+        directory, *, memory_budget = completr_rs::SegmentWriter::DEFAULT_MEMORY_BUDGET,
+        min_word_chars = 3, max_edit_distance = 2, fuzzy_prefix_chars = 7, vector_bits = 4, compact_keys = false, build_threads = 1,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        directory: PathBuf,
+        memory_budget: usize,
+        min_word_chars: u8,
+        max_edit_distance: u8,
+        fuzzy_prefix_chars: u8,
+        vector_bits: u8,
+        compact_keys: bool,
+        build_threads: usize,
+    ) -> PyResult<Self> {
+        let options = build_options(
+            min_word_chars,
+            max_edit_distance,
+            fuzzy_prefix_chars,
+            vector_bits,
+            compact_keys,
+            build_threads,
+        );
+        let writer = completr_rs::SegmentWriter::new(options, directory)
+            .map_err(to_py_err)?
+            .memory_budget(memory_budget);
+        Ok(Self(Some(writer)))
+    }
+
+    /// Adds one document, or every document of an iterable or a table.
+    fn add(&mut self, py: Python<'_>, documents: &Bound<'_, PyAny>) -> PyResult<()> {
+        let writer = self
+            .0
+            .as_mut()
+            .ok_or_else(|| PyValueError::new_err("the writer is finished"))?;
+        if documents.cast::<PyDict>().is_ok() || documents.cast::<Document>().is_ok() {
+            let one = PyList::new(py, [documents])?;
+            return for_each_document(py, one.as_any(), |doc| writer.add(doc).map_err(to_py_err));
+        }
+        for_each_document(py, documents, |doc| writer.add(doc).map_err(to_py_err))
+    }
+
+    /// Writes what is left and returns every segment written, in order.
+    fn finish(&mut self, py: Python<'_>) -> PyResult<Vec<Segment>> {
+        let writer = self
+            .0
+            .take()
+            .ok_or_else(|| PyValueError::new_err("the writer is finished"))?;
+        let segments = py.detach(|| writer.finish()).map_err(to_py_err)?;
+        Ok(segments.into_iter().map(|s| Segment(Arc::new(s))).collect())
     }
 }
 
@@ -1679,6 +1740,7 @@ fn completr(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_class::<Document>()?;
     m.add_class::<Segment>()?;
+    m.add_class::<SegmentWriter>()?;
     m.add_class::<Index>()?;
     m.add_class::<Engine>()?;
     m.add_class::<Store>()?;

@@ -84,10 +84,13 @@ runs in a fixed order, each step freeing what the next does not need:
    no intermediate list exists. A section's bytes pass to the output a megabyte at a time.
 
 With `SegmentBuilder::write`, the output is the file itself, hashed as it is written and then mapped, so the
-encoded segment is never held in memory. The bytes are the same as those of an in-memory build. The same
-approach bounds memory in tantivy (a segment is flushed when its writer's memory budget fills) and
-Meilisearch (sorted chunks spill to disk), which completr follows by building large corpora as several
-segments that rank exactly like one.
+encoded segment is never held in memory. The bytes are the same as those of an in-memory build.
+
+`SegmentWriter` bounds memory for any corpus size. `SegmentBuilder::memory_bytes` estimates the peak of
+building what is staged, from its text bytes and document count with factors measured on short names,
+titles and paragraphs, erring high; the writer starts a new segment file once the estimate reaches its
+budget. tantivy bounds its indexing the same way, flushing a segment when its writer's memory budget fills,
+and Meilisearch by spilling sorted chunks to disk. The segments rank exactly like one.
 
 ## Query path
 

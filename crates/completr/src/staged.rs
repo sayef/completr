@@ -35,6 +35,9 @@ pub(crate) struct DocRef<'a> {
 pub(crate) struct Staged {
     text: Vec<u8>,
     entries: Vec<Entry>,
+    /// Bytes of keys, aliases and contexts, and vector elements, for the memory estimate.
+    extra_bytes: usize,
+    vector_floats: usize,
     /// Entries by id once finished, the last added of each id.
     order: Vec<u32>,
 }
@@ -58,6 +61,10 @@ impl Staged {
             return Err(Error::input("texts over 4 GiB in one segment"));
         }
         self.text.extend_from_slice(doc.text.as_bytes());
+        self.extra_bytes += doc.key.as_ref().map_or(0, String::len)
+            + doc.aliases.iter().map(|a| a.text.len() + 8).sum::<usize>()
+            + doc.contexts.iter().map(|c| c.len() + 8).sum::<usize>();
+        self.vector_floats += doc.vector.as_ref().map_or(0, Vec::len);
         let plain = doc.key.is_none()
             && doc.aliases.is_empty()
             && doc.contexts.is_empty()
@@ -77,6 +84,20 @@ impl Staged {
             }),
         });
         Ok(())
+    }
+
+    /// Documents added so far, duplicates included.
+    pub(crate) fn added(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// A conservative estimate of the peak memory of building these documents, measured on short
+    /// names, titles and paragraphs: the build needs about 6 bytes per text byte and 120 per document.
+    pub(crate) fn build_memory(&self) -> usize {
+        self.text.len() * 15 / 2
+            + self.entries.len() * 150
+            + self.extra_bytes * 8
+            + self.vector_floats * 12
     }
 
     /// Orders the documents by id, keeping the last added of each id; ids whose copies carry
