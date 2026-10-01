@@ -16,31 +16,32 @@
    "size": 25000,
    "build": {
     "status": "ok",
-    "index_s": 0.10586529190186411,
+    "index_s": 0.10844508395530283,
     "disk_bytes": 6076096,
     "segments": 1,
+    "memory_budget_bytes": 268435456,
     "build_threads": 1,
     "ids": "integers",
     "docs": 25000,
-    "input_rss_bytes": 120815616,
-    "peak_rss_bytes": 141656064,
-    "build_rss_bytes": 20840448
+    "input_rss_bytes": 120406016,
+    "peak_rss_bytes": 143196160,
+    "build_rss_bytes": 22790144
    },
    "memory": {
     "status": "ok",
-    "baseline_rss_bytes": 42483712,
-    "rss_delta_after_open_bytes": 3506176,
-    "rss_delta_after_5000_queries_bytes": 11124736,
-    "peak_rss_bytes": 53608448,
-    "open_s": 0.010596583015285432,
+    "baseline_rss_bytes": 42090496,
+    "rss_delta_after_open_bytes": 3440640,
+    "rss_delta_after_5000_queries_bytes": 12058624,
+    "peak_rss_bytes": 54149120,
+    "open_s": 0.010714625008404255,
     "warm_prefix_latency": {
      "in_process_ms": {
       "n": 2000,
-      "p50": 0.10466703679412603,
-      "p90": 0.2794580068439245,
-      "p99": 0.45175000559538603,
-      "mean": 0.13533605256816372,
-      "max": 0.7277500117197633
+      "p50": 0.10687496978789568,
+      "p90": 0.28325000312179327,
+      "p99": 0.45229203533381224,
+      "mean": 0.13678310660179704,
+      "max": 0.7360420422628522
      }
     }
    }
@@ -49,31 +50,32 @@
    "size": 50000,
    "build": {
     "status": "ok",
-    "index_s": 0.17200520902406424,
+    "index_s": 0.1766723330365494,
     "disk_bytes": 10773472,
     "segments": 1,
+    "memory_budget_bytes": 268435456,
     "build_threads": 1,
     "ids": "integers",
     "docs": 50000,
-    "input_rss_bytes": 120258560,
-    "peak_rss_bytes": 150028288,
-    "build_rss_bytes": 29769728
+    "input_rss_bytes": 121405440,
+    "peak_rss_bytes": 153862144,
+    "build_rss_bytes": 32456704
    },
    "memory": {
     "status": "ok",
-    "baseline_rss_bytes": 42369024,
-    "rss_delta_after_open_bytes": 3932160,
-    "rss_delta_after_5000_queries_bytes": 16531456,
-    "peak_rss_bytes": 58900480,
-    "open_s": 0.011208083014935255,
+    "baseline_rss_bytes": 42074112,
+    "rss_delta_after_open_bytes": 3883008,
+    "rss_delta_after_5000_queries_bytes": 17678336,
+    "peak_rss_bytes": 59752448,
+    "open_s": 0.011209041927941144,
     "warm_prefix_latency": {
      "in_process_ms": {
       "n": 2000,
-      "p50": 0.1424590591341257,
-      "p90": 0.4052079748362303,
-      "p99": 0.6671660812571645,
-      "mean": 0.187023842765484,
-      "max": 1.3908749679103494
+      "p50": 0.1568750012665987,
+      "p90": 0.46558293979614973,
+      "p99": 0.935249961912632,
+      "mean": 0.216691427747719,
+      "max": 1.8980419263243675
      }
     }
    }
@@ -82,31 +84,32 @@
    "size": 124440,
    "build": {
     "status": "ok",
-    "index_s": 0.3804590000072494,
+    "index_s": 0.4242932499619201,
     "disk_bytes": 23427168,
     "segments": 1,
+    "memory_budget_bytes": 268435456,
     "build_threads": 1,
     "ids": "integers",
     "docs": 124440,
-    "input_rss_bytes": 119078912,
-    "peak_rss_bytes": 194183168,
-    "build_rss_bytes": 75104256
+    "input_rss_bytes": 121044992,
+    "peak_rss_bytes": 195641344,
+    "build_rss_bytes": 74596352
    },
    "memory": {
     "status": "ok",
-    "baseline_rss_bytes": 42156032,
-    "rss_delta_after_open_bytes": 4849664,
-    "rss_delta_after_5000_queries_bytes": 31408128,
-    "peak_rss_bytes": 73564160,
-    "open_s": 0.011686499929055572,
+    "baseline_rss_bytes": 42303488,
+    "rss_delta_after_open_bytes": 4866048,
+    "rss_delta_after_5000_queries_bytes": 34734080,
+    "peak_rss_bytes": 77037568,
+    "open_s": 0.013482874957844615,
     "warm_prefix_latency": {
      "in_process_ms": {
       "n": 2000,
-      "p50": 0.18341606482863426,
-      "p90": 0.5677919834852219,
-      "p99": 1.6065420350059867,
-      "mean": 0.26090166630456224,
-      "max": 2.6158340042456985
+      "p50": 0.1847500680014491,
+      "p90": 0.5688329692929983,
+      "p99": 1.5912499511614442,
+      "mean": 0.2625408653402701,
+      "max": 2.6708340737968683
      }
     }
    }

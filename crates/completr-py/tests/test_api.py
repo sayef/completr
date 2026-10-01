@@ -110,3 +110,21 @@ def test_async_api(tmp_path):
         return engine.complete("wirel", ["products"])[0].id
 
     assert asyncio.run(main()) == "sku-kb"
+
+
+def test_streamed_and_budgeted_builds(tmp_path):
+    rows = [{"id": i, "text": f"item {i} alpha{i % 7}", "popularity": (i % 10) / 10} for i in range(3000)]
+    built = completr.Segment.build(rows)
+    written = completr.Segment.build(iter(rows), path=tmp_path / "one.seg")
+    assert written.to_bytes() == built.to_bytes()
+
+    writer = completr.SegmentWriter(tmp_path / "many", memory_budget=200_000)
+    writer.add(CATALOG[0])
+    writer.add(iter(rows))
+    segments = writer.finish()
+    assert len(segments) > 2
+    split, one = Index(segments), Index([completr.Segment.build([CATALOG[0], *rows])])
+    for q in ["item 12", "alpha3", "machine", "itme"]:
+        assert [s.id for s in split.complete(q, 10)] == [s.id for s in one.complete(q, 10)]
+    with pytest.raises(ValueError):
+        writer.add(rows[0])

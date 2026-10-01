@@ -68,7 +68,7 @@ pub use index::{Index, IndexOptions};
 pub use search::{AliasSuggestion, MatchKind, SearchOptions, Suggestion};
 #[doc(hidden)]
 pub use segment::Layout;
-pub use segment::{BuildOptions, Segment, SegmentBuilder};
+pub use segment::{BuildOptions, Segment, SegmentBuilder, SegmentWriter};
 #[cfg(feature = "store")]
 pub use store::{block_on, BlockingStore, ObjectInfo, Store};
 

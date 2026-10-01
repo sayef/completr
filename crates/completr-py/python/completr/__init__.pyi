@@ -103,6 +103,23 @@ class AliasSuggestion:
     score: float
     layer: str | None
 
+class SegmentWriter:
+    """Writes segment files into `directory`, a new one whenever building would exceed `memory_budget` bytes."""
+    def __init__(
+        self,
+        directory: str | PathLike[str],
+        *,
+        memory_budget: int = ...,
+        min_word_chars: int = 3,
+        max_edit_distance: int = 2,
+        fuzzy_prefix_chars: int = 7,
+        vector_bits: int = 4,
+        compact_keys: bool = False,
+        build_threads: int = 1,
+    ) -> None: ...
+    def add(self, documents: DocumentDict | Document | Documents) -> None: ...
+    def finish(self) -> list[Segment]: ...
+
 class Segment:
     @staticmethod
     def build(

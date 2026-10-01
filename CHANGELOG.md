@@ -25,6 +25,9 @@ All notable changes to this project are documented here. The format follows
   sections are written to the file as they are produced (`SegmentBuilder::write`, `Segment.build(path=...)`
   in Python), and spelling variants are generated without allocating, counted, then placed. Building the
   same segment takes about half the time and half the peak memory, with identical bytes.
+- `SegmentWriter` (also in Python) writes a directory of segment files, starting a new one whenever the
+  build would pass its memory budget, 256 MB by default; `SegmentBuilder::memory_bytes` estimates a build's
+  peak memory.
 
 ### Added
 

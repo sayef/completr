@@ -1376,6 +1376,78 @@ impl SegmentBuilder {
             Some(path.as_ref()),
         )
     }
+
+    /// Documents added, duplicates included.
+    pub fn len(&self) -> usize {
+        self.staged.added()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// An estimate of the peak memory that building now would take, on the high side.
+    pub fn memory_bytes(&self) -> usize {
+        self.staged.build_memory()
+    }
+}
+
+/// Writes documents into segment files in a directory, starting a new segment before the build of
+/// the current one would need more than the memory budget, as tantivy flushes a segment when its
+/// writer's budget fills. An index of the segments ranks exactly like one segment, and of several
+/// documents with one id, the last added wins.
+pub struct SegmentWriter {
+    config: BuildOptions,
+    dir: std::path::PathBuf,
+    memory_budget: usize,
+    builder: SegmentBuilder,
+    segments: Vec<Segment>,
+}
+
+impl SegmentWriter {
+    pub const DEFAULT_MEMORY_BUDGET: usize = 256 << 20;
+
+    /// Writes into `dir`, created if missing, as `000000.seg`, `000001.seg` and so on.
+    pub fn new(config: BuildOptions, dir: impl AsRef<Path>) -> Result<Self, Error> {
+        std::fs::create_dir_all(dir.as_ref())?;
+        Ok(Self {
+            config,
+            dir: dir.as_ref().to_owned(),
+            memory_budget: Self::DEFAULT_MEMORY_BUDGET,
+            builder: SegmentBuilder::new(config),
+            segments: Vec::new(),
+        })
+    }
+
+    /// Peak memory, in bytes, that building one segment may take.
+    pub fn memory_budget(mut self, bytes: usize) -> Self {
+        self.memory_budget = bytes;
+        self
+    }
+
+    pub fn add(&mut self, document: Document) -> Result<(), Error> {
+        if !self.builder.is_empty() && self.builder.memory_bytes() >= self.memory_budget {
+            self.flush()?;
+        }
+        self.builder.add(document)
+    }
+
+    /// Writes the documents added since the last flush as a segment.
+    pub fn flush(&mut self) -> Result<(), Error> {
+        if self.builder.is_empty() {
+            return Ok(());
+        }
+        let builder = std::mem::replace(&mut self.builder, SegmentBuilder::new(self.config));
+        let path = self.dir.join(format!("{:06}.seg", self.segments.len()));
+        self.segments.push(builder.write(path)?);
+        Ok(())
+    }
+
+    /// The segments written, in order.
+    pub fn finish(mut self) -> Result<Vec<Segment>, Error> {
+        self.flush()?;
+        Ok(self.segments)
+    }
 }
 
 /// Where a segment's bytes go as they are produced, followed by their checksum.
