@@ -1,0 +1,118 @@
+{
+ "engine": "completr",
+ "variant": null,
+ "date": "2026-10-01",
+ "machine": {
+  "cpu": "Apple M1 Pro",
+  "cores": 10,
+  "memory_bytes": 17179869184,
+  "os": "macOS 26.7",
+  "python": "3.13.7"
+ },
+ "time_limit_s": 7200.0,
+ "memory_limit_bytes": 10000000000,
+ "sizes": [
+  {
+   "size": 1000000,
+   "build": {
+    "status": "ok",
+    "index_s": 3.698295708047226,
+    "disk_bytes": 119221080,
+    "segments": 2,
+    "memory_budget_bytes": 268435456,
+    "build_threads": 1,
+    "ids": "integers",
+    "docs": 1000000,
+    "input_rss_bytes": 3429567320,
+    "peak_rss_bytes": 3677260920,
+    "build_rss_bytes": 247693600
+   },
+   "memory": {
+    "status": "ok",
+    "baseline_rss_bytes": 27165128,
+    "rss_delta_after_open_bytes": 32407672,
+    "rss_delta_after_5000_queries_bytes": 25313424,
+    "peak_rss_bytes": 194789376,
+    "open_s": 0.04222679208032787,
+    "warm_prefix_latency": {
+     "in_process_ms": {
+      "n": 2000,
+      "p50": 0.272250035777688,
+      "p90": 1.769582973793149,
+      "p99": 4.626207984983921,
+      "mean": 0.6342086489894427,
+      "max": 8.598290965892375
+     }
+    }
+   }
+  },
+  {
+   "size": 2000000,
+   "build": {
+    "status": "ok",
+    "index_s": 6.811616624938324,
+    "disk_bytes": 232103232,
+    "segments": 3,
+    "memory_budget_bytes": 268435456,
+    "build_threads": 1,
+    "ids": "integers",
+    "docs": 2000000,
+    "input_rss_bytes": 3457698672,
+    "peak_rss_bytes": 3733327112,
+    "build_rss_bytes": 275628440
+   },
+   "memory": {
+    "status": "ok",
+    "baseline_rss_bytes": 27230664,
+    "rss_delta_after_open_bytes": 179388752,
+    "rss_delta_after_5000_queries_bytes": 185074024,
+    "peak_rss_bytes": 458129408,
+    "open_s": 0.13221029203850776,
+    "warm_prefix_latency": {
+     "in_process_ms": {
+      "n": 2000,
+      "p50": 0.40199991781264544,
+      "p90": 2.972249989397824,
+      "p99": 8.217083057388663,
+      "mean": 1.0266379964887165,
+      "max": 15.126541955396533
+     }
+    }
+   }
+  },
+  {
+   "size": 4000000,
+   "build": {
+    "status": "ok",
+    "index_s": 13.005329459090717,
+    "disk_bytes": 452416160,
+    "segments": 5,
+    "memory_budget_bytes": 268435456,
+    "build_threads": 1,
+    "ids": "integers",
+    "docs": 4000000,
+    "input_rss_bytes": 3517074312,
+    "peak_rss_bytes": 3795717576,
+    "build_rss_bytes": 278643264
+   },
+   "memory": {
+    "status": "ok",
+    "baseline_rss_bytes": 27263432,
+    "rss_delta_after_open_bytes": 339215032,
+    "rss_delta_after_5000_queries_bytes": 374112952,
+    "peak_rss_bytes": 866893824,
+    "open_s": 0.2984691660385579,
+    "warm_prefix_latency": {
+     "in_process_ms": {
+      "n": 2000,
+      "p50": 0.6771250627934933,
+      "p90": 5.254083080217242,
+      "p99": 15.958499978296459,
+      "mean": 1.8123464380623773,
+      "max": 35.23908299393952
+     }
+    }
+   }
+  }
+ ]
+}

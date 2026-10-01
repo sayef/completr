@@ -1,0 +1,106 @@
+{
+ "engine": "tantivy",
+ "variant": null,
+ "date": "2026-10-01",
+ "machine": {
+  "cpu": "Apple M1 Pro",
+  "cores": 10,
+  "memory_bytes": 17179869184,
+  "os": "macOS 26.7",
+  "python": "3.13.7"
+ },
+ "time_limit_s": 7200.0,
+ "memory_limit_bytes": 10000000000,
+ "sizes": [
+  {
+   "size": 1000000,
+   "build": {
+    "status": "ok",
+    "index_s": 5.492022083955817,
+    "disk_bytes": 47538176,
+    "docs": 1000000,
+    "input_rss_bytes": 3431533376,
+    "peak_rss_bytes": 3610594376,
+    "build_rss_bytes": 179061000
+   },
+   "memory": {
+    "status": "ok",
+    "baseline_rss_bytes": 27361736,
+    "rss_delta_after_open_bytes": 868400,
+    "rss_delta_after_5000_queries_bytes": 6864968,
+    "peak_rss_bytes": 97632256,
+    "open_s": 0.002728541032411158,
+    "warm_prefix_latency": {
+     "in_process_ms": {
+      "n": 2000,
+      "p50": 0.6432499503716826,
+      "p90": 6.45204191096127,
+      "p99": 17.652709037065506,
+      "mean": 2.143714891455602,
+      "max": 22.471957956440747
+     }
+    }
+   }
+  },
+  {
+   "size": 2000000,
+   "build": {
+    "status": "ok",
+    "index_s": 10.179939916008152,
+    "disk_bytes": 93249536,
+    "docs": 2000000,
+    "input_rss_bytes": 3457485656,
+    "peak_rss_bytes": 3731557544,
+    "build_rss_bytes": 274071888
+   },
+   "memory": {
+    "status": "ok",
+    "baseline_rss_bytes": 27066824,
+    "rss_delta_after_open_bytes": 933936,
+    "rss_delta_after_5000_queries_bytes": 9601120,
+    "peak_rss_bytes": 140034048,
+    "open_s": 0.0029289580415934324,
+    "warm_prefix_latency": {
+     "in_process_ms": {
+      "n": 2000,
+      "p50": 0.8851250167936087,
+      "p90": 9.708042023703456,
+      "p99": 25.82370792515576,
+      "mean": 3.2396723749116063,
+      "max": 35.630041966214776
+     }
+    }
+   }
+  },
+  {
+   "size": 4000000,
+   "build": {
+    "status": "ok",
+    "index_s": 15.898001542082056,
+    "disk_bytes": 204161024,
+    "docs": 4000000,
+    "input_rss_bytes": 3517041544,
+    "peak_rss_bytes": 3857616136,
+    "build_rss_bytes": 340574592
+   },
+   "memory": {
+    "status": "ok",
+    "baseline_rss_bytes": 27345352,
+    "rss_delta_after_open_bytes": 1032288,
+    "rss_delta_after_5000_queries_bytes": 20660392,
+    "peak_rss_bytes": 230637568,
+    "open_s": 0.004152124980464578,
+    "warm_prefix_latency": {
+     "in_process_ms": {
+      "n": 2000,
+      "p50": 3.1992499716579914,
+      "p90": 25.164041901007295,
+      "p99": 65.58620801661164,
+      "mean": 8.849427996436134,
+      "max": 93.04004197474569
+     }
+    }
+   }
+  }
+ ]
+}

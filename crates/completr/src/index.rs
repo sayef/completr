@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::codec::{Column, Pod};
@@ -163,33 +164,7 @@ impl Index {
         let single_word = DocColumn::of(&segments, |s| s.columns().3);
 
         let mut live = vec![true; total];
-        // Superseding ids with their key; deletes carry none.
-        let mut superseded: FxHashMap<u64, Option<String>> = FxHashMap::default();
-        for (i, seg) in segments.iter().enumerate().rev() {
-            let base = offsets[i] as usize;
-            if !superseded.is_empty() {
-                for (local, id) in seg.ids().iter().enumerate() {
-                    if let Some(newer) = superseded.get(id) {
-                        live[base + local] = false;
-                        if let (Some(newer), Some(older)) = (newer, seg.key(local)) {
-                            if *newer != older {
-                                return Err(Error::input(format!(
-                                    "keys {older:?} and {newer:?} map to the same id {id}"
-                                )));
-                            }
-                        }
-                    }
-                }
-            }
-            if i > 0 {
-                for local in 0..seg.len() {
-                    superseded.insert(seg.ids()[local], seg.key(local));
-                }
-                for &id in seg.deletes() {
-                    superseded.entry(id).or_insert(None);
-                }
-            }
-        }
+        hide_superseded(&segments, &offsets, &mut live)?;
 
         let mut vector_shape: Option<(usize, u8)> = None;
         for vectors in segments.iter().filter_map(|s| s.vectors.as_ref()) {
@@ -494,10 +469,10 @@ impl Index {
         let factor = self.config.popularity_weight * 10.0;
         let (lens, single, weights) = (&*self.text_lens, &*self.single_word, &*self.weights);
         let scores = || {
-            lens.iter()
-                .zip(single)
-                .zip(weights)
-                .zip(&self.live)
+            lens.par_iter()
+                .zip(single.par_iter())
+                .zip(weights.par_iter())
+                .zip(self.live.par_iter())
                 .filter(|(_, &live)| live)
                 .map(move |(((&len, &single), &weight), _)| {
                     let base = 150.0 - f64::from(len) * 0.1 + if single == 1 { 25.0 } else { 0.0 };
@@ -510,9 +485,15 @@ impl Index {
                 })
                 .filter(|s| s.is_finite())
         };
-        let (count, lo, hi) = scores().fold((0, f64::MAX, f64::MIN), |(n, lo, hi), s| {
-            (n + 1, lo.min(s), hi.max(s))
-        });
+        let (count, lo, hi) = scores()
+            .fold(
+                || (0, f64::MAX, f64::MIN),
+                |(n, lo, hi), s| (n + 1, lo.min(s), hi.max(s)),
+            )
+            .reduce(
+                || (0, f64::MAX, f64::MIN),
+                |a, b| (a.0 + b.0, a.1.min(b.1), a.2.max(b.2)),
+            );
         if count == 0 {
             return 750.0;
         }
@@ -520,8 +501,21 @@ impl Index {
         const BINS: usize = 4096;
         let bin =
             |s: f64| ((s - lo) / (hi - lo).max(f64::MIN_POSITIVE) * (BINS - 1) as f64) as usize;
-        let mut counts = [0usize; BINS];
-        scores().for_each(|s| counts[bin(s)] += 1);
+        let counts = scores()
+            .fold(
+                || vec![0usize; BINS],
+                |mut counts, s| {
+                    counts[bin(s)] += 1;
+                    counts
+                },
+            )
+            .reduce(
+                || vec![0usize; BINS],
+                |mut a, b| {
+                    a.iter_mut().zip(b).for_each(|(x, y)| *x += y);
+                    a
+                },
+            );
         let mut rank = count * 99 / 100;
         let target = counts
             .iter()
@@ -715,12 +709,13 @@ impl<T: Pod> DocColumn<T> {
     fn of(segments: &[Arc<Segment>], column: impl Fn(&Segment) -> Column<T>) -> Self {
         match segments {
             [one] => Self::Mapped(column(one)),
-            _ => Self::Owned(
-                segments
-                    .iter()
-                    .flat_map(|s| column(s).as_slice().to_vec())
-                    .collect(),
-            ),
+            _ => {
+                let mut all = Vec::with_capacity(segments.iter().map(|s| s.len()).sum());
+                for segment in segments {
+                    all.extend_from_slice(column(segment).as_slice());
+                }
+                Self::Owned(all)
+            }
         }
     }
 }
@@ -734,4 +729,90 @@ impl<T: Pod> std::ops::Deref for DocColumn<T> {
             Self::Owned(values) => values,
         }
     }
+}
+
+/// Hides each document whose id a newer segment holds or deletes, by merging the segments' sorted
+/// id and delete columns; ids held twice must carry the same key.
+fn hide_superseded(
+    segments: &[Arc<Segment>],
+    offsets: &[u32],
+    live: &mut [bool],
+) -> Result<(), Error> {
+    use std::cmp::Reverse;
+    // (id, segment, is a delete, position)
+    let column = |seg: usize, delete: bool| -> &[u64] {
+        if delete {
+            segments[seg].deletes()
+        } else {
+            segments[seg].ids()
+        }
+    };
+    // Only segments whose id range meets a newer segment's ids or deletes can hide anything.
+    let range = |c: &[u64]| c.first().zip(c.last()).map(|(&a, &b)| (a, b));
+    let meets = |a: Option<(u64, u64)>, b: Option<(u64, u64)>| {
+        a.zip(b)
+            .is_some_and(|((a0, a1), (b0, b1))| a0 <= b1 && b0 <= a1)
+    };
+    let mut involved = vec![false; segments.len()];
+    for older in 0..segments.len() {
+        for newer in older + 1..segments.len() {
+            let ids = range(segments[older].ids());
+            if meets(ids, range(segments[newer].ids()))
+                || meets(ids, range(segments[newer].deletes()))
+            {
+                involved[older] = true;
+                involved[newer] = true;
+            }
+        }
+    }
+    let mut heap = std::collections::BinaryHeap::new();
+    for seg in (0..segments.len()).filter(|&s| involved[s]) {
+        for delete in [false, true] {
+            if let Some(&id) = column(seg, delete).first() {
+                heap.push(Reverse((id, seg, delete, 0usize)));
+            }
+        }
+    }
+    let mut group: Vec<(usize, bool, usize)> = Vec::new();
+    while let Some(Reverse((id, seg, delete, pos))) = heap.pop() {
+        group.clear();
+        group.push((seg, delete, pos));
+        while heap.peek().is_some_and(|Reverse(top)| top.0 == id) {
+            let Reverse((_, s, d, p)) = heap.pop().expect("peeked");
+            group.push((s, d, p));
+        }
+        for &(s, d, p) in &group {
+            if let Some(&next) = column(s, d).get(p + 1) {
+                heap.push(Reverse((next, s, d, p + 1)));
+            }
+        }
+        if group.len() == 1 {
+            continue;
+        }
+        // Newest first: every holder but the newest is hidden, as is one with a newer delete.
+        group.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        let mut newer: Option<(usize, Option<String>)> = None;
+        let mut newest_delete: Option<usize> = None;
+        for &(s, d, p) in &group {
+            if d {
+                newest_delete = newest_delete.max(Some(s));
+                continue;
+            }
+            let key = segments[s].key(p);
+            if newer.is_some() || newest_delete.is_some_and(|n| n > s) {
+                live[offsets[s] as usize + p] = false;
+            }
+            if let Some((_, Some(newer_key))) = &newer {
+                if let Some(older) = &key {
+                    if newer_key != older {
+                        return Err(Error::input(format!(
+                            "keys {older:?} and {newer_key:?} map to the same id {id}"
+                        )));
+                    }
+                }
+            }
+            newer = Some((s, key));
+        }
+    }
+    Ok(())
 }

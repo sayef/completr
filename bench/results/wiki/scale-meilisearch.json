@@ -1,0 +1,160 @@
+{
+ "engine": "meilisearch",
+ "variant": null,
+ "date": "2026-10-01",
+ "machine": {
+  "cpu": "Apple M1 Pro",
+  "cores": 10,
+  "memory_bytes": 17179869184,
+  "os": "macOS 26.7",
+  "python": "3.13.7"
+ },
+ "time_limit_s": 7200.0,
+ "memory_limit_bytes": 10000000000,
+ "sizes": [
+  {
+   "size": 1000000,
+   "build": {
+    "status": "ok",
+    "docs": 1000000,
+    "index_s": 7.904873708030209,
+    "engine_index_duration": "PT2.340891S",
+    "disk_bytes": 739422208,
+    "peak_rss_bytes": 1975291768,
+    "settings": {
+     "searchableAttributes": [
+      "title"
+     ],
+     "displayedAttributes": [
+      "id"
+     ],
+     "rankingRules": [
+      "words",
+      "typo",
+      "proximity",
+      "attributeRank",
+      "sort",
+      "wordPosition",
+      "exactness",
+      "score:desc"
+     ]
+    }
+   },
+   "rss_after_index_bytes": 1142542224,
+   "warm_prefix_latency": {
+    "round_trip_ms": {
+     "n": 2000,
+     "p50": 1.5046249609440565,
+     "p90": 2.530000056140125,
+     "p99": 4.171083914116025,
+     "mean": 1.70837099844357,
+     "max": 18.818250042386353
+    },
+    "engine_ms": {
+     "n": 2000,
+     "p50": 0,
+     "p90": 1,
+     "p99": 3,
+     "mean": 0.5365,
+     "max": 15
+    }
+   }
+  },
+  {
+   "size": 2000000,
+   "build": {
+    "status": "ok",
+    "docs": 2000000,
+    "index_s": 12.95259195799008,
+    "engine_index_duration": "PT7.653256S",
+    "disk_bytes": 1175662592,
+    "peak_rss_bytes": 2221543480,
+    "settings": {
+     "searchableAttributes": [
+      "title"
+     ],
+     "displayedAttributes": [
+      "id"
+     ],
+     "rankingRules": [
+      "words",
+      "typo",
+      "proximity",
+      "attributeRank",
+      "sort",
+      "wordPosition",
+      "exactness",
+      "score:desc"
+     ]
+    }
+   },
+   "rss_after_index_bytes": 1562333168,
+   "warm_prefix_latency": {
+    "round_trip_ms": {
+     "n": 2000,
+     "p50": 1.9192500039935112,
+     "p90": 3.547667060047388,
+     "p99": 7.024790975265205,
+     "mean": 2.249236809613649,
+     "max": 8.498708019033074
+    },
+    "engine_ms": {
+     "n": 2000,
+     "p50": 1,
+     "p90": 2,
+     "p99": 6,
+     "mean": 1.1225,
+     "max": 7
+    }
+   }
+  },
+  {
+   "size": 4000000,
+   "build": {
+    "status": "ok",
+    "docs": 4000000,
+    "index_s": 26.18729304196313,
+    "engine_index_duration": "PT11.848236S",
+    "disk_bytes": 2551500800,
+    "peak_rss_bytes": 2597999584,
+    "settings": {
+     "searchableAttributes": [
+      "title"
+     ],
+     "displayedAttributes": [
+      "id"
+     ],
+     "rankingRules": [
+      "words",
+      "typo",
+      "proximity",
+      "attributeRank",
+      "sort",
+      "wordPosition",
+      "exactness",
+      "score:desc"
+     ]
+    }
+   },
+   "rss_after_index_bytes": 1585337312,
+   "warm_prefix_latency": {
+    "round_trip_ms": {
+     "n": 2000,
+     "p50": 2.9099169187247753,
+     "p90": 5.239374935626984,
+     "p99": 9.346917038783431,
+     "mean": 3.282238181505818,
+     "max": 14.555832953192294
+    },
+    "engine_ms": {
+     "n": 2000,
+     "p50": 2,
+     "p90": 4,
+     "p99": 8,
+     "mean": 2.129,
+     "max": 13
+    }
+   }
+  }
+ ]
+}

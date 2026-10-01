@@ -2,6 +2,7 @@
 import importlib.metadata as md
 import json, os, re, secrets, shutil, subprocess, threading, time, uuid
 import psutil, requests
+import memory
 from common import BIN, LIMIT, weight, work_dir
 
 TIME_LIMIT_S = float(os.environ.get("BENCH_TIME_LIMIT_S", 7200))
@@ -13,15 +14,16 @@ class LimitExceeded(Exception):
 
 
 class Watch:
-    """Samples `rss()` every 100 ms in the background, keeping the peak; past the memory limit it calls `stop()`."""
+    """Samples `rss()` every `interval` seconds in the background, keeping the peak; past the memory limit it calls
+    `stop()`."""
 
-    def __init__(self, rss, stop):
-        self.rss, self.stop, self.peak, self.exceeded = rss, stop, 0, False
+    def __init__(self, rss, stop, interval=0.1):
+        self.rss, self.stop, self.peak, self.exceeded, self.interval = rss, stop, 0, False, interval
         self.done = threading.Event()
         self.thread = threading.Thread(target=self.run, daemon=True)
 
     def run(self):
-        while not self.done.wait(0.1):
+        while not self.done.wait(self.interval):
             try:
                 self.peak = max(self.peak, self.rss())
             except psutil.Error:
@@ -193,7 +195,7 @@ class Server:
 
     def rss(self):
         p = psutil.Process(self.proc.pid)
-        return sum(x.memory_info().rss for x in [p] + p.children(recursive=True))
+        return sum(memory.used(x.pid) for x in [p] + p.children(recursive=True))
 
     def wait_ready(self, url):
         for _ in range(600):
