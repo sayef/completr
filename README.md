@@ -13,9 +13,9 @@
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
-  <a href="https://sayef.github.io/completr/">Docs</a> ·
+  <a href="https://completr.pages.dev/">Docs</a> ·
   <a href="https://docs.rs/completr">Rust docs</a> ·
-  <a href="https://sayef.github.io/completr/reference/python/">Python API</a> ·
+  <a href="https://completr.pages.dev/reference/python/">Python API</a> ·
   <a href="docs/architecture.md">Architecture</a> ·
   <a href="#benchmarks">Benchmarks</a> ·
   <a href="CHANGELOG.md">Changelog</a>

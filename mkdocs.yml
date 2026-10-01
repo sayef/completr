@@ -1,6 +1,6 @@
 site_name: completr
 site_description: "Serverless autocompletion: an embedded engine whose database is a bucket."
-site_url: https://sayef.github.io/completr/
+site_url: https://completr.pages.dev/
 repo_url: https://github.com/sayef/completr
 repo_name: sayef/completr
 edit_uri: edit/main/docs/

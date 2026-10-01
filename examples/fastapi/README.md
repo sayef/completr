@@ -40,4 +40,4 @@ curl 'http://127.0.0.1:8000/complete?q=wirel&limit=5'
 `/complete` takes `q`, `limit` (1 to 50) and repeated `contexts` parameters. Updates come from other
 processes: submit change sets with `db.submit(...)` and run an ingestor outside the API processes, for
 example `completr ./completions ingest`. See the
-[serverless deployment guide](https://sayef.github.io/completr/guides/serverless/).
+[serverless deployment guide](https://completr.pages.dev/guides/serverless/).
