@@ -401,7 +401,7 @@ fn merge(run: &[Arc<Segment>], oldest: bool) -> Result<Segment, Error> {
             .flat_map(|s| s.deletes().iter().copied())
             .collect()
     };
-    view.merged_segment(deletes)
+    view.merged_segment(deletes, None)
 }
 
 #[derive(Clone, Debug)]
