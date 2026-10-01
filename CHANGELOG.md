@@ -11,6 +11,16 @@ All notable changes to this project are documented here. The format follows
 - The project is renamed from strato to completr: crates `completr`, `completr-cli` and `completr-py`, the
   Python package `completr`, the `completr` command, `COMPLETR_*` environment variables, and new segment
   and inbox file markers, so files written under the old name must be rebuilt.
+- Segment format 10: spelling variants are hashed into buckets instead of a dictionary, postings and text
+  offsets are bit-packed, and the per-document forward index is gone. Segments are about 40% smaller and
+  build about a third faster; older segments must be rebuilt.
+- `Segment::open` checks a local file's structure only and opens in about a millisecond; the new
+  `Segment::verify` (and `Segment.verify()` in Python) checks the checksum and every section, as
+  `from_bytes` and downloads into a store's cache do.
+- The vector index is built on the first vector search or on `warm`, not when a segment is opened.
+- Corrected results are ranked by how well the corrected query matches them, and the word being typed is
+  corrected when the query as typed matches nothing.
+- Multi-word queries intersect postings through a bitset, roughly halving tail latency.
 
 ### Added
 
