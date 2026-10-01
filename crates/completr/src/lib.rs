@@ -45,6 +45,7 @@ mod hybrid;
 #[cfg(feature = "store")]
 mod inbox;
 mod index;
+mod postings;
 mod search;
 mod segment;
 mod staged;

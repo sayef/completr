@@ -9,6 +9,7 @@ use crate::blocked::Blocked;
 use crate::codec::{Bytes, Column, Reader, Writer};
 use crate::dict::{Dict, Dictionary};
 use crate::elias_fano::EliasFano;
+use crate::postings::{List, ListWriter, Lists};
 use crate::staged::Staged;
 
 mod merge;
@@ -27,7 +28,6 @@ pub(crate) const TERMINATOR: u8 = 0xff;
 
 /// A packed FST value holding its single posting directly.
 const INLINE: u64 = 1 << 63;
-const LEN_BITS: u32 = 24;
 
 /// Build-time parameters. All segments of one index must share them. Set them with the chainable
 /// methods of the same names, e.g. `BuildOptions::default().vector_bits(2)`.
@@ -146,11 +146,10 @@ pub(crate) fn term_key(s: &str) -> Vec<u8> {
     key
 }
 
-/// Postings of one key: inline in the FST value, or a range of the postings column.
-/// A key's postings: one inline, or a range of a packed column.
+/// A key's postings: one inline, or a delta coded list.
 pub(crate) struct Postings<'a> {
     one: Option<u32>,
-    many: crate::trie::PackedIter<'a>,
+    many: List<'a>,
 }
 
 impl Iterator for Postings<'_> {
@@ -158,18 +157,16 @@ impl Iterator for Postings<'_> {
 
     #[inline]
     fn next(&mut self) -> Option<u32> {
-        self.one
-            .take()
-            .or_else(|| self.many.next().map(|v| v as u32))
+        self.one.take().or_else(|| self.many.next())
     }
 }
 
-/// An FST from key to postings. Packed values inline a single posting or hold `start << 24 | len`;
-/// ordinal values index an offsets column.
+/// An FST from key to postings. Packed values inline a single posting or hold its list's first bit;
+/// ordinal values index the lists' first bits.
 pub(crate) struct Keyed {
     pub(crate) map: Dict,
-    offsets: Option<Column<u32>>,
-    values: Packed,
+    starts: Option<Blocked>,
+    lists: Lists,
     bound: u32,
 }
 
@@ -195,7 +192,7 @@ impl Keyed {
     ) -> Result<(), Error> {
         let mut keys = Vec::new();
         let mut packed_values = Vec::new();
-        let mut values = Vec::new();
+        let mut lists = ListWriter::default();
         let mut postings = Vec::new();
         for (key, group) in groups {
             keys.push(key);
@@ -203,19 +200,12 @@ impl Keyed {
             postings.extend(group);
             let value = match postings.as_slice() {
                 [one] => INLINE | u64::from(*one),
-                many => {
-                    if many.len() >= 1 << LEN_BITS {
-                        return Err(Error::input("too many postings for one key"));
-                    }
-                    let packed = (values.len() as u64) << LEN_BITS | many.len() as u64;
-                    values.extend_from_slice(many);
-                    packed
-                }
+                many => lists.push(many)?,
             };
             packed_values.push(value);
         }
         Dict::write(w, kind, &keys, &packed_values)?;
-        Packed::write(w, &values);
+        lists.write(w);
         Ok(())
     }
 
@@ -226,18 +216,16 @@ impl Keyed {
         groups: impl IntoIterator<Item = (&'a [u8], &'a [u32])>,
     ) -> Result<(), Error> {
         let mut keys = Vec::new();
-        let mut offsets = vec![0u32];
-        let mut values = Vec::new();
+        let mut starts = Vec::new();
+        let mut lists = ListWriter::default();
         for (key, postings) in groups {
             keys.push(key);
-            values.extend_from_slice(postings);
-            offsets
-                .push(u32::try_from(values.len()).map_err(|_| Error::input("too many postings"))?);
+            starts.push(lists.push(postings)?);
         }
         let ordinals: Vec<u64> = (0..keys.len() as u64).collect();
         Dict::write(w, kind, &keys, &ordinals)?;
-        w.column(&offsets);
-        Packed::write(w, &values);
+        Blocked::write_with(w, starts.len(), || starts.iter().copied());
+        lists.write(w);
         Ok(())
     }
 
@@ -249,25 +237,20 @@ impl Keyed {
         full: bool,
     ) -> Result<Self, Error> {
         let map = Dict::read(r, kind)?;
-        let offsets = if ordinal {
-            Some(r.column::<u32>()?)
+        let starts = if ordinal {
+            Some(Blocked::read(r)?)
         } else {
             None
         };
-        let values = Packed::read(r)?;
-        let mut valid = !full || (0..values.len).all(|i| values.get(i) < u64::from(bound));
-        if let Some(offsets) = &offsets {
-            let o = offsets.as_slice();
-            valid &= o.len() == map.len() + 1
-                && o.first() == Some(&0)
-                && o.last().map(|&l| l as usize) == Some(values.len)
-                && (!full || o.windows(2).all(|w| w[0] <= w[1]));
-        }
+        let lists = Lists::read(r, bound, full)?;
+        let valid = starts.as_ref().is_none_or(|s| {
+            s.len() == map.len() && (!full || (1..s.len()).all(|i| s.get(i - 1) < s.get(i)))
+        });
         valid
             .then_some(Self {
                 map,
-                offsets,
-                values,
+                starts,
+                lists,
                 bound,
             })
             .ok_or_else(|| Error::Corrupt("invalid postings".into()))
@@ -275,34 +258,25 @@ impl Keyed {
 
     /// Postings for an FST value; out-of-range values from a corrupt file yield none.
     pub(crate) fn postings(&self, value: u64) -> Postings<'_> {
-        let values = &self.values;
-        let range = match &self.offsets {
-            Some(offsets) => {
-                let o = offsets.as_slice();
-                let i = value as usize;
-                match (o.get(i), o.get(i + 1)) {
-                    (Some(&start), Some(&end)) => start as usize..end as usize,
-                    _ => 0..0,
-                }
-            }
+        let start = match &self.starts {
+            Some(starts) => usize::try_from(value)
+                .ok()
+                .filter(|&i| i < starts.len())
+                .map(|i| starts.get(i)),
             None if value & INLINE != 0 => {
                 let one = u32::try_from(value & !INLINE)
                     .ok()
                     .filter(|&p| p < self.bound);
                 return Postings {
                     one,
-                    many: values.iter(0..0),
+                    many: List::empty(),
                 };
             }
-            None => {
-                let start = (value >> LEN_BITS) as usize;
-                start..start.saturating_add((value & ((1 << LEN_BITS) - 1)) as usize)
-            }
+            None => Some(value),
         };
-        let valid = range.start <= range.end && range.end <= values.len;
         Postings {
             one: None,
-            many: values.iter(if valid { range } else { 0..0 }),
+            many: start.map_or_else(List::empty, |s| self.lists.list(s, self.bound)),
         }
     }
 
@@ -315,7 +289,7 @@ impl Keyed {
     }
 
     fn size(&self) -> usize {
-        self.map.size() + self.offsets.as_ref().map_or(0, |o| o.len() * 4) + self.values.size()
+        self.map.size() + self.starts.as_ref().map_or(0, Blocked::size) + self.lists.size()
     }
 }
 
@@ -1068,7 +1042,7 @@ impl Segment {
                 self.words.size() + self.word_freqs.len() * 4 + self.word_texts.data.as_ref().len(),
             ),
             ("aliases keys", self.aliases.map.size()),
-            ("aliases postings", self.aliases.values.size()),
+            ("aliases postings", self.aliases.lists.size()),
             ("variants", self.variants.size()),
             ("vectors", self.vectors.as_ref().map_or(0, Vectors::size)),
         ]
