@@ -24,7 +24,10 @@ pub(crate) enum Row<'a> {
 }
 
 pub(crate) struct Vectors {
-    index: TurboQuantIndex,
+    codes: Column<u8>,
+    scales: Column<f32>,
+    /// Built from the codes on the first search, as it copies them.
+    index: OnceLock<Result<TurboQuantIndex, String>>,
     dim: usize,
     bits: u8,
     /// Local id of each slot, ascending.
@@ -126,7 +129,7 @@ impl Vectors {
         Ok(())
     }
 
-    pub(crate) fn read(r: &mut Reader, docs: usize) -> Result<Option<Self>, Error> {
+    pub(crate) fn read(r: &mut Reader, docs: usize, full: bool) -> Result<Option<Self>, Error> {
         if r.u8()? == 0 {
             r.align()?;
             return Ok(None);
@@ -144,25 +147,17 @@ impl Vectors {
         let locals = slot_locals.as_slice();
         if scales.len() != n
             || codes.len() != n * code_bytes(dim, bits)
-            || locals.windows(2).any(|w| w[0] >= w[1])
             || locals.last().is_some_and(|&l| l as usize >= docs)
-            || scales.as_slice().iter().any(|s| !s.is_finite())
+            || full
+                && (locals.windows(2).any(|w| w[0] >= w[1])
+                    || scales.as_slice().iter().any(|s| !s.is_finite()))
         {
             return Err(bad("sizes"));
         }
-        let index = TurboQuantIndex::from_parts(
-            Some(dim),
-            bits as usize,
-            n,
-            codes.as_slice().to_vec(),
-            scales.as_slice().to_vec(),
-            Vec::new(),
-            Vec::new(),
-        )
-        .map_err(|e| bad(&e.to_string()))?;
-        index.prepare();
         Ok(Some(Self {
-            index,
+            codes,
+            scales,
+            index: OnceLock::new(),
             dim,
             bits,
             slot_locals,
@@ -190,8 +185,10 @@ impl Vectors {
         let slot = self.locals().binary_search(&local).ok()?;
         let stride = code_bytes(self.dim, self.bits);
         Some((
-            &self.index.packed_codes()[slot * stride..(slot + 1) * stride],
-            self.index.scales()[slot],
+            self.codes
+                .as_slice()
+                .get(slot * stride..(slot + 1) * stride)?,
+            *self.scales.as_slice().get(slot)?,
         ))
     }
 
@@ -204,9 +201,12 @@ impl Vectors {
         threads: usize,
     ) -> Result<Vec<(u32, f32)>, Error> {
         let results = in_pool(threads, || {
-            self.index.try_search_with_mask(query, k, Some(mask))
-        })
-        .map_err(|e| Error::input(e.to_string()))?;
+            self.index().and_then(|index| {
+                index
+                    .try_search_with_mask(query, k, Some(mask))
+                    .map_err(|e| Error::input(e.to_string()))
+            })
+        })?;
         let locals = self.locals();
         Ok(results
             .scores_for_query(0)
@@ -215,6 +215,27 @@ impl Vectors {
             .filter(|(_, &slot)| slot >= 0)
             .map(|(&score, &slot)| (locals[slot as usize], score))
             .collect())
+    }
+
+    /// The search index, built from the codes on first use.
+    pub(crate) fn index(&self) -> Result<&TurboQuantIndex, Error> {
+        self.index
+            .get_or_init(|| {
+                let index = TurboQuantIndex::from_parts(
+                    Some(self.dim),
+                    self.bits as usize,
+                    self.slot_locals.len(),
+                    self.codes.as_slice().to_vec(),
+                    self.scales.as_slice().to_vec(),
+                    Vec::new(),
+                    Vec::new(),
+                )
+                .map_err(|e| e.to_string())?;
+                index.prepare();
+                Ok(index)
+            })
+            .as_ref()
+            .map_err(|e| Error::Corrupt(format!("invalid vectors: {e}")))
     }
 }
 

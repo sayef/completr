@@ -167,7 +167,7 @@ fn main() {
         base.size_bytes() as f64 / 1e6
     );
     println!(
-        "| Open (memory-mapped, checksum verified) | {:.1} ms |",
+        "| Open (memory-mapped) | {:.1} ms |",
         open.as_secs_f64() * 1e3
     );
 
