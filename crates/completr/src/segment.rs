@@ -7,6 +7,7 @@ use rustc_hash::FxHashMap;
 
 use crate::codec::{Bytes, Column, Reader, Writer};
 use crate::dict::{Dict, Dictionary};
+use crate::staged::Staged;
 use crate::trie::Packed;
 use crate::vectors::{CarriedCodes, Row, Vectors};
 use crate::{fuzzy, text, Alias, AliasKind, Document, Error};
@@ -320,26 +321,37 @@ impl Variants {
         )
     }
 
-    /// Bucket offsets and the entries of each bucket, sorted and unique, by a counting sort that
-    /// consumes `chunks` one at a time.
-    fn group(buckets: u32, chunks: Vec<Vec<(u32, u32)>>) -> (Vec<u32>, Vec<u32>) {
-        let mut offsets = vec![0u32; buckets as usize + 1];
-        for &(bucket, _) in chunks.iter().flatten() {
-            offsets[bucket as usize + 1] += 1;
-        }
+    /// Bucket offsets and the entries of each bucket, sorted and unique. `variants(ordinal, f)` calls
+    /// `f` with each variant of a word; it runs twice per word, to count and then to place, so no
+    /// entry is held twice.
+    fn group(
+        buckets: u32,
+        words: usize,
+        variants: impl Fn(usize, &mut dyn FnMut(&[u8])) + Sync,
+    ) -> (Vec<u32>, Vec<u32>) {
+        use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+        let counts: Vec<AtomicU32> = (0..=buckets).map(|_| AtomicU32::new(0)).collect();
+        (0..words).into_par_iter().for_each(|ordinal| {
+            variants(ordinal, &mut |v| {
+                counts[Self::entry(v, buckets, 0).0 as usize + 1].fetch_add(1, Relaxed);
+            })
+        });
+        let mut offsets: Vec<u32> = counts.into_iter().map(AtomicU32::into_inner).collect();
         for i in 1..offsets.len() {
             offsets[i] += offsets[i - 1];
         }
-        let mut entries = vec![0u32; offsets[buckets as usize] as usize];
-        let mut next = offsets.clone();
-        for chunk in chunks {
-            for (bucket, entry) in chunk {
-                let at = &mut next[bucket as usize];
-                entries[*at as usize] = entry;
-                *at += 1;
-            }
-        }
+        let next: Vec<AtomicU32> = offsets.iter().map(|&o| AtomicU32::new(o)).collect();
+        let slots: Vec<AtomicU32> = (0..offsets[buckets as usize])
+            .map(|_| AtomicU32::new(0))
+            .collect();
+        (0..words).into_par_iter().for_each(|ordinal| {
+            variants(ordinal, &mut |v| {
+                let (bucket, entry) = Self::entry(v, buckets, ordinal as u32);
+                slots[next[bucket as usize].fetch_add(1, Relaxed) as usize].store(entry, Relaxed);
+            })
+        });
         drop(next);
+        let mut entries: Vec<u32> = slots.into_iter().map(AtomicU32::into_inner).collect();
         let mut kept = 0;
         for b in 0..buckets as usize {
             let (start, end) = (offsets[b] as usize, offsets[b + 1] as usize);
@@ -354,6 +366,7 @@ impl Variants {
         }
         offsets[buckets as usize] = kept as u32;
         entries.truncate(kept);
+        entries.shrink_to_fit();
         (offsets, entries)
     }
 
@@ -575,20 +588,21 @@ struct DocStore {
 }
 
 impl DocStore {
-    fn write(w: &mut Writer, docs: &[Document]) -> Result<(), Error> {
-        let compressed: Vec<Result<Vec<u8>, Error>> = docs
-            .par_chunks(DOCS_PER_BLOCK)
-            .map(|chunk| {
+    fn write(w: &mut Writer, docs: &Staged) -> Result<(), Error> {
+        let compressed: Vec<Result<Vec<u8>, Error>> = (0..docs.len().div_ceil(DOCS_PER_BLOCK))
+            .into_par_iter()
+            .map(|block| {
                 let mut raw = Vec::new();
-                for doc in chunk {
+                let first = block * DOCS_PER_BLOCK;
+                for doc in (first..docs.len().min(first + DOCS_PER_BLOCK)).map(|l| docs.get(l)) {
                     put_varint(&mut raw, doc.aliases.len());
-                    for alias in &doc.aliases {
+                    for alias in doc.aliases {
                         raw.push(alias.kind as u8);
                         put_varint(&mut raw, alias.text.len());
                         raw.extend_from_slice(alias.text.as_bytes());
                     }
                     put_varint(&mut raw, doc.contexts.len());
-                    for context in &doc.contexts {
+                    for context in doc.contexts {
                         put_varint(&mut raw, context.len());
                         raw.extend_from_slice(context.as_bytes());
                     }
@@ -745,18 +759,6 @@ impl Segment {
         Self::build_inner(config, documents, deletes, None)
     }
 
-    /// Builds with `config.build_threads`; `codes` as for [`Segment::build_inner`].
-    pub(crate) fn build_pooled(
-        config: BuildOptions,
-        documents: Vec<Document>,
-        deletes: Vec<u64>,
-        codes: Option<(usize, &CarriedCodes)>,
-    ) -> Result<Self, Error> {
-        crate::vectors::in_pool(config.build_threads, move || {
-            Self::build_inner_on_pool(config, documents, deletes, codes)
-        })
-    }
-
     /// Builds a segment; `codes` carries vectors over from other segments as `id -> (code, scale)`,
     /// with their dimension.
     pub(crate) fn build_inner(
@@ -765,48 +767,36 @@ impl Segment {
         deletes: impl IntoIterator<Item = u64>,
         codes: Option<(usize, &CarriedCodes)>,
     ) -> Result<Self, Error> {
-        Self::build_pooled(
-            config,
-            documents.into_iter().collect(),
-            deletes.into_iter().collect(),
-            codes,
-        )
+        let mut staged = Staged::default();
+        for doc in documents {
+            staged.add(doc)?;
+        }
+        Self::build_staged(config, staged, deletes.into_iter().collect(), codes, None)
     }
 
-    fn build_inner_on_pool(
+    /// Builds from staged documents on the configured pool, into memory or into the file at `path`.
+    fn build_staged(
         config: BuildOptions,
-        documents: Vec<Document>,
+        staged: Staged,
         deletes: Vec<u64>,
         codes: Option<(usize, &CarriedCodes)>,
+        path: Option<&Path>,
+    ) -> Result<Self, Error> {
+        crate::vectors::in_pool(config.build_threads, move || {
+            Self::build_on_pool(config, staged, deletes, codes, path)
+        })
+    }
+
+    fn build_on_pool(
+        config: BuildOptions,
+        mut docs: Staged,
+        mut deletes: Vec<u64>,
+        codes: Option<(usize, &CarriedCodes)>,
+        path: Option<&Path>,
     ) -> Result<Self, Error> {
         crate::vectors::validate_bits(config.vector_bits)?;
         let started = std::time::Instant::now();
-        let mut docs: Vec<Document> = documents.into_iter().collect();
-        if let Some(doc) = docs.iter().find(|d| !d.popularity.is_finite()) {
-            return Err(Error::input(format!(
-                "document {} has a non-finite popularity",
-                doc.id
-            )));
-        }
-        if docs.iter().any(|d| d.key.as_deref() == Some("")) {
-            return Err(Error::input("document keys must not be empty"));
-        }
-        if docs.len() >= (u32::MAX >> 1) as usize {
-            return Err(Error::input("too many documents in one segment"));
-        }
-        docs.reverse();
-        docs.sort_by_key(|d| d.id);
-        if let Some(pair) = docs
-            .windows(2)
-            .find(|w| w[0].id == w[1].id && w[0].key != w[1].key)
-        {
-            return Err(Error::input(format!(
-                "keys {:?} and {:?} map to the same id {}",
-                pair[0].key, pair[1].key, pair[0].id
-            )));
-        }
-        docs.dedup_by_key(|d| d.id);
-        let mut deletes: Vec<u64> = deletes.into_iter().collect();
+        docs.finish()?;
         deletes.sort_unstable();
         deletes.dedup();
 
@@ -817,21 +807,17 @@ impl Segment {
         let mut alias_keys = KeyArena::default();
         let mut context_keys = KeyArena::default();
         // Per word: postings and occurrences.
-        let mut word_map: FxHashMap<String, (Vec<u32>, u32)> = FxHashMap::default();
+        let mut words = WordTable::default();
         for (local, doc) in docs.iter().enumerate() {
             let local = local as u32;
-            let lower = text::lower(&doc.text);
+            let lower = text::lower(doc.text);
             text_lens.push(u16::try_from(text::char_len(&lower)).unwrap_or(u16::MAX));
             single_word.push(u8::from(text::words(&lower).count() == 1));
             for word in indexed_words(&lower, config.min_word_chars) {
-                let (postings, freq) = word_map.entry(word.to_owned()).or_default();
-                if postings.last() != Some(&local) {
-                    postings.push(local);
-                }
-                *freq += 1;
+                words.add(word, local);
             }
             title_keys.push(lower.as_bytes(), local)?;
-            for alias in &doc.aliases {
+            for alias in doc.aliases {
                 alias_keys.push(
                     text::lower(&alias.text).as_bytes(),
                     local << 1 | alias.kind as u32,
@@ -845,50 +831,28 @@ impl Segment {
             }
         }
 
-        // Term key, word, postings and occurrences, in key order.
-        type Word = (Vec<u8>, String, Vec<u32>, u32);
-        let mut words: Vec<Word> = word_map
-            .into_iter()
-            .map(|(w, (postings, freq))| (term_key(&w), w, postings, freq))
-            .collect();
-        words.par_sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        let words = words.sorted();
         if words.len() >> (32 - Variants::FINGERPRINT_BITS) != 0 {
             return Err(Error::input("too many distinct words for one segment"));
         }
         let buckets = Variants::buckets_for(words.len());
-        const CHUNK: usize = 4096;
-        let variant_chunks: Vec<Vec<(u32, u32)>> = words
-            .par_chunks(CHUNK)
-            .enumerate()
-            .map(|(c, chunk)| {
-                let mut out = Vec::new();
-                for (j, (_, word, _, _)) in chunk.iter().enumerate() {
-                    let ordinal = (c * CHUNK + j) as u32;
-                    for v in fuzzy::delete_variants(
-                        word,
-                        config.max_edit_distance,
-                        config.fuzzy_prefix_chars as usize,
-                    ) {
-                        out.push(Variants::entry(v.as_bytes(), buckets, ordinal));
-                    }
-                }
-                out
-            })
-            .collect();
-        let (variant_offsets, variant_entries) = Variants::group(buckets, variant_chunks);
 
-        let mut w = Writer::default();
-        // Reserved generously, so the buffer never copies itself while growing; untouched pages cost nothing.
-        let text_bytes: usize = docs
-            .iter()
-            .map(|d| d.text.len() + d.key.as_ref().map_or(0, String::len))
-            .sum();
-        w.buf.reserve(
-            text_bytes * 3
-                + (variant_entries.len() + variant_offsets.len()) * 4
-                + docs.len() * 64
-                + (1 << 20),
-        );
+        let mut sink = match path {
+            Some(path) => Sink::file(path)?,
+            None => {
+                // Reserved generously, so the buffer never copies itself while growing; untouched
+                // pages cost nothing.
+                let text_bytes: usize = docs
+                    .iter()
+                    .map(|d| d.text.len() + d.key.map_or(0, str::len))
+                    .sum();
+                Sink::Memory(Vec::with_capacity(
+                    text_bytes * 3 + words.len() * 100 + n * 64 + (1 << 20),
+                ))
+            }
+        };
+        let mut put = |bytes: &[u8]| sink.put(bytes);
+        let mut w = Writer::spilling(&mut put);
         w.raw(MAGIC);
         w.u64(VERSION);
         let layout = if config.compact_keys {
@@ -912,22 +876,23 @@ impl Segment {
         w.column(&text_lens);
         w.column(&single_word);
         w.column(&deletes);
+        w.finish()?;
         let dim = docs
             .iter()
-            .find_map(|d| d.vector.as_ref().map(Vec::len))
+            .find_map(|d| d.vector.map(<[f32]>::len))
             .or(codes.map(|(dim, _)| dim))
             .unwrap_or(0);
         let mut rows: Vec<(u32, Row)> = Vec::new();
         for (local, doc) in docs.iter().enumerate() {
             let carried = codes.and_then(|(_, map)| map.get(&doc.id));
-            match (&doc.vector, carried) {
+            match (doc.vector, carried) {
                 (Some(v), _) => rows.push((local as u32, Row::Float(v))),
                 (None, Some((code, scale))) => rows.push((local as u32, Row::Code(code, *scale))),
                 (None, None) => {}
             }
         }
-        // Sections are independent, each starting and ending 8-byte aligned, so writing them in
-        // place one by one and building them concurrently produce the same bytes.
+        // Sections are independent, each starting and ending 8-byte aligned, so writing them one by
+        // one and building them concurrently produce the same bytes.
         type Section<'s> = Box<dyn FnOnce(&mut Writer) -> Result<(), Error> + Send + 's>;
         let (docs_ref, words_ref, rows_ref) = (&docs, &words, &rows);
         let sections: Vec<Section> = vec![
@@ -937,46 +902,58 @@ impl Segment {
                 Keyed::write_ordinal(
                     w,
                     layout.words,
-                    words_ref.iter().map(|w| (w.0.as_slice(), w.2.as_slice())),
+                    (0..words_ref.len()).map(|o| (words_ref.key(o), words_ref.postings(o))),
                 )?;
-                w.column(&words_ref.iter().map(|w| w.3).collect::<Vec<_>>());
-                StrColumn::write(w, words_ref.iter().map(|w| w.1.as_str()))
+                w.column(&words_ref.freqs);
+                StrColumn::write(w, (0..words_ref.len()).map(|o| words_ref.word(o)))
             }),
             Box::new(move |w| Keyed::write_packed(w, layout.aliases, alias_keys)),
+            // Computed only when written, so earlier sections never hold the variants.
             Box::new(move |w| {
-                Variants::write(w, buckets, &variant_offsets, &variant_entries);
+                let (offsets, entries) = Variants::group(buckets, words_ref.len(), |ordinal, f| {
+                    fuzzy::for_each_delete_variant(
+                        words_ref.word(ordinal),
+                        config.max_edit_distance,
+                        config.fuzzy_prefix_chars as usize,
+                        |v| f(v.as_bytes()),
+                    )
+                });
+                Variants::write(w, buckets, &offsets, &entries);
                 Ok(())
             }),
             Box::new(move |w| Vectors::write(w, dim, config.vector_bits, rows_ref)),
             Box::new(move |w| {
-                FsstColumn::write(w, docs_ref.iter().map(|d| d.text.as_str()))?;
-                FsstColumn::write(w, docs_ref.iter().map(|d| d.key.as_deref().unwrap_or("")))?;
+                FsstColumn::write(w, docs_ref.iter().map(|d| d.text))?;
+                FsstColumn::write(w, docs_ref.iter().map(|d| d.key.unwrap_or("")))?;
                 Keyed::write_packed(w, Dictionary::Fst, context_keys)
             }),
         ];
         if config.build_threads == 1 {
+            let mut put = |bytes: &[u8]| sink.put(bytes);
             for write in sections {
-                w.align();
+                let mut w = Writer::spilling(&mut put);
                 write(&mut w)?;
                 w.align();
+                w.finish()?;
             }
         } else {
             let parts: Vec<Result<Vec<u8>, Error>> =
                 sections.into_par_iter().map(section).collect();
             for part in parts {
-                w.align();
-                w.raw(&part?);
+                sink.put(&part?)?;
             }
         }
-        w.align();
-        w.u64(xxhash_rust::xxh3::xxh3_64(&w.buf));
+        let bytes = sink.len();
+        drop(rows);
+        drop(docs);
+        let segment = sink.finish()?;
         tracing::debug!(
             documents = n,
-            bytes = w.buf.len(),
+            bytes,
             ms = started.elapsed().as_millis() as u64,
             "built segment"
         );
-        Self::decode(Bytes::from_vec(w.buf), true)
+        Ok(segment)
     }
 
     pub fn config(&self) -> BuildOptions {
@@ -1081,7 +1058,6 @@ impl Segment {
         })
     }
 
-    /// Ordinals of the indexed words of `local`, repeats included.
     /// The indexed words of `local`'s text, repeats included.
     pub(crate) fn doc_words(&self, local: usize) -> Vec<String> {
         let lower = text::lower(&self.text(local));
@@ -1273,6 +1249,204 @@ pub(crate) fn indexed_words(lower: &str, min_chars: u8) -> impl Iterator<Item = 
     text::words(lower).filter(move |w| text::char_len(w) >= min_chars as usize)
 }
 
+/// Indexed words while documents are scanned: interned, each with its postings and occurrences.
+#[derive(Default)]
+struct WordTable {
+    ids: FxHashMap<Box<str>, u32>,
+    postings: Vec<Vec<u32>>,
+    freqs: Vec<u32>,
+}
+
+impl WordTable {
+    fn add(&mut self, word: &str, local: u32) {
+        let id = match self.ids.get(word) {
+            Some(&id) => id as usize,
+            None => {
+                self.ids.insert(word.into(), self.postings.len() as u32);
+                self.postings.push(Vec::new());
+                self.freqs.push(0);
+                self.postings.len() - 1
+            }
+        };
+        if self.postings[id].last() != Some(&local) {
+            self.postings[id].push(local);
+        }
+        self.freqs[id] += 1;
+    }
+
+    /// The words in term-key order, in flat arrays.
+    fn sorted(self) -> SortedWords {
+        let mut words: Vec<(Box<str>, u32)> = self.ids.into_iter().collect();
+        // Term-key order: a word sorts after the words it is a prefix of, as its key ends in 0xff.
+        words.par_sort_unstable_by(|(a, _), (b, _)| {
+            let (a, b) = (a.as_bytes(), b.as_bytes());
+            let n = a.len().min(b.len());
+            a[..n].cmp(&b[..n]).then(b.len().cmp(&a.len()))
+        });
+        let mut postings = self.postings;
+        let mut out = SortedWords {
+            keys: Vec::new(),
+            key_ends: Vec::with_capacity(words.len()),
+            postings: Vec::with_capacity(postings.iter().map(Vec::len).sum()),
+            posting_ends: Vec::with_capacity(words.len()),
+            freqs: Vec::with_capacity(words.len()),
+        };
+        for (word, id) in words {
+            out.keys.extend_from_slice(word.as_bytes());
+            out.keys.push(TERMINATOR);
+            out.key_ends.push(out.keys.len());
+            out.postings
+                .extend_from_slice(&std::mem::take(&mut postings[id as usize]));
+            out.posting_ends.push(out.postings.len());
+            out.freqs.push(self.freqs[id as usize]);
+        }
+        out
+    }
+}
+
+/// Words in term-key order: keys with their terminator in one arena, postings in another.
+struct SortedWords {
+    keys: Vec<u8>,
+    key_ends: Vec<usize>,
+    postings: Vec<u32>,
+    posting_ends: Vec<usize>,
+    freqs: Vec<u32>,
+}
+
+impl SortedWords {
+    fn len(&self) -> usize {
+        self.key_ends.len()
+    }
+
+    fn key(&self, ordinal: usize) -> &[u8] {
+        let start = ordinal.checked_sub(1).map_or(0, |o| self.key_ends[o]);
+        &self.keys[start..self.key_ends[ordinal]]
+    }
+
+    fn word(&self, ordinal: usize) -> &str {
+        let key = self.key(ordinal);
+        // SAFETY: each key is a word's UTF-8 bytes followed by the terminator.
+        unsafe { std::str::from_utf8_unchecked(&key[..key.len() - 1]) }
+    }
+
+    fn postings(&self, ordinal: usize) -> &[u32] {
+        let start = ordinal.checked_sub(1).map_or(0, |o| self.posting_ends[o]);
+        &self.postings[start..self.posting_ends[ordinal]]
+    }
+}
+
+/// Collects documents compactly, then builds one segment from them, in memory or into a file.
+pub struct SegmentBuilder {
+    config: BuildOptions,
+    staged: Staged,
+    deletes: Vec<u64>,
+}
+
+impl SegmentBuilder {
+    pub fn new(config: BuildOptions) -> Self {
+        Self {
+            config,
+            staged: Staged::default(),
+            deletes: Vec::new(),
+        }
+    }
+
+    /// Adds a document; of several with one id, the last added is kept.
+    pub fn add(&mut self, document: Document) -> Result<(), Error> {
+        self.staged.add(document)
+    }
+
+    /// Hides `id` in older segments.
+    pub fn delete(&mut self, id: u64) {
+        self.deletes.push(id);
+    }
+
+    pub fn build(self) -> Result<Segment, Error> {
+        Segment::build_staged(self.config, self.staged, self.deletes, None, None)
+    }
+
+    /// Writes the segment to `path` one section at a time and maps it, so the encoded segment is
+    /// never held in memory.
+    pub fn write(self, path: impl AsRef<Path>) -> Result<Segment, Error> {
+        Segment::build_staged(
+            self.config,
+            self.staged,
+            self.deletes,
+            None,
+            Some(path.as_ref()),
+        )
+    }
+}
+
+/// Where a segment's bytes go as they are produced, followed by their checksum.
+enum Sink {
+    Memory(Vec<u8>),
+    File {
+        out: std::io::BufWriter<File>,
+        hash: Box<xxhash_rust::xxh3::Xxh3Default>,
+        tmp: std::path::PathBuf,
+        path: std::path::PathBuf,
+        len: usize,
+    },
+}
+
+impl Sink {
+    fn file(path: &Path) -> Result<Self, Error> {
+        let tmp = path.with_extension("tmp");
+        Ok(Self::File {
+            out: std::io::BufWriter::with_capacity(1 << 20, File::create(&tmp)?),
+            hash: Box::new(xxhash_rust::xxh3::Xxh3Default::new()),
+            tmp,
+            path: path.to_owned(),
+            len: 0,
+        })
+    }
+
+    fn put(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        match self {
+            Self::Memory(buf) => buf.extend_from_slice(bytes),
+            Self::File { out, hash, len, .. } => {
+                std::io::Write::write_all(out, bytes)?;
+                hash.update(bytes);
+                *len += bytes.len();
+            }
+        }
+        Ok(())
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Memory(buf) => buf.len(),
+            Self::File { len, .. } => *len,
+        }
+    }
+
+    fn finish(self) -> Result<Segment, Error> {
+        match self {
+            Self::Memory(mut buf) => {
+                let checksum = xxhash_rust::xxh3::xxh3_64(&buf);
+                buf.extend_from_slice(&checksum.to_le_bytes());
+                Segment::decode(Bytes::from_vec(buf), true)
+            }
+            Self::File {
+                mut out,
+                hash,
+                tmp,
+                path,
+                ..
+            } => {
+                std::io::Write::write_all(&mut out, &hash.digest().to_le_bytes())?;
+                let file = out
+                    .into_inner()
+                    .map_err(std::io::IntoInnerError::into_error)?;
+                file.sync_all()?;
+                std::fs::rename(&tmp, &path)?;
+                Segment::open(&path)
+            }
+        }
+    }
+}
+
 /// One section written to its own buffer, ending aligned.
 fn section(write: impl FnOnce(&mut Writer) -> Result<(), Error>) -> Result<Vec<u8>, Error> {
     let mut w = Writer::default();
@@ -1345,6 +1519,31 @@ mod tests {
         assert_eq!(seg.deletes(), [1, 9]);
         assert_eq!(seg.word_freq("machine"), 1);
         assert_eq!(seg.word_freq("ml"), 0);
+    }
+
+    #[test]
+    fn written_segments_match_built_ones() {
+        // Over a megabyte of text, so sections spill to the file in pieces.
+        let docs: Vec<Document> = (0..20_000u64)
+            .map(|i| {
+                let text = format!("title {i} with words alpha{} beta{}", i % 97, i % 13);
+                Document::new(i * 7 % 20_011, text, 0.5)
+            })
+            .collect();
+        let built = Segment::build(docs.clone(), [3, 1]).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("w.seg");
+        let mut builder = SegmentBuilder::new(BuildOptions::default());
+        for doc in docs {
+            builder.add(doc).unwrap();
+        }
+        builder.delete(1);
+        builder.delete(3);
+        let written = builder.write(&path).unwrap();
+        assert!(built.size_bytes() > 1 << 20);
+        assert_eq!(written.to_bytes(), built.to_bytes());
+        written.verify().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), built.to_bytes());
     }
 
     #[test]

@@ -45,6 +45,7 @@ mod inbox;
 mod index;
 mod search;
 mod segment;
+mod staged;
 #[cfg(feature = "store")]
 mod store;
 mod text;
@@ -67,7 +68,7 @@ pub use index::{Index, IndexOptions};
 pub use search::{AliasSuggestion, MatchKind, SearchOptions, Suggestion};
 #[doc(hidden)]
 pub use segment::Layout;
-pub use segment::{BuildOptions, Segment};
+pub use segment::{BuildOptions, Segment, SegmentBuilder};
 #[cfg(feature = "store")]
 pub use store::{block_on, BlockingStore, ObjectInfo, Store};
 

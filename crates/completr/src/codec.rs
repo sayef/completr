@@ -127,29 +127,84 @@ fn as_bytes<T: Pod>(v: &[T]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(v.as_ptr().cast::<u8>(), std::mem::size_of_val(v)) }
 }
 
+/// Where a spilling [`Writer`] passes its bytes on.
+pub(crate) type Spill<'s> = &'s mut dyn FnMut(&[u8]) -> Result<(), Error>;
+
+/// Bytes a spilling writer holds before passing them on.
+const SPILL_BYTES: usize = 1 << 20;
+
+/// Little-endian, aligned output: kept in `buf`, or passed on to a spill about a megabyte at a time
+/// so a large section is never held whole.
 #[derive(Default)]
-pub(crate) struct Writer {
+pub(crate) struct Writer<'s> {
     pub(crate) buf: Vec<u8>,
+    /// Bytes already passed on.
+    flushed: usize,
+    spill: Option<Spill<'s>>,
+    error: Option<Error>,
 }
 
-impl Writer {
-    pub(crate) fn raw(&mut self, v: &[u8]) {
+impl<'s> Writer<'s> {
+    pub(crate) fn spilling(spill: Spill<'s>) -> Self {
+        Self {
+            spill: Some(spill),
+            ..Self::default()
+        }
+    }
+
+    fn flush(&mut self) {
+        if let Some(spill) = &mut self.spill {
+            if !self.buf.is_empty() && self.error.is_none() {
+                if let Err(e) = spill(&self.buf) {
+                    self.error = Some(e);
+                }
+            }
+            self.flushed += self.buf.len();
+            self.buf.clear();
+        }
+    }
+
+    fn push(&mut self, v: &[u8]) {
+        if self.spill.is_some() && v.len() >= SPILL_BYTES {
+            self.flush();
+            if let (Some(spill), None) = (&mut self.spill, &self.error) {
+                if let Err(e) = spill(v) {
+                    self.error = Some(e);
+                }
+            }
+            self.flushed += v.len();
+            return;
+        }
         self.buf.extend_from_slice(v);
+        if self.spill.is_some() && self.buf.len() >= SPILL_BYTES {
+            self.flush();
+        }
+    }
+
+    /// Passes on what is left; the first error of any spill.
+    pub(crate) fn finish(mut self) -> Result<(), Error> {
+        self.flush();
+        self.error.map_or(Ok(()), Err)
+    }
+
+    pub(crate) fn raw(&mut self, v: &[u8]) {
+        self.push(v);
     }
 
     pub(crate) fn u64(&mut self, v: u64) {
-        self.buf.extend_from_slice(&v.to_le_bytes());
+        self.push(&v.to_le_bytes());
     }
 
     pub(crate) fn align(&mut self) {
-        self.buf.resize(self.buf.len().next_multiple_of(ALIGN), 0);
+        let pos = self.flushed + self.buf.len();
+        self.push(&[0; ALIGN][..pos.next_multiple_of(ALIGN) - pos]);
     }
 
     /// Length-prefixed bytes, padded to the alignment.
     pub(crate) fn bytes(&mut self, v: &[u8]) {
         self.align();
         self.u64(v.len() as u64);
-        self.buf.extend_from_slice(v);
+        self.push(v);
         self.align();
     }
 
@@ -157,7 +212,7 @@ impl Writer {
     pub(crate) fn column<T: Pod>(&mut self, v: &[T]) {
         self.align();
         self.u64(v.len() as u64);
-        self.buf.extend_from_slice(as_bytes(v));
+        self.push(as_bytes(v));
         self.align();
     }
 }

@@ -1,0 +1,134 @@
+//! Documents collected for one segment build: texts in one arena, a fixed-size entry per document.
+
+use std::cmp::Reverse;
+
+use crate::{Alias, Document, Error};
+
+/// The rarely used parts of a document, boxed so a plain document costs one pointer.
+struct Extra {
+    key: Option<String>,
+    aliases: Vec<Alias>,
+    contexts: Vec<String>,
+    vector: Option<Vec<f32>>,
+}
+
+struct Entry {
+    id: u64,
+    start: u32,
+    len: u32,
+    popularity: f32,
+    extra: Option<Box<Extra>>,
+}
+
+/// One staged document, borrowed.
+pub(crate) struct DocRef<'a> {
+    pub(crate) id: u64,
+    pub(crate) text: &'a str,
+    pub(crate) popularity: f32,
+    pub(crate) key: Option<&'a str>,
+    pub(crate) aliases: &'a [Alias],
+    pub(crate) contexts: &'a [String],
+    pub(crate) vector: Option<&'a [f32]>,
+}
+
+#[derive(Default)]
+pub(crate) struct Staged {
+    text: Vec<u8>,
+    entries: Vec<Entry>,
+    /// Entries by id once finished, the last added of each id.
+    order: Vec<u32>,
+}
+
+impl Staged {
+    pub(crate) fn add(&mut self, doc: Document) -> Result<(), Error> {
+        if !doc.popularity.is_finite() {
+            return Err(Error::input(format!(
+                "document {} has a non-finite popularity",
+                doc.id
+            )));
+        }
+        if doc.key.as_deref() == Some("") {
+            return Err(Error::input("document keys must not be empty"));
+        }
+        if self.entries.len() >= (u32::MAX >> 1) as usize {
+            return Err(Error::input("too many documents in one segment"));
+        }
+        let start = self.text.len();
+        if start + doc.text.len() > u32::MAX as usize {
+            return Err(Error::input("texts over 4 GiB in one segment"));
+        }
+        self.text.extend_from_slice(doc.text.as_bytes());
+        let plain = doc.key.is_none()
+            && doc.aliases.is_empty()
+            && doc.contexts.is_empty()
+            && doc.vector.is_none();
+        self.entries.push(Entry {
+            id: doc.id,
+            start: start as u32,
+            len: doc.text.len() as u32,
+            popularity: doc.popularity,
+            extra: (!plain).then(|| {
+                Box::new(Extra {
+                    key: doc.key,
+                    aliases: doc.aliases,
+                    contexts: doc.contexts,
+                    vector: doc.vector,
+                })
+            }),
+        });
+        Ok(())
+    }
+
+    /// Orders the documents by id, keeping the last added of each id; ids whose copies carry
+    /// different keys are an error.
+    pub(crate) fn finish(&mut self) -> Result<(), Error> {
+        let mut order: Vec<u32> = (0..self.entries.len() as u32).collect();
+        let entries = &self.entries;
+        order.sort_unstable_by_key(|&i| (entries[i as usize].id, Reverse(i)));
+        let key = |i: u32| {
+            entries[i as usize]
+                .extra
+                .as_ref()
+                .and_then(|e| e.key.as_deref())
+        };
+        if let Some(pair) = order.windows(2).find(|w| {
+            entries[w[0] as usize].id == entries[w[1] as usize].id && key(w[0]) != key(w[1])
+        }) {
+            return Err(Error::input(format!(
+                "keys {:?} and {:?} map to the same id {}",
+                key(pair[0]),
+                key(pair[1]),
+                entries[pair[0] as usize].id
+            )));
+        }
+        order.dedup_by_key(|i| entries[*i as usize].id);
+        self.order = order;
+        Ok(())
+    }
+
+    /// Documents after [`Staged::finish`].
+    pub(crate) fn len(&self) -> usize {
+        self.order.len()
+    }
+
+    /// The `local`th document by id, after [`Staged::finish`].
+    pub(crate) fn get(&self, local: usize) -> DocRef<'_> {
+        let e = &self.entries[self.order[local] as usize];
+        let bytes = &self.text[e.start as usize..(e.start + e.len) as usize];
+        let extra = e.extra.as_deref();
+        DocRef {
+            id: e.id,
+            // SAFETY: each text was copied whole from a `String`.
+            text: unsafe { std::str::from_utf8_unchecked(bytes) },
+            popularity: e.popularity,
+            key: extra.and_then(|x| x.key.as_deref()),
+            aliases: extra.map_or(&[], |x| &x.aliases),
+            contexts: extra.map_or(&[], |x| &x.contexts),
+            vector: extra.and_then(|x| x.vector.as_deref()),
+        }
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = DocRef<'_>> + '_ {
+        (0..self.len()).map(|local| self.get(local))
+    }
+}

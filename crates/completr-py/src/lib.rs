@@ -178,11 +178,12 @@ fn document_from_dict(py: Python<'_>, dict: &Bound<'_, PyDict>) -> PyResult<comp
 }
 
 /// Documents from dicts, `Document`s, or a pandas, polars or pyarrow table.
-fn documents(
+/// Documents from dicts, `completr.Document`s or a table, each passed to `add` as it is read.
+fn for_each_document(
     py: Python<'_>,
     source: &Bound<'_, PyAny>,
-    vectors: Option<&Bound<'_, PyAny>>,
-) -> PyResult<Vec<completr_rs::Document>> {
+    mut add: impl FnMut(completr_rs::Document) -> PyResult<()>,
+) -> PyResult<()> {
     let rows = if source.hasattr("to_pylist")? {
         source.call_method0("to_pylist")?
     } else if source.hasattr("to_dicts")? {
@@ -192,13 +193,12 @@ fn documents(
     } else {
         source.clone()
     };
-    let mut docs = Vec::new();
     for item in rows.try_iter()? {
         let item = item?;
         if let Ok(doc) = item.cast::<Document>() {
-            docs.push(doc.get().0.clone());
+            add(doc.get().0.clone())?;
         } else if let Ok(dict) = item.cast::<PyDict>() {
-            docs.push(document_from_dict(py, dict)?);
+            add(document_from_dict(py, dict)?)?;
         } else {
             return Err(PyTypeError::new_err(format!(
                 "documents must be dicts or completr.Document, not {}",
@@ -206,6 +206,19 @@ fn documents(
             )));
         }
     }
+    Ok(())
+}
+
+fn documents(
+    py: Python<'_>,
+    source: &Bound<'_, PyAny>,
+    vectors: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Vec<completr_rs::Document>> {
+    let mut docs = Vec::new();
+    for_each_document(py, source, |doc| {
+        docs.push(doc);
+        Ok(())
+    })?;
     if let Some(vectors) = vectors {
         let rows = vector_rows(py, vectors, docs.len())?;
         for (doc, vector) in docs.iter_mut().zip(rows) {
@@ -213,6 +226,26 @@ fn documents(
         }
     }
     Ok(docs)
+}
+
+/// A builder holding `source`'s documents; without `vectors` they stream in, never all held as
+/// documents at once.
+fn builder(
+    py: Python<'_>,
+    source: &Bound<'_, PyAny>,
+    vectors: Option<&Bound<'_, PyAny>>,
+    options: completr_rs::BuildOptions,
+) -> PyResult<completr_rs::SegmentBuilder> {
+    let mut builder = completr_rs::SegmentBuilder::new(options);
+    match vectors {
+        Some(_) => {
+            for doc in documents(py, source, vectors)? {
+                builder.add(doc).map_err(to_py_err)?;
+            }
+        }
+        None => for_each_document(py, source, |doc| builder.add(doc).map_err(to_py_err))?,
+    }
+    Ok(builder)
 }
 
 fn numeric_ids(values: Vec<Id>) -> Vec<u64> {
@@ -406,10 +439,12 @@ struct Segment(Arc<completr_rs::Segment>);
 #[pymethods]
 impl Segment {
     /// `vectors`, optional, holds one embedding row per document, e.g. a float32 numpy array.
+    /// With `path`, the segment is written there as it is built and opened from it.
     #[staticmethod]
     #[pyo3(signature = (
         documents, deletes = Vec::new(), vectors = None, *,
         min_word_chars = 3, max_edit_distance = 2, fuzzy_prefix_chars = 7, vector_bits = 4, compact_keys = false, build_threads = 1,
+        path = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn build(
@@ -423,6 +458,7 @@ impl Segment {
         vector_bits: u8,
         compact_keys: bool,
         build_threads: usize,
+        path: Option<PathBuf>,
     ) -> PyResult<Self> {
         let options = build_options(
             min_word_chars,
@@ -432,10 +468,15 @@ impl Segment {
             compact_keys,
             build_threads,
         );
-        let docs = self::documents(py, documents, vectors.as_ref())?;
-        let deletes = numeric_ids(deletes);
+        let mut builder = builder(py, documents, vectors.as_ref(), options)?;
+        for id in numeric_ids(deletes) {
+            builder.delete(id);
+        }
         let segment = py
-            .detach(|| completr_rs::Segment::build_with(options, docs, deletes))
+            .detach(|| match path {
+                Some(path) => builder.write(path),
+                None => builder.build(),
+            })
             .map_err(to_py_err)?;
         Ok(Self(Arc::new(segment)))
     }
@@ -689,7 +730,6 @@ impl Index {
         vector_bits: u8,
         build_threads: usize,
     ) -> PyResult<Self> {
-        let docs = self::documents(py, documents, vectors.as_ref())?;
         let build = build_options(
             min_word_chars,
             max_edit_distance,
@@ -698,9 +738,13 @@ impl Index {
             false,
             build_threads,
         );
+        let builder = builder(py, documents, vectors.as_ref(), build)?;
         let options = index_options(max_score, popularity_weight, 3, 100, 10_000, 1);
         let index = py
-            .detach(|| completr_rs::Index::from_documents_with(docs, build, options))
+            .detach(|| {
+                let segment = builder.build()?;
+                completr_rs::Index::new(vec![Arc::new(segment)], options)
+            })
             .map_err(to_py_err)?;
         Ok(Self(Arc::new(index)))
     }
