@@ -8,11 +8,6 @@ All notable changes to this project are documented here. The format follows
 
 ## [0.1.0](https://github.com/sayef/completr/releases/tag/v0.1.0) - 2026-10-04
 
-### Changed
-
-- Serverless autocompletion for Rust and Python
-- Put every layer's scores on the first layer's scale, and make the case for layers with tenant, locale, listener, promotion, takedown and experiment examples
-
 The first public release.
 
 ### Added
