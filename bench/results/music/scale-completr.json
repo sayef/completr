@@ -1,0 +1,88 @@
+{
+ "engine": "completr",
+ "variant": null,
+ "date": "2026-10-04",
+ "machine": {
+  "cpu": "Apple M1 Pro",
+  "cores": 10,
+  "memory_bytes": 17179869184,
+  "os": "macOS 26.7",
+  "python": "3.13.7"
+ },
+ "time_limit_s": 7200.0,
+ "memory_limit_bytes": 10000000000,
+ "sizes": [
+  {
+   "size": 4000000,
+   "build": {
+    "status": "ok",
+    "index_s": 30.590044041979127,
+    "segments_written_s": 21.06046041706577,
+    "disk_bytes": 367647424,
+    "segments_written": 12,
+    "segments": 1,
+    "memory_budget_bytes": 268435456,
+    "build_threads": 1,
+    "ids": "integers",
+    "docs": 4000000,
+    "input_rss_bytes": 381780688,
+    "peak_rss_bytes": 598263080,
+    "build_rss_bytes": 216482392
+   },
+   "memory": {
+    "status": "ok",
+    "baseline_rss_bytes": 30343648,
+    "rss_delta_after_open_bytes": 18137424,
+    "rss_delta_after_5000_queries_bytes": 65651072,
+    "peak_rss_bytes": 466190336,
+    "open_s": 0.03234291705302894,
+    "warm_prefix_latency": {
+     "in_process_ms": {
+      "n": 2000,
+      "p50": 1.4822090743109584,
+      "p90": 7.823250023648143,
+      "p99": 20.248375018127263,
+      "mean": 3.084712500742171,
+      "max": 31.26716602127999
+     }
+    }
+   }
+  },
+  {
+   "size": 16000000,
+   "build": {
+    "status": "ok",
+    "index_s": 129.60131612501573,
+    "segments_written_s": 82.45437479193788,
+    "disk_bytes": 1310794808,
+    "segments_written": 45,
+    "segments": 1,
+    "memory_budget_bytes": 268435456,
+    "build_threads": 1,
+    "ids": "integers",
+    "docs": 16000000,
+    "input_rss_bytes": 1449264592,
+    "peak_rss_bytes": 1736362984,
+    "build_rss_bytes": 287098392
+   },
+   "memory": {
+    "status": "ok",
+    "baseline_rss_bytes": 29917640,
+    "rss_delta_after_open_bytes": 40108872,
+    "rss_delta_after_5000_queries_bytes": 60671056,
+    "peak_rss_bytes": 1225277440,
+    "open_s": 0.05887541698757559,
+    "warm_prefix_latency": {
+     "in_process_ms": {
+      "n": 2000,
+      "p50": 2.7307920390740037,
+      "p90": 19.33720789384097,
+      "p99": 60.742583009414375,
+      "mean": 7.4721051473752595,
+      "max": 98.51741592865437
+     }
+    }
+   }
+  }
+ ]
+}

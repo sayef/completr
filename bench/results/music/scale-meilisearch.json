@@ -1,0 +1,112 @@
+{
+ "engine": "meilisearch",
+ "variant": null,
+ "date": "2026-10-03",
+ "machine": {
+  "cpu": "Apple M1 Pro",
+  "cores": 10,
+  "memory_bytes": 17179869184,
+  "os": "macOS 26.7",
+  "python": "3.13.7"
+ },
+ "time_limit_s": 7200.0,
+ "memory_limit_bytes": 12000000000,
+ "sizes": [
+  {
+   "size": 4000000,
+   "build": {
+    "status": "ok",
+    "docs": 4000000,
+    "index_s": 65.11773699999321,
+    "engine_index_duration": "PT25.234307S",
+    "disk_bytes": 5627269120,
+    "peak_rss_bytes": 3798473472,
+    "settings": {
+     "searchableAttributes": [
+      "title"
+     ],
+     "displayedAttributes": [
+      "id"
+     ],
+     "rankingRules": [
+      "words",
+      "typo",
+      "proximity",
+      "attributeRank",
+      "sort",
+      "wordPosition",
+      "exactness",
+      "score:desc"
+     ]
+    }
+   },
+   "rss_after_index_bytes": 2338151336,
+   "warm_prefix_latency": {
+    "round_trip_ms": {
+     "n": 2000,
+     "p50": 3.5719999577850103,
+     "p90": 6.427541025914252,
+     "p99": 10.494499932974577,
+     "mean": 4.0223901962745,
+     "max": 17.502499977126718
+    },
+    "engine_ms": {
+     "n": 2000,
+     "p50": 2,
+     "p90": 5,
+     "p99": 9,
+     "mean": 2.702,
+     "max": 16
+    }
+   }
+  },
+  {
+   "size": 16000000,
+   "build": {
+    "status": "ok",
+    "docs": 16000000,
+    "index_s": 272.5501502499683,
+    "engine_index_duration": "PT181.318566S",
+    "disk_bytes": 16924463104,
+    "peak_rss_bytes": 5466925496,
+    "settings": {
+     "searchableAttributes": [
+      "title"
+     ],
+     "displayedAttributes": [
+      "id"
+     ],
+     "rankingRules": [
+      "words",
+      "typo",
+      "proximity",
+      "attributeRank",
+      "sort",
+      "wordPosition",
+      "exactness",
+      "score:desc"
+     ]
+    }
+   },
+   "rss_after_index_bytes": 2410545184,
+   "warm_prefix_latency": {
+    "round_trip_ms": {
+     "n": 2000,
+     "p50": 11.552167008630931,
+     "p90": 26.599250035360456,
+     "p99": 82.58362498600036,
+     "mean": 15.132986710348632,
+     "max": 184.3552499776706
+    },
+    "engine_ms": {
+     "n": 2000,
+     "p50": 10,
+     "p90": 25,
+     "p99": 81,
+     "mean": 13.6545,
+     "max": 183
+    }
+   }
+  }
+ ]
+}

@@ -1,0 +1,116 @@
+{
+ "engine": "typesense",
+ "variant": null,
+ "date": "2026-10-03",
+ "machine": {
+  "cpu": "Apple M1 Pro",
+  "cores": 10,
+  "memory_bytes": 17179869184,
+  "os": "macOS 26.7",
+  "python": "3.13.7"
+ },
+ "time_limit_s": 7200.0,
+ "memory_limit_bytes": 12000000000,
+ "sizes": [
+  {
+   "size": 4000000,
+   "build": {
+    "status": "ok",
+    "docs": 4000000,
+    "index_s": 178.05292066710535,
+    "disk_bytes": 1331335168,
+    "peak_rss_bytes": 848643488,
+    "schema": {
+     "name": "hn",
+     "fields": [
+      {
+       "name": "title",
+       "type": "string"
+      },
+      {
+       "name": "score",
+       "type": "int32"
+      }
+     ],
+     "default_sorting_field": "score"
+    },
+    "search_params": {
+     "q": "<q>",
+     "query_by": "title",
+     "per_page": 10,
+     "include_fields": "id",
+     "highlight_fields": "none"
+    }
+   },
+   "rss_after_index_bytes": 840238496,
+   "warm_prefix_latency": {
+    "round_trip_ms": {
+     "n": 2000,
+     "p50": 13.959500007331371,
+     "p90": 95.85025010164827,
+     "p99": 357.3469170369208,
+     "mean": 41.671808759041596,
+     "max": 2235.125874984078
+    },
+    "engine_ms": {
+     "n": 2000,
+     "p50": 12,
+     "p90": 94,
+     "p99": 356,
+     "mean": 40.11,
+     "max": 2234
+    }
+   }
+  },
+  {
+   "size": 16000000,
+   "build": {
+    "status": "ok",
+    "docs": 16000000,
+    "index_s": 1181.9167232500622,
+    "disk_bytes": 4480262144,
+    "peak_rss_bytes": 1833060440,
+    "schema": {
+     "name": "hn",
+     "fields": [
+      {
+       "name": "title",
+       "type": "string"
+      },
+      {
+       "name": "score",
+       "type": "int32"
+      }
+     ],
+     "default_sorting_field": "score"
+    },
+    "search_params": {
+     "q": "<q>",
+     "query_by": "title",
+     "per_page": 10,
+     "include_fields": "id",
+     "highlight_fields": "none"
+    }
+   },
+   "rss_after_index_bytes": 1830488152,
+   "warm_prefix_latency": {
+    "round_trip_ms": {
+     "n": 2000,
+     "p50": 25.054250028915703,
+     "p90": 130.64083398785442,
+     "p99": 852.0656670443714,
+     "mean": 75.40487035753904,
+     "max": 4568.5835420154035
+    },
+    "engine_ms": {
+     "n": 2000,
+     "p50": 23,
+     "p90": 129,
+     "p99": 850,
+     "mean": 73.55,
+     "max": 4567
+    }
+   }
+  }
+ ]
+}

@@ -1,0 +1,77 @@
+[
+ {
+  "query": "danc",
+  "caption": "prefix completion",
+  "hits": [
+   [
+    "Dancing Queen \u2013 ABBA",
+    "prefix",
+    0.55
+   ],
+   [
+    "Dancing in the Dark \u2013 Bruce Springsteen",
+    "prefix",
+    0.46
+   ],
+   [
+    "Dancing On My Own \u2013 Robyn",
+    "prefix",
+    0.37
+   ]
+  ]
+ },
+ {
+  "query": "rhcp",
+  "caption": "abbreviations",
+  "hits": [
+   [
+    "Under the Bridge \u2013 Red Hot Chili Peppers",
+    "abbreviation",
+    0.49
+   ]
+  ]
+ },
+ {
+  "query": "bohemain rapsody",
+  "caption": "spelling correction",
+  "hits": [
+   [
+    "Bohemian Rhapsody \u2013 Queen",
+    "fuzzy",
+    0.19
+   ]
+  ]
+ },
+ {
+  "query": "dancingqueen",
+  "caption": "word decomposition",
+  "hits": [
+   [
+    "Dancing Queen \u2013 ABBA",
+    "prefix",
+    0.55
+   ]
+  ]
+ },
+ {
+  "query": "queen",
+  "caption": "infix matches",
+  "hits": [
+   [
+    "Bohemian Rhapsody \u2013 Queen",
+    "infix",
+    0.36
+   ],
+   [
+    "Dancing Queen \u2013 ABBA",
+    "infix",
+    0.33
+   ],
+   [
+    "Killer Queen \u2013 Queen",
+    "infix",
+    0.25
+   ]
+  ]
+ }
+]

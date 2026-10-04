@@ -1,0 +1,246 @@
+{
+ "engine": "completr",
+ "variant": null,
+ "date": "2026-10-04",
+ "machine": {
+  "cpu": "Apple M1 Pro",
+  "cores": 10,
+  "memory_bytes": 17179869184,
+  "os": "macOS 26.7",
+  "python": "3.13.7"
+ },
+ "build_8_threads": {
+  "status": "ok",
+  "index_s": 0.28947954101022333,
+  "segments_written_s": 0.2894779579946771,
+  "disk_bytes": 10627720,
+  "segments_written": 1,
+  "segments": 1,
+  "memory_budget_bytes": 268435456,
+  "build_threads": 8,
+  "ids": "integers",
+  "docs": 124440,
+  "input_rss_bytes": 36717000,
+  "peak_rss_bytes": 121897632,
+  "build_rss_bytes": 85180632
+ },
+ "build_uuid": {
+  "status": "ok",
+  "index_s": 0.6607073749182746,
+  "segments_written_s": 0.6607058750232682,
+  "disk_bytes": 13268912,
+  "segments_written": 1,
+  "segments": 1,
+  "memory_budget_bytes": 268435456,
+  "build_threads": 1,
+  "ids": "uuid strings",
+  "docs": 124440,
+  "input_rss_bytes": 36717000,
+  "peak_rss_bytes": 96977520,
+  "build_rss_bytes": 60260520
+ },
+ "build": {
+  "status": "ok",
+  "index_s": 0.2920340000418946,
+  "segments_written_s": 0.2920324170263484,
+  "disk_bytes": 10627720,
+  "segments_written": 1,
+  "segments": 1,
+  "memory_budget_bytes": 268435456,
+  "build_threads": 1,
+  "ids": "integers",
+  "docs": 124440,
+  "input_rss_bytes": 36815304,
+  "peak_rss_bytes": 96010864,
+  "build_rss_bytes": 59195560
+ },
+ "memory": {
+  "status": "ok",
+  "baseline_rss_bytes": 30294472,
+  "rss_delta_after_open_bytes": 4030536,
+  "rss_delta_after_5000_queries_bytes": 10158176,
+  "peak_rss_bytes": 74137600,
+  "open_s": 0.013159458059817553,
+  "warm_prefix_latency": {
+   "in_process_ms": {
+    "n": 2000,
+    "p50": 0.1591669861227274,
+    "p90": 0.4135830095037818,
+    "p99": 0.8206659695133567,
+    "mean": 0.19955305656185374,
+    "max": 2.3234159452840686
+   }
+  }
+ },
+ "open_s": 0.013172457925975323,
+ "version": "completr 0.1.0",
+ "latency": {
+  "prefix": {
+   "in_process_ms": {
+    "n": 23292,
+    "p50": 0.1486249966546893,
+    "p90": 0.3802499268203974,
+    "p99": 0.6205419776961207,
+    "mean": 0.18243589930409232,
+    "max": 2.47683294583112
+   }
+  },
+  "typo1": {
+   "in_process_ms": {
+    "n": 1000,
+    "p50": 0.17512496560811996,
+    "p90": 0.43875002302229404,
+    "p99": 0.8565000025555491,
+    "mean": 0.22742931230459362,
+    "max": 1.8959160661324859
+   }
+  },
+  "typo2": {
+   "in_process_ms": {
+    "n": 1000,
+    "p50": 0.15862495638430119,
+    "p90": 0.5376669578254223,
+    "p99": 1.0284159798175097,
+    "mean": 0.23584286984987557,
+    "max": 1.3092500157654285
+   }
+  },
+  "multiword": {
+   "in_process_ms": {
+    "n": 2000,
+    "p50": 0.11716701555997133,
+    "p90": 0.23945793509483337,
+    "p99": 0.4332499811425805,
+    "mean": 0.1346922860830091,
+    "max": 1.0264579905197024
+   }
+  }
+ },
+ "quality": {
+  "popular": {
+   "clean": {
+    "targets": 500,
+    "mrr_over_prefixes": 0.861502660202605,
+    "s@1_len3": 0.204,
+    "s@5_len3": 0.434,
+    "s@10_len3": 0.53,
+    "s@1_len5": 0.41082164328657317,
+    "s@5_len5": 0.6813627254509018,
+    "s@10_len5": 0.7635270541082164,
+    "s@1_len8": 0.6646586345381527,
+    "s@5_len8": 0.8755020080321285,
+    "s@10_len8": 0.9096385542168675,
+    "reached_top1": 1.0,
+    "keystrokes_top1": 7.388,
+    "chars_saved_top1": 0.8044406367574395,
+    "reached_top5": 1.0,
+    "keystrokes_top5": 4.874,
+    "chars_saved_top5": 0.8729838461367148
+   },
+   "typo": {
+    "targets": 488,
+    "mrr_over_prefixes": 0.842524242295067,
+    "s@1_len3": 0.17418032786885246,
+    "s@5_len3": 0.35040983606557374,
+    "s@10_len3": 0.42827868852459017,
+    "s@1_len5": 0.375,
+    "s@5_len5": 0.610655737704918,
+    "s@10_len5": 0.694672131147541,
+    "s@1_len8": 0.5963114754098361,
+    "s@5_len8": 0.8176229508196722,
+    "s@10_len8": 0.8627049180327869,
+    "reached_top1": 1.0,
+    "keystrokes_top1": 7.795081967213115,
+    "chars_saved_top1": 0.7996170646408208,
+    "reached_top5": 1.0,
+    "keystrokes_top5": 5.290983606557377,
+    "chars_saved_top5": 0.8653932160782452
+   }
+  },
+  "uniform": {
+   "clean": {
+    "targets": 300,
+    "mrr_over_prefixes": 0.8037818258042168,
+    "s@1_len3": 0.02666666666666667,
+    "s@5_len3": 0.12666666666666668,
+    "s@10_len3": 0.20333333333333334,
+    "s@1_len5": 0.18394648829431437,
+    "s@5_len5": 0.3377926421404682,
+    "s@10_len5": 0.4180602006688963,
+    "s@1_len8": 0.46488294314381273,
+    "s@5_len8": 0.6521739130434783,
+    "s@10_len8": 0.7190635451505016,
+    "reached_top1": 0.9966666666666667,
+    "keystrokes_top1": 9.903010033444817,
+    "chars_saved_top1": 0.7507808743416923,
+    "reached_top5": 1.0,
+    "keystrokes_top5": 7.486666666666666,
+    "chars_saved_top5": 0.8132008379294853
+   },
+   "typo": {
+    "targets": 298,
+    "mrr_over_prefixes": 0.779752653318965,
+    "s@1_len3": 0.02348993288590604,
+    "s@5_len3": 0.1040268456375839,
+    "s@10_len3": 0.17114093959731544,
+    "s@1_len5": 0.13758389261744966,
+    "s@5_len5": 0.27181208053691275,
+    "s@10_len5": 0.348993288590604,
+    "s@1_len8": 0.348993288590604,
+    "s@5_len8": 0.5503355704697986,
+    "s@10_len8": 0.6174496644295302,
+    "reached_top1": 0.9932885906040269,
+    "keystrokes_top1": 10.70945945945946,
+    "chars_saved_top1": 0.7363409410311975,
+    "reached_top5": 0.9966442953020134,
+    "keystrokes_top5": 8.20875420875421,
+    "chars_saved_top5": 0.7997110074223795
+   }
+  },
+  "misspelled": {
+   "clean": {
+    "targets": 500,
+    "mrr_over_prefixes": 0.8719269913654983,
+    "s@1_len3": 0.156,
+    "s@5_len3": 0.394,
+    "s@10_len3": 0.482,
+    "s@1_len5": 0.374,
+    "s@5_len5": 0.61,
+    "s@10_len5": 0.7,
+    "s@1_len8": 0.63,
+    "s@5_len8": 0.814,
+    "s@10_len8": 0.87,
+    "reached_top1": 1.0,
+    "keystrokes_top1": 7.69,
+    "chars_saved_top1": 0.8261434479558373,
+    "reached_top5": 1.0,
+    "keystrokes_top5": 5.366,
+    "chars_saved_top5": 0.8801555427212044
+   },
+   "typo": {
+    "targets": 500,
+    "mrr_over_prefixes": 0.8536313225281238,
+    "s@1_len3": 0.146,
+    "s@5_len3": 0.366,
+    "s@10_len3": 0.448,
+    "s@1_len5": 0.352,
+    "s@5_len5": 0.588,
+    "s@10_len5": 0.668,
+    "s@1_len8": 0.61,
+    "s@5_len8": 0.79,
+    "s@10_len8": 0.844,
+    "reached_top1": 1.0,
+    "keystrokes_top1": 7.854,
+    "chars_saved_top1": 0.8217554854430259,
+    "reached_top5": 1.0,
+    "keystrokes_top5": 5.5,
+    "chars_saved_top5": 0.8766999511463686
+   }
+  }
+ },
+ "throughput": {
+  "clients": 8,
+  "qps": 40016.2,
+  "client_model": "threads"
+ }
+}

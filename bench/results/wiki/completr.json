@@ -1,0 +1,246 @@
+{
+ "engine": "completr",
+ "variant": null,
+ "date": "2026-10-04",
+ "machine": {
+  "cpu": "Apple M1 Pro",
+  "cores": 10,
+  "memory_bytes": 17179869184,
+  "os": "macOS 26.7",
+  "python": "3.13.7"
+ },
+ "build_8_threads": {
+  "status": "ok",
+  "index_s": 18.57736716698855,
+  "segments_written_s": 10.057412458001636,
+  "disk_bytes": 338157440,
+  "segments_written": 9,
+  "segments": 1,
+  "memory_budget_bytes": 268435456,
+  "build_threads": 8,
+  "ids": "integers",
+  "docs": 7235024,
+  "input_rss_bytes": 460931864,
+  "peak_rss_bytes": 902792752,
+  "build_rss_bytes": 441860888
+ },
+ "build_uuid": {
+  "status": "ok",
+  "index_s": 51.15191016707104,
+  "segments_written_s": 37.964042250066996,
+  "disk_bytes": 485345032,
+  "segments_written": 16,
+  "segments": 1,
+  "memory_budget_bytes": 268435456,
+  "build_threads": 1,
+  "ids": "uuid strings",
+  "docs": 7235024,
+  "input_rss_bytes": 460768000,
+  "peak_rss_bytes": 651986048,
+  "build_rss_bytes": 191218048
+ },
+ "build": {
+  "status": "ok",
+  "index_s": 25.604627792024985,
+  "segments_written_s": 14.963378082960844,
+  "disk_bytes": 338157440,
+  "segments_written": 9,
+  "segments": 1,
+  "memory_budget_bytes": 268435456,
+  "build_threads": 1,
+  "ids": "integers",
+  "docs": 7235024,
+  "input_rss_bytes": 460489472,
+  "peak_rss_bytes": 746374536,
+  "build_rss_bytes": 285885064
+ },
+ "memory": {
+  "status": "ok",
+  "baseline_rss_bytes": 27312584,
+  "rss_delta_after_open_bytes": 23822624,
+  "rss_delta_after_5000_queries_bytes": 68419968,
+  "peak_rss_bytes": 427802624,
+  "open_s": 0.030588500085286796,
+  "warm_prefix_latency": {
+   "in_process_ms": {
+    "n": 2000,
+    "p50": 0.2859160304069519,
+    "p90": 2.10620800498873,
+    "p99": 5.31375000718981,
+    "mean": 0.7634096158435568,
+    "max": 15.598207945004106
+   }
+  }
+ },
+ "open_s": 0.030086750048212707,
+ "version": "completr 0.1.0",
+ "latency": {
+  "prefix": {
+   "in_process_ms": {
+    "n": 10100,
+    "p50": 0.28595805633813143,
+    "p90": 1.9551659934222698,
+    "p99": 5.649792030453682,
+    "mean": 0.7498408973996187,
+    "max": 17.114875023253262
+   }
+  },
+  "typo1": {
+   "in_process_ms": {
+    "n": 1000,
+    "p50": 1.0125839617103338,
+    "p90": 4.8900420079007745,
+    "p99": 8.106457884423435,
+    "mean": 1.8938009507255629,
+    "max": 9.734040941111743
+   }
+  },
+  "typo2": {
+   "in_process_ms": {
+    "n": 1000,
+    "p50": 0.8684999775141478,
+    "p90": 6.109916954301298,
+    "p99": 9.965333039872348,
+    "mean": 1.942113240249455,
+    "max": 14.005415956489742
+   }
+  },
+  "multiword": {
+   "in_process_ms": {
+    "n": 2000,
+    "p50": 0.6343340501189232,
+    "p90": 1.6986249247565866,
+    "p99": 3.314416971988976,
+    "mean": 0.8309649112634361,
+    "max": 5.936458008363843
+   }
+  }
+ },
+ "quality": {
+  "popular": {
+   "clean": {
+    "targets": 500,
+    "mrr_over_prefixes": 0.5953914875073144,
+    "s@1_len3": 0.046,
+    "s@5_len3": 0.138,
+    "s@10_len3": 0.23,
+    "s@1_len5": 0.25851703406813625,
+    "s@5_len5": 0.46292585170340683,
+    "s@10_len5": 0.5591182364729459,
+    "s@1_len8": 0.5970464135021097,
+    "s@5_len8": 0.7848101265822784,
+    "s@10_len8": 0.8417721518987342,
+    "reached_top1": 1.0,
+    "keystrokes_top1": 8.292,
+    "chars_saved_top1": 0.4811580178230694,
+    "reached_top5": 1.0,
+    "keystrokes_top5": 6.29,
+    "chars_saved_top5": 0.5974084718153432
+   },
+   "typo": {
+    "targets": 463,
+    "mrr_over_prefixes": 0.5271767863415839,
+    "s@1_len3": 0.03455723542116631,
+    "s@5_len3": 0.10151187904967603,
+    "s@10_len3": 0.16846652267818574,
+    "s@1_len5": 0.16702819956616052,
+    "s@5_len5": 0.29718004338394793,
+    "s@10_len5": 0.3796095444685466,
+    "s@1_len8": 0.4482758620689655,
+    "s@5_len8": 0.6252873563218391,
+    "s@10_len8": 0.6827586206896552,
+    "reached_top1": 0.9654427645788337,
+    "keystrokes_top1": 9.04026845637584,
+    "chars_saved_top1": 0.44229092100993844,
+    "reached_top5": 0.9762419006479481,
+    "keystrokes_top5": 6.913716814159292,
+    "chars_saved_top5": 0.560098216854693
+   }
+  },
+  "uniform": {
+   "clean": {
+    "targets": 300,
+    "mrr_over_prefixes": 0.4879003048351363,
+    "s@1_len3": 0.0033333333333333335,
+    "s@5_len3": 0.01,
+    "s@10_len3": 0.013333333333333334,
+    "s@1_len5": 0.09731543624161074,
+    "s@5_len5": 0.17114093959731544,
+    "s@10_len5": 0.21476510067114093,
+    "s@1_len8": 0.29225352112676056,
+    "s@5_len8": 0.5035211267605634,
+    "s@10_len8": 0.5845070422535211,
+    "reached_top1": 0.9866666666666667,
+    "keystrokes_top1": 11.739864864864865,
+    "chars_saved_top1": 0.38332564519172707,
+    "reached_top5": 1.0,
+    "keystrokes_top5": 9.356666666666667,
+    "chars_saved_top5": 0.4838547108763267
+   },
+   "typo": {
+    "targets": 275,
+    "mrr_over_prefixes": 0.43645453455082567,
+    "s@1_len3": 0.0,
+    "s@5_len3": 0.0,
+    "s@10_len3": 0.0,
+    "s@1_len5": 0.04363636363636364,
+    "s@5_len5": 0.07636363636363637,
+    "s@10_len5": 0.09818181818181818,
+    "s@1_len8": 0.17045454545454544,
+    "s@5_len8": 0.375,
+    "s@10_len8": 0.4583333333333333,
+    "reached_top1": 0.9345454545454546,
+    "keystrokes_top1": 12.844357976653697,
+    "chars_saved_top1": 0.3518366145458927,
+    "reached_top5": 0.9745454545454545,
+    "keystrokes_top5": 10.26865671641791,
+    "chars_saved_top5": 0.45043534476472435
+   }
+  },
+  "misspelled": {
+   "clean": {
+    "targets": 500,
+    "mrr_over_prefixes": 0.6116967855824527,
+    "s@1_len3": 0.026,
+    "s@5_len3": 0.088,
+    "s@10_len3": 0.13,
+    "s@1_len5": 0.116,
+    "s@5_len5": 0.296,
+    "s@10_len5": 0.392,
+    "s@1_len8": 0.3534136546184739,
+    "s@5_len8": 0.5843373493975904,
+    "s@10_len8": 0.6686746987951807,
+    "reached_top1": 1.0,
+    "keystrokes_top1": 13.15,
+    "chars_saved_top1": 0.5117062544046828,
+    "reached_top5": 1.0,
+    "keystrokes_top5": 9.428,
+    "chars_saved_top5": 0.6458048520661843
+   },
+   "typo": {
+    "targets": 500,
+    "mrr_over_prefixes": 0.5665598341254966,
+    "s@1_len3": 0.024,
+    "s@5_len3": 0.078,
+    "s@10_len3": 0.118,
+    "s@1_len5": 0.096,
+    "s@5_len5": 0.252,
+    "s@10_len5": 0.326,
+    "s@1_len8": 0.2891566265060241,
+    "s@5_len8": 0.5,
+    "s@10_len8": 0.5823293172690763,
+    "reached_top1": 0.986,
+    "keystrokes_top1": 13.397565922920892,
+    "chars_saved_top1": 0.4958688704866645,
+    "reached_top5": 0.994,
+    "keystrokes_top5": 9.627766599597585,
+    "chars_saved_top5": 0.628556065330435
+   }
+  }
+ },
+ "throughput": {
+  "clients": 8,
+  "qps": 9536.3,
+  "client_model": "threads"
+ }
+}

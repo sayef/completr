@@ -1,0 +1,166 @@
+{
+ "engine": "typesense",
+ "variant": null,
+ "date": "2026-10-03",
+ "machine": {
+  "cpu": "Apple M1 Pro",
+  "cores": 10,
+  "memory_bytes": 17179869184,
+  "os": "macOS 26.7",
+  "python": "3.13.7"
+ },
+ "time_limit_s": 7200.0,
+ "memory_limit_bytes": 12000000000,
+ "sizes": [
+  {
+   "size": 1000000,
+   "build": {
+    "status": "ok",
+    "docs": 1000000,
+    "index_s": 25.264204457984306,
+    "disk_bytes": 190406656,
+    "peak_rss_bytes": 448808040,
+    "schema": {
+     "name": "hn",
+     "fields": [
+      {
+       "name": "title",
+       "type": "string"
+      },
+      {
+       "name": "score",
+       "type": "int32"
+      }
+     ],
+     "default_sorting_field": "score"
+    },
+    "search_params": {
+     "q": "<q>",
+     "query_by": "title",
+     "per_page": 10,
+     "include_fields": "id",
+     "highlight_fields": "none"
+    }
+   },
+   "rss_after_index_bytes": 443827304,
+   "warm_prefix_latency": {
+    "round_trip_ms": {
+     "n": 2000,
+     "p50": 3.565290942788124,
+     "p90": 26.399541995488107,
+     "p99": 212.6365409931168,
+     "mean": 14.519923232903238,
+     "max": 1059.0274999849498
+    },
+    "engine_ms": {
+     "n": 2000,
+     "p50": 2,
+     "p90": 25,
+     "p99": 211,
+     "mean": 13.241,
+     "max": 1057
+    }
+   }
+  },
+  {
+   "size": 2000000,
+   "build": {
+    "status": "ok",
+    "docs": 2000000,
+    "index_s": 51.18377791601233,
+    "disk_bytes": 486645760,
+    "peak_rss_bytes": 569918688,
+    "schema": {
+     "name": "hn",
+     "fields": [
+      {
+       "name": "title",
+       "type": "string"
+      },
+      {
+       "name": "score",
+       "type": "int32"
+      }
+     ],
+     "default_sorting_field": "score"
+    },
+    "search_params": {
+     "q": "<q>",
+     "query_by": "title",
+     "per_page": 10,
+     "include_fields": "id",
+     "highlight_fields": "none"
+    }
+   },
+   "rss_after_index_bytes": 569672928,
+   "warm_prefix_latency": {
+    "round_trip_ms": {
+     "n": 2000,
+     "p50": 4.782959003932774,
+     "p90": 35.275167087092996,
+     "p99": 308.95895801950246,
+     "mean": 20.779927344119642,
+     "max": 1646.971458918415
+    },
+    "engine_ms": {
+     "n": 2000,
+     "p50": 3,
+     "p90": 34,
+     "p99": 307,
+     "mean": 19.467,
+     "max": 1646
+    }
+   }
+  },
+  {
+   "size": 4000000,
+   "build": {
+    "status": "ok",
+    "docs": 4000000,
+    "index_s": 108.08988141699228,
+    "disk_bytes": 927506432,
+    "peak_rss_bytes": 765216112,
+    "schema": {
+     "name": "hn",
+     "fields": [
+      {
+       "name": "title",
+       "type": "string"
+      },
+      {
+       "name": "score",
+       "type": "int32"
+      }
+     ],
+     "default_sorting_field": "score"
+    },
+    "search_params": {
+     "q": "<q>",
+     "query_by": "title",
+     "per_page": 10,
+     "include_fields": "id",
+     "highlight_fields": "none"
+    }
+   },
+   "rss_after_index_bytes": 765281648,
+   "warm_prefix_latency": {
+    "round_trip_ms": {
+     "n": 2000,
+     "p50": 6.408208981156349,
+     "p90": 45.843041967600584,
+     "p99": 480.4264159174636,
+     "mean": 25.647882073069923,
+     "max": 1180.2510420093313
+    },
+    "engine_ms": {
+     "n": 2000,
+     "p50": 5,
+     "p90": 44,
+     "p99": 479,
+     "mean": 24.316,
+     "max": 1179
+    }
+   }
+  }
+ ]
+}

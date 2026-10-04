@@ -1,0 +1,231 @@
+{
+ "engine": "completr",
+ "variant": null,
+ "date": "2026-10-04",
+ "machine": {
+  "cpu": "Apple M1 Pro",
+  "cores": 10,
+  "memory_bytes": 17179869184,
+  "os": "macOS 26.7",
+  "python": "3.13.7"
+ },
+ "build_8_threads": {
+  "status": "ok",
+  "index_s": 299.7069373750128,
+  "segments_written_s": 167.8831005829852,
+  "disk_bytes": 3139047936,
+  "segments_written": 113,
+  "segments": 1,
+  "memory_budget_bytes": 268435456,
+  "build_threads": 8,
+  "ids": "integers",
+  "docs": 40393216,
+  "input_rss_bytes": 3619556352,
+  "peak_rss_bytes": 4096940680,
+  "build_rss_bytes": 477384328
+ },
+ "build": {
+  "status": "ok",
+  "index_s": 317.4133767079329,
+  "segments_written_s": 196.7297568329377,
+  "disk_bytes": 3139047936,
+  "segments_written": 113,
+  "segments": 1,
+  "memory_budget_bytes": 268435456,
+  "build_threads": 1,
+  "ids": "integers",
+  "docs": 40393216,
+  "input_rss_bytes": 3619376104,
+  "peak_rss_bytes": 4166851136,
+  "build_rss_bytes": 547475032
+ },
+ "memory": {
+  "status": "ok",
+  "baseline_rss_bytes": 29835720,
+  "rss_delta_after_open_bytes": 67536144,
+  "rss_delta_after_5000_queries_bytes": 98322880,
+  "peak_rss_bytes": 2315485184,
+  "open_s": 0.09327737498097122,
+  "warm_prefix_latency": {
+   "in_process_ms": {
+    "n": 2000,
+    "p50": 2.01629102230072,
+    "p90": 9.086707956157625,
+    "p99": 18.164417007938027,
+    "mean": 3.6134248474845663,
+    "max": 51.96687509305775
+   }
+  }
+ },
+ "open_s": 0.08465958305168897,
+ "version": "completr 0.1.0",
+ "latency": {
+  "prefix": {
+   "in_process_ms": {
+    "n": 17924,
+    "p50": 2.070541027933359,
+    "p90": 10.437458055093884,
+    "p99": 43.60737500246614,
+    "mean": 4.4845162141958825,
+    "max": 185.0760830566287
+   }
+  },
+  "typo1": {
+   "in_process_ms": {
+    "n": 1000,
+    "p50": 2.9426669934764504,
+    "p90": 12.560958042740822,
+    "p99": 48.16183296497911,
+    "mean": 5.966496620094404,
+    "max": 80.1928750006482
+   }
+  },
+  "typo2": {
+   "in_process_ms": {
+    "n": 1000,
+    "p50": 2.9874159954488277,
+    "p90": 12.325667077675462,
+    "p99": 27.473874972201884,
+    "mean": 5.237748074578121,
+    "max": 50.20712502300739
+   }
+  },
+  "multiword": {
+   "in_process_ms": {
+    "n": 2000,
+    "p50": 1.5510829398408532,
+    "p90": 7.2127910098060966,
+    "p99": 48.74450003262609,
+    "mean": 3.6164878062554635,
+    "max": 105.37495790049434
+   }
+  }
+ },
+ "quality": {
+  "popular": {
+   "clean": {
+    "targets": 500,
+    "mrr_over_prefixes": 0.761936649854747,
+    "s@1_len3": 0.152,
+    "s@5_len3": 0.298,
+    "s@10_len3": 0.356,
+    "s@1_len5": 0.314,
+    "s@5_len5": 0.498,
+    "s@10_len5": 0.57,
+    "s@1_len8": 0.546,
+    "s@5_len8": 0.762,
+    "s@10_len8": 0.828,
+    "reached_top1": 0.994,
+    "keystrokes_top1": 8.668008048289739,
+    "chars_saved_top1": 0.6816475314624209,
+    "reached_top5": 1.0,
+    "keystrokes_top5": 6.17,
+    "chars_saved_top5": 0.7768777111550859
+   },
+   "typo": {
+    "targets": 451,
+    "mrr_over_prefixes": 0.7130947218286257,
+    "s@1_len3": 0.09090909090909091,
+    "s@5_len3": 0.17960088691796008,
+    "s@10_len3": 0.23725055432372505,
+    "s@1_len5": 0.1973392461197339,
+    "s@5_len5": 0.3614190687361419,
+    "s@10_len5": 0.4079822616407982,
+    "s@1_len8": 0.4146341463414634,
+    "s@5_len8": 0.6407982261640798,
+    "s@10_len8": 0.7095343680709535,
+    "reached_top1": 0.9977827050997783,
+    "keystrokes_top1": 9.562222222222223,
+    "chars_saved_top1": 0.661626391381561,
+    "reached_top5": 1.0,
+    "keystrokes_top5": 6.913525498891352,
+    "chars_saved_top5": 0.7554434616857663
+   }
+  },
+  "uniform": {
+   "clean": {
+    "targets": 300,
+    "mrr_over_prefixes": 0.5125582901469055,
+    "s@1_len3": 0.006666666666666667,
+    "s@5_len3": 0.02,
+    "s@10_len3": 0.03,
+    "s@1_len5": 0.043333333333333335,
+    "s@5_len5": 0.07666666666666666,
+    "s@10_len5": 0.10666666666666667,
+    "s@1_len8": 0.13333333333333333,
+    "s@5_len8": 0.26,
+    "s@10_len8": 0.3333333333333333,
+    "reached_top1": 0.7666666666666667,
+    "keystrokes_top1": 15.5,
+    "chars_saved_top1": 0.41457356993796957,
+    "reached_top5": 0.9466666666666667,
+    "keystrokes_top5": 12.651408450704226,
+    "chars_saved_top5": 0.5794292026592915
+   },
+   "typo": {
+    "targets": 276,
+    "mrr_over_prefixes": 0.474504427801616,
+    "s@1_len3": 0.0,
+    "s@5_len3": 0.0036231884057971015,
+    "s@10_len3": 0.010869565217391304,
+    "s@1_len5": 0.018115942028985508,
+    "s@5_len5": 0.036231884057971016,
+    "s@10_len5": 0.06159420289855073,
+    "s@1_len8": 0.07971014492753623,
+    "s@5_len8": 0.17391304347826086,
+    "s@10_len8": 0.2210144927536232,
+    "reached_top1": 0.7572463768115942,
+    "keystrokes_top1": 16.74641148325359,
+    "chars_saved_top1": 0.393009271049843,
+    "reached_top5": 0.9384057971014492,
+    "keystrokes_top5": 13.667953667953668,
+    "chars_saved_top5": 0.5542589926522846
+   }
+  },
+  "misspelled": {
+   "clean": {
+    "targets": 500,
+    "mrr_over_prefixes": 0.7387001283656315,
+    "s@1_len3": 0.094,
+    "s@5_len3": 0.176,
+    "s@10_len3": 0.246,
+    "s@1_len5": 0.21,
+    "s@5_len5": 0.388,
+    "s@10_len5": 0.46,
+    "s@1_len8": 0.462,
+    "s@5_len8": 0.676,
+    "s@10_len8": 0.742,
+    "reached_top1": 0.99,
+    "keystrokes_top1": 10.284848484848485,
+    "chars_saved_top1": 0.6664587333313639,
+    "reached_top5": 0.996,
+    "keystrokes_top5": 7.291164658634538,
+    "chars_saved_top5": 0.7626449628767026
+   },
+   "typo": {
+    "targets": 500,
+    "mrr_over_prefixes": 0.6641538781457658,
+    "s@1_len3": 0.072,
+    "s@5_len3": 0.146,
+    "s@10_len3": 0.206,
+    "s@1_len5": 0.172,
+    "s@5_len5": 0.31,
+    "s@10_len5": 0.358,
+    "s@1_len8": 0.376,
+    "s@5_len8": 0.552,
+    "s@10_len8": 0.6,
+    "reached_top1": 0.974,
+    "keystrokes_top1": 10.915811088295689,
+    "chars_saved_top1": 0.6350499731263292,
+    "reached_top5": 0.988,
+    "keystrokes_top5": 7.92914979757085,
+    "chars_saved_top5": 0.7356259162419688
+   }
+  }
+ },
+ "throughput": {
+  "clients": 8,
+  "qps": 1354.9,
+  "client_model": "threads"
+ }
+}

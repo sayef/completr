@@ -1,0 +1,11 @@
+/target
+/dist
+*.so
+*.pyc
+__pycache__/
+.pytest_cache/
+.venv/
+.DS_Store
+/site
+/bench/.cache/
+/.wrangler

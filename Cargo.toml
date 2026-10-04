@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["crates/completr", "crates/completr-cli", "crates/completr-py"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94.1"
+license = "MIT"
+authors = ["Saiful Islam"]
+repository = "https://github.com/sayef/completr"
+homepage = "https://github.com/sayef/completr"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = 1

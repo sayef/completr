@@ -1,0 +1,15 @@
+{
+ "engine": "meilisearch",
+ "variant": null,
+ "date": "2026-10-03",
+ "machine": {
+  "cpu": "Apple M1 Pro",
+  "cores": 10,
+  "memory_bytes": 17179869184,
+  "os": "macOS 26.7",
+  "python": "3.13.7"
+ },
+ "build": {
+  "status": "memory limit"
+ }
+}

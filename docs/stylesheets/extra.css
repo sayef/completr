@@ -1,0 +1,217 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&display=swap");
+
+/* Ink and paper, with the wordmark's orange as the one accent. */
+:root {
+  --completr-ink: #111113;
+  --completr-paper: #f6f5f1;
+  --completr-orange: #f25c05;
+}
+
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: var(--completr-ink);
+  --md-primary-fg-color--light: #2a2a2e;
+  --md-primary-fg-color--dark: #000000;
+  --md-accent-fg-color: #c2410c;
+  --md-accent-fg-color--transparent: rgba(194, 65, 12, 0.1);
+  --md-typeset-a-color: #c2410c;
+  --md-default-bg-color: #fbfaf7;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: var(--completr-ink);
+  --md-primary-fg-color--light: #2a2a2e;
+  --md-primary-fg-color--dark: #000000;
+  --md-accent-fg-color: #ff8a4c;
+  --md-accent-fg-color--transparent: rgba(255, 138, 76, 0.1);
+  --md-typeset-a-color: #ff8a4c;
+  --md-default-bg-color: #141416;
+  --md-code-bg-color: #1c1c1f;
+}
+
+.md-header,
+.md-tabs {
+  background: var(--completr-ink);
+}
+
+/* The wordmark stands in for the site name. */
+.md-header__button.md-logo img {
+  height: 1.3rem;
+}
+
+.md-header__title .md-header__topic:first-child {
+  visibility: hidden;
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3 {
+  font-family: "Space Grotesk", var(--md-text-font-family), sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+/* Landing page. */
+.cp-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+  gap: 3rem;
+  align-items: center;
+  margin: 1.5rem 0 2.5rem;
+}
+
+.cp-eyebrow {
+  margin: 0 0 0.8rem;
+  font-family: var(--md-code-font-family);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--md-default-fg-color--light);
+}
+
+.md-typeset .cp-title {
+  margin: 0 0 1rem;
+  font-size: 2.6rem;
+  line-height: 1.05;
+  letter-spacing: -0.035em;
+  color: var(--md-default-fg-color);
+}
+
+.cp-dot {
+  color: var(--completr-orange);
+}
+
+.md-typeset .cp-lede {
+  margin: 0 0 1.4rem;
+  font-size: 1.05rem;
+  line-height: 1.55;
+  color: var(--md-default-fg-color--light);
+}
+
+.cp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+
+.md-typeset .cp-actions .md-button {
+  margin: 0;
+  border-radius: 0.4rem;
+  padding: 0.55em 1.4em;
+}
+
+.md-typeset .cp-actions .md-button--primary:hover {
+  background-color: var(--completr-orange);
+  border-color: var(--completr-orange);
+  color: #ffffff;
+}
+
+.md-typeset .cp-install {
+  display: inline-block;
+  padding: 0.45em 0.9em;
+  border-radius: 0.4rem;
+  font-size: 0.8rem;
+}
+
+.md-typeset .cp-install::before {
+  content: "$ ";
+  color: var(--md-default-fg-color--lighter);
+}
+
+.cp-hero__demo img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 18px;
+  box-shadow: 0 24px 60px rgba(17, 17, 19, 0.22);
+}
+
+.cp-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-top: 1px solid var(--md-default-fg-color--lightest);
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+  margin: 0 0 2.5rem;
+}
+
+.cp-stats > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 1.1rem 1rem 1.1rem 0;
+}
+
+.cp-stats strong {
+  font-family: "Space Grotesk", var(--md-text-font-family), sans-serif;
+  font-size: 1.5rem;
+  letter-spacing: -0.02em;
+}
+
+.cp-stats span {
+  font-size: 0.75rem;
+  color: var(--md-default-fg-color--light);
+}
+
+@media screen and (max-width: 60em) {
+  .cp-hero {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2rem;
+  }
+
+  .md-typeset .cp-title {
+    font-size: 2rem;
+  }
+
+  .cp-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Flat cards: hairline borders, the accent only on hover. */
+.md-typeset .grid.cards > ul > li {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.6rem;
+  box-shadow: none;
+  transition: border-color 0.15s;
+}
+
+.md-typeset .grid.cards > ul > li:hover {
+  border-color: var(--md-accent-fg-color);
+  box-shadow: none;
+}
+
+.md-typeset .grid.cards > ul > li > hr {
+  display: none;
+}
+
+.md-typeset pre > code,
+.md-typeset .highlight {
+  border-radius: 0.5rem;
+}
+
+/* The hero headline cycles through a few claims; one stays put for reduced motion. */
+.cp-rotate {
+  display: grid;
+}
+
+.cp-rotate > span {
+  grid-area: 1 / 1;
+  opacity: 0;
+  animation: cp-rotate 17.5s infinite;
+}
+
+.cp-rotate > span:nth-child(2) { animation-delay: 3.5s; }
+.cp-rotate > span:nth-child(3) { animation-delay: 7s; }
+.cp-rotate > span:nth-child(4) { animation-delay: 10.5s; }
+.cp-rotate > span:nth-child(5) { animation-delay: 14s; }
+
+@keyframes cp-rotate {
+  0% { opacity: 0; transform: translateY(0.25em); }
+  3%, 17% { opacity: 1; transform: none; }
+  20%, 100% { opacity: 0; transform: translateY(-0.25em); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cp-rotate > span { animation: none; }
+  .cp-rotate > span:first-child { opacity: 1; }
+}
