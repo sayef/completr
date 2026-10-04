@@ -189,6 +189,36 @@ fn corrections_survive_a_dropped_letter_and_unindexed_short_words() {
 }
 
 #[test]
+fn a_small_layer_scores_on_the_scale_of_the_first() {
+    let mut songs = vec![
+        Document::keyed("dancing", "Dancing Queen – ABBA", 0.85),
+        Document::keyed("ownown", "Dancing On My Own – Robyn", 0.5),
+    ];
+    songs.extend(
+        (0..2_000u64).map(|i| Document::new(i, format!("Song {i}"), (i % 90) as f32 / 100.0)),
+    );
+    let engine = Engine::new();
+    let same = Index::from_documents([Document::keyed("ownown", "Dancing On My Own – Robyn", 0.5)])
+        .unwrap();
+    engine.publish([
+        (
+            "catalog".to_owned(),
+            Some(Arc::new(Index::from_documents(songs).unwrap())),
+        ),
+        ("same".to_owned(), Some(Arc::new(same))),
+    ]);
+    let alone = engine.complete(&["catalog"], "danc", 10);
+    let layered = engine.complete(&["catalog", "same"], "danc", 10);
+    let scores = |hits: &[completr::LayeredSuggestion<completr::Suggestion>]| {
+        hits.iter()
+            .map(|h| (h.suggestion.id, (h.suggestion.score * 1e6).round()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(scores(&alone), scores(&layered));
+    assert_eq!(layered[1].layer, 1);
+}
+
+#[test]
 fn an_exact_title_comes_first_among_many_longer_ones() {
     let index = Index::from_documents(
         (0..20_000u64).map(|i| Document::new(i, format!("product {i}"), 0.5)),

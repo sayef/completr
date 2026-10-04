@@ -126,8 +126,8 @@ flowchart LR
   segments rank exactly like one, and compaction merges them through their sorted dictionaries, byte for
   byte as a rebuild would: all of English Wikipedia, 7.2 million titles, is written and compacted into one
   segment in 25.6 s, and 40 million MusicBrainz recordings in 317 s with a peak of 547 MB.
-- **Override layers**: search a tenant's, a user's or an experiment's index on top of shared data, per
-  document id, without copying it.
+- **Override layers**: one catalogue, many views. Tenants, languages, listeners, promotions, takedowns and
+  experiments are small indexes stacked on the shared data, overriding it per document id, without a copy.
 - A **short-query cache** for one- to three-character prefixes, carried across index versions.
 
 **Serverless updates**
@@ -315,19 +315,32 @@ index.complete_aliases("is this the real")   # [AliasSuggestion(id='bohemian', t
 
 ### Layers
 
-An engine searches a list of indexes, its layers. Later layers override earlier ones per document id, so a
-tenant's edits, deletions and additions shadow the shared data.
+One catalogue, many views. An engine searches a stack of indexes, and later layers override earlier ones per
+document id. A tenant, a language, a listener or an experiment gets a small index holding only what differs
+(edits, deletions, additions, different popularity) on top of the shared catalogue, which is built and held
+once:
 
 ```python
 txn = db.begin()
-txn.append("radio", [{"id": "bohemian", "text": "Bohemian Rhapsody (Remastered 2011) – Queen"}], deletes=["dark"])   # a station's overrides
+txn.append("radio", [{"id": "bohemian", "text": "Bohemian Rhapsody (Remastered 2011) – Queen", "popularity": 0.95},
+                     {"id": "session", "text": "Dancing Queen (Live Session) – ABBA", "popularity": 0.8}],
+           deletes=["killer"])   # a station's edits, exclusives and removals
 txn.commit()
-engine.sync()
 
-engine.complete("queen", ["songs", "radio"])   # suggestion.layer tells which index it came from
+stack = ["catalog", "catalog/de", "radio", f"user/{user_id}", "takedowns"]
+[(s.text, s.layer) for s in engine.complete("queen", stack)]
+# [('Bohemian Rhapsody (Remastered 2011) – Queen', 'radio'), ('Dancing Queen – ABBA', 'catalog'),
+#  ('Dancing Queen (Live Session) – ABBA', 'radio')]
 ```
 
-`completr.Engine()` with `engine.publish({"shared": index, ...})` does the same with indexes in memory.
+- **Tenants** rename, hide and add songs without a copy of the catalogue.
+- **Locales** raise local charts and add local songs, titles and abbreviations.
+- **Listeners** get their own plays ranked first, from a layer that builds in under a millisecond.
+- **Promotions, takedowns and experiments** are layers published atomically, with no rebuild.
+
+Scores from every layer are on the first layer's scale, so an unchanged copy ranks exactly where it did.
+Five layers over 200,000 titles answer in 0.2 ms at the median. See [Layers](docs/guides/layers.md) for
+each pattern with its output.
 
 ### Semantic and hybrid completion
 

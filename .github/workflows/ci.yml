@@ -72,4 +72,4 @@ jobs:
       - run: maturin build --release -o dist
       - run: pip install --no-index --find-links dist completr
       - run: pytest crates/completr-py/tests
-      - run: python crates/completr-py/examples/quickstart.py && python crates/completr-py/examples/live_updates.py
+      - run: python crates/completr-py/examples/quickstart.py && python crates/completr-py/examples/live_updates.py && python crates/completr-py/examples/layers.py

@@ -185,8 +185,13 @@ pub fn layered_complete(
     let per_layer = layers
         .iter()
         .map(|l| {
-            l.map(|index| index.complete_with(query, &fetch))
-                .unwrap_or_default()
+            l.map(|index| {
+                let mut hits = index.complete_with(query, &fetch);
+                let scale = common_scale(layers, index);
+                hits.iter_mut().for_each(|s| s.score *= scale);
+                hits
+            })
+            .unwrap_or_default()
         })
         .collect();
     merge(layers, per_layer, options.limit, |s: &Suggestion| {
@@ -204,8 +209,13 @@ pub fn layered_complete_aliases(
     let per_layer = layers
         .iter()
         .map(|l| {
-            l.map(|index| index.complete_aliases_with(query, &fetch))
-                .unwrap_or_default()
+            l.map(|index| {
+                let mut hits = index.complete_aliases_with(query, &fetch);
+                let scale = common_scale(layers, index);
+                hits.iter_mut().for_each(|s| s.score *= scale);
+                hits
+            })
+            .unwrap_or_default()
         })
         .collect();
     merge(layers, per_layer, options.limit, |s: &AliasSuggestion| {
@@ -230,6 +240,15 @@ pub fn layered_vector_search(
     Ok(merge(layers, per_layer, options.limit, |s: &Suggestion| {
         (s.id, s.score)
     }))
+}
+
+/// The factor that puts `index`'s scores on the first layer's scale. Each index normalises by its own
+/// `max_score`, so a small layer's scores would not be comparable with a large one's.
+fn common_scale(layers: &[Option<&Index>], index: &Index) -> f64 {
+    match layers.iter().flatten().next() {
+        Some(first) if first.max_score() > 0.0 => index.max_score() / first.max_score(),
+        _ => 1.0,
+    }
 }
 
 /// Later layers override earlier ones per id, keeping the earlier position; then sorts by score.

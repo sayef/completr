@@ -71,8 +71,8 @@ hide:
 
     ---
 
-    Search a tenant's, a user's or an experiment's index on top of shared data, per document id, without
-    copying it.
+    One catalogue, many views: tenants, languages, listeners, promotions and takedowns as small layers
+    over the shared data, overriding it per document id, without a copy.
 
     [:octicons-arrow-right-24: Layers](guides/layers.md)
 
