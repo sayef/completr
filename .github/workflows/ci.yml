@@ -68,7 +68,7 @@ jobs:
           python-version: ${{ matrix.python }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: pip install maturin pytest numpy
+      - run: pip install maturin pytest numpy pandas pyarrow
       - run: maturin build --release -o dist
       - run: pip install --no-index --find-links dist completr
       - run: pytest crates/completr-py/tests

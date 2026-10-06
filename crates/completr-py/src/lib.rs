@@ -10,7 +10,8 @@ use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBytes, PyDict, PyList, PyString, PyType};
 
-// Returns freed memory to the system, which the platform allocator keeps after a build.
+// Returns freed memory to the system, which glibc keeps after a build.
+#[cfg(target_os = "linux")]
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

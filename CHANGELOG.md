@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A crash on macOS when pyarrow, or another library with its own mimalloc, is loaded in the same process.
+  The Python package now uses mimalloc only on Linux.
+
 ## [0.2.0](https://github.com/sayef/completr/compare/v0.1.0...v0.2.0) - 2026-10-06
 
 ### Added
