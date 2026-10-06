@@ -41,13 +41,13 @@ All notable changes to this project are documented here. The format follows
 
 # Only the version heading: the hand-written notes under `## [Unreleased]` become the release's entry.
 body = """
-
 ## [{{ version }}]\
     {%- if release_link -%}({{ release_link }}){% endif %} \
     - {{ timestamp | date(format="%Y-%m-%d") }}
+
 """
 
-trim = true
+trim = false
 protect_breaking_commits = true
 sort_commits = "oldest"
 
