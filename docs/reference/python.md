@@ -20,7 +20,15 @@ Every name on this page is importable from `completr`.
     options:
       heading_level: 3
 
+::: completr.DatabaseNamespace
+    options:
+      heading_level: 3
+
 ::: completr.Transaction
+    options:
+      heading_level: 3
+
+::: completr.NamespaceTransaction
     options:
       heading_level: 3
 
@@ -50,6 +58,10 @@ Every name on this page is importable from `completr`.
     options:
       heading_level: 3
 
+::: completr.Namespace
+    options:
+      heading_level: 3
+
 ::: completr.Replica
     options:
       heading_level: 3
@@ -57,6 +69,10 @@ Every name on this page is importable from `completr`.
 ## Many writers
 
 ::: completr.ChangeSet
+    options:
+      heading_level: 3
+
+::: completr.NamespaceChanges
     options:
       heading_level: 3
 
@@ -122,6 +138,10 @@ Every name on this page is importable from `completr`.
     options:
       heading_level: 3
 
+::: completr.AsyncDatabaseNamespace
+    options:
+      heading_level: 3
+
 ::: completr.AsyncEngine
     options:
       heading_level: 3
@@ -129,7 +149,8 @@ Every name on this page is importable from `completr`.
 ## Errors
 
 Every error derives from `CompletrError`. `NotFoundError` is also a `LookupError`, `InvalidInputError` a
-`ValueError`, and `StorageError` an `OSError`.
+`ValueError`, and `StorageError` an `OSError`. `NamespaceNotFoundError` and `LayerNotFoundError` are
+`NotFoundError`s that carry the missing `name` and the names that exist in `available`.
 
 ::: completr.CompletrError
     options:
@@ -147,6 +168,14 @@ Every error derives from `CompletrError`. `NotFoundError` is also a `LookupError
     options:
       heading_level: 3
 
+::: completr.NamespaceNotFoundError
+    options:
+      heading_level: 3
+
+::: completr.LayerNotFoundError
+    options:
+      heading_level: 3
+
 ::: completr.InvalidInputError
     options:
       heading_level: 3
@@ -160,6 +189,10 @@ Every error derives from `CompletrError`. `NotFoundError` is also a `LookupError
 The [collections](../guides/collections.md) layer.
 
 ::: completr.Client
+    options:
+      heading_level: 3
+
+::: completr.ClientNamespace
     options:
       heading_level: 3
 
@@ -180,5 +213,9 @@ The [collections](../guides/collections.md) layer.
       heading_level: 3
 
 ::: completr.AsyncCollection
+    options:
+      heading_level: 3
+
+::: completr.AsyncClientNamespace
     options:
       heading_level: 3

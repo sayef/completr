@@ -19,6 +19,15 @@ struct Cli {
     /// Database URL or path.
     #[arg(env = "COMPLETR_URL")]
     url: String,
+    /// Namespace of the indexes that complete, import and compact name.
+    #[arg(
+        long,
+        short,
+        global = true,
+        env = "COMPLETR_NAMESPACE",
+        default_value = "default"
+    )]
+    namespace: String,
     #[command(subcommand)]
     command: Command,
 }
@@ -151,23 +160,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             let versions = db.versions().await?;
             println!(
-                "{}: version {} ({} kept), {} indexes",
+                "{}: version {} ({} kept), {} namespaces",
                 cli.url,
                 manifest.version,
                 versions.len(),
-                manifest.indexes.len()
+                manifest.namespaces.len()
             );
-            let mut names: Vec<_> = manifest.indexes.keys().collect();
-            names.sort();
-            for name in names {
-                let entry = &manifest.indexes[name];
-                let documents: u64 = entry.segments.iter().map(|s| s.documents).sum();
-                let bytes: u64 = entry.segments.iter().map(|s| s.bytes).sum();
-                println!(
-                    "  {name}: {} segments, {documents} documents stored, {}",
-                    entry.segments.len(),
-                    megabytes(bytes)
-                );
+            for (namespace, indexes) in &manifest.namespaces {
+                println!("  {namespace}:");
+                for (name, entry) in indexes {
+                    let documents: u64 = entry.segments.iter().map(|s| s.documents).sum();
+                    let bytes: u64 = entry.segments.iter().map(|s| s.bytes).sum();
+                    println!(
+                        "    {name}: {} segments, {documents} documents stored, {}",
+                        entry.segments.len(),
+                        megabytes(bytes)
+                    );
+                }
             }
         }
         Command::Complete {
@@ -178,6 +187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let manifest = db.latest().await?;
             let index = db
+                .namespace(&cli.namespace)?
                 .open_index(&manifest, &index, IndexOptions::default())
                 .await?;
             let options = SearchOptions::new(limit).contexts(contexts);
@@ -193,7 +203,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let docs = read_documents(&file)?;
             let n = docs.len();
-            let mut txn = db.begin().await?;
+            let mut txn = db.namespace(&cli.namespace)?.begin().await?;
             if overwrite {
                 txn.overwrite(&index, Segment::build_with(db.build_options(), docs, [])?);
             } else {
@@ -201,16 +211,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             let manifest = txn.commit().await?;
             println!(
-                "imported {n} documents into {index} as version {}",
-                manifest.version
+                "imported {n} documents into {}/{index} as version {}",
+                cli.namespace, manifest.version
             );
         }
         Command::Compact { index, once } => {
             let policy = CompactionPolicy::default();
+            let namespace = db.namespace(&cli.namespace)?;
             let result = if once {
-                db.compact(&index, &policy).await?
+                namespace.compact(&index, &policy).await?
             } else {
-                db.compact_all(&index, &policy).await?
+                namespace.compact_all(&index, &policy).await?
             };
             match result {
                 Some(manifest) => println!("compacted {index} into version {}", manifest.version),

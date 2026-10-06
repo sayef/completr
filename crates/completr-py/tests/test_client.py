@@ -93,15 +93,48 @@ def test_an_engine_from_a_database_syncs_itself(tmp_path):
     url = str(tmp_path / "db")
     writer = completr.connect(url)
     engine = completr.connect(url).engine(sync_every=0.02)
-    assert engine.complete("play", ["products"]) == [] and engine.sync_status is None
+    assert engine.complete("play", ["products"], ignore_missing_layers=True) == []
+    assert engine.sync_status is None
     txn = writer.begin()
     txn.append("products", CATALOGUE)
     txn.commit()
     deadline = time.monotonic() + 10
-    while not engine.complete("play", ["products"]):
+    while not engine.complete("play", ["products"], ignore_missing_layers=True):
         assert time.monotonic() < deadline, "the engine never caught up"
         time.sleep(0.02)
     assert ids(engine.complete("play", ["products"])) == ["ps5", "psvr"]
     status = engine.sync_status
     assert status["error"] is None and status["synced_at"] > 0
     assert completr.connect(url).engine(sync_every=None).sync_status is None
+
+
+def test_collections_live_in_namespaces(tmp_path):
+    client = completr.Client(str(tmp_path / "db"), sync_every=None)
+    de = client.namespace("de-DE")
+    shared = de.create_collection("shared")
+    shared.add(CATALOGUE)
+    de.create_collection("customer-a").add([{"id": "psvr", "text": "PlayStation VR2 Paket", "popularity": 0.4}])
+    assert (de.collections(), client.collections()) == (["customer-a", "shared"], [])
+    assert repr(shared) == "Collection(name='shared', namespace='de-DE')"
+    hits = shared.complete("play", layers=["customer-a"])
+    assert [(h.text, h.layer) for h in hits] == [("PlayStation 5 Console", "shared"), ("PlayStation VR2 Paket", "customer-a")]
+    with pytest.raises(completr.LayerNotFoundError):
+        shared.complete("play", layers=["customer-b"])
+    assert len(shared.complete("play", layers=["customer-b"], ignore_missing_layers=True)) == 2
+    with pytest.raises(completr.LayerNotFoundError):
+        de.collection("customer-b")
+
+
+def test_the_async_client_has_namespaces_too(tmp_path):
+    async def run():
+        client = completr.AsyncClient(str(tmp_path / "db"), sync_every=None)
+        de = client.namespace("de-DE")
+        products = await de.get_or_create_collection("products")
+        await products.add(CATALOGUE)
+        assert ids(products.complete("play")) == ["ps5", "psvr"] and products.namespace == "de-DE"
+        assert await de.collections() == ["products"]
+        db = completr.AsyncDatabase(str(tmp_path / "db"))
+        assert await db.namespaces() == ["de-DE"]
+        assert await db.namespace("de-DE").index_names() == ["products"]
+
+    asyncio.run(run())

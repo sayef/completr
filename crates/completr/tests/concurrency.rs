@@ -145,7 +145,11 @@ fn queries_stay_deterministic_under_concurrent_updates() {
                     let result = run(&snapshot, &query);
                     local.push(started.elapsed().as_secs_f64() * 1000.0);
                     // Layered reads go through the engine's own snapshot and must not fail either.
-                    let _ = engine.complete(&["i", "missing"], "da", 5);
+                    let _ = engine.complete_with(
+                        &["i", "missing"],
+                        "da",
+                        &completr::SearchOptions::new(5).ignore_missing_layers(true),
+                    );
                     if rng.next().is_multiple_of(20) {
                         samples.lock().unwrap().push((snapshot, query, result));
                     }

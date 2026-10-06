@@ -35,7 +35,57 @@ fn invalid(message: impl Into<String>) -> PyErr {
     raise("InvalidInputError", message.into())
 }
 
+/// The `MatchKind` member for `kind`.
+fn match_kind(py: Python<'_>, kind: completr_rs::MatchKind) -> PyResult<Py<PyAny>> {
+    static MEMBERS: PyOnceLock<Py<PyDict>> = PyOnceLock::new();
+    let members = MEMBERS.get_or_try_init(py, || {
+        let enum_class = py.import("completr._types")?.getattr("MatchKind")?;
+        let members = PyDict::new(py);
+        for member in enum_class.try_iter()? {
+            let member = member?;
+            members.set_item(member.getattr("value")?, member)?;
+        }
+        Ok::<_, PyErr>(members.unbind())
+    })?;
+    members
+        .bind(py)
+        .get_item(kind.as_str())?
+        .map(Bound::unbind)
+        .ok_or_else(|| invalid(format!("unknown match kind {}", kind.as_str())))
+}
+
 fn to_py_err(e: completr_rs::Error) -> PyErr {
+    // Not-found errors carry what was missing and what exists, as attributes.
+    match &e {
+        completr_rs::Error::NamespaceNotFound { name, available } => {
+            return Python::attach(|py| {
+                let class = error_class(py, "NamespaceNotFoundError")?;
+                let args = (e.to_string(), name.clone(), available.clone());
+                Ok::<_, PyErr>(PyErr::from_value(class.bind(py).call1(args)?))
+            })
+            .unwrap_or_else(|err| err);
+        }
+        completr_rs::Error::LayerNotFound {
+            namespace,
+            version,
+            name,
+            available,
+        } => {
+            return Python::attach(|py| {
+                let class = error_class(py, "LayerNotFoundError")?;
+                let args = (
+                    e.to_string(),
+                    name.clone(),
+                    namespace.clone(),
+                    *version,
+                    available.clone(),
+                );
+                Ok::<_, PyErr>(PyErr::from_value(class.bind(py).call1(args)?))
+            })
+            .unwrap_or_else(|err| err);
+        }
+        _ => {}
+    }
     let name = match &e {
         completr_rs::Error::Io(_) | completr_rs::Error::Store(_) => "StorageError",
         completr_rs::Error::NotFound(_) => "NotFoundError",
@@ -417,9 +467,9 @@ impl Document {
 
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
         Ok(format!(
-            "Document(id={}, text={:?}, popularity={})",
+            "Document(id={}, text={}, popularity={})",
             self.id(py)?.bind(py).repr()?,
-            self.0.text,
+            py_repr(py, &self.0.text)?,
             self.0.popularity
         ))
     }
@@ -751,7 +801,7 @@ struct Suggestion {
     id: Py<PyAny>,
     text: String,
     score: f64,
-    kind: &'static str,
+    kind: Py<PyAny>,
     highlights: Vec<(usize, usize)>,
     layer: Option<String>,
 }
@@ -763,21 +813,48 @@ impl Suggestion {
             highlights: char_ranges(&s.text, &s.highlights),
             text: s.text,
             score: s.score,
-            kind: s.kind.as_str(),
+            kind: match_kind(py, s.kind)?,
             layer,
         })
     }
 }
 
+fn py_repr(py: Python<'_>, text: &str) -> PyResult<String> {
+    Ok(PyString::new(py, text).repr()?.to_string())
+}
+
+fn kind_repr(py: Python<'_>, kind: &Py<PyAny>) -> PyResult<String> {
+    Ok(format!("MatchKind.{}", kind.bind(py).getattr("name")?))
+}
+
+/// `, layer='x'` for a layered result, else nothing.
+fn layer_repr(py: Python<'_>, layer: &Option<String>) -> PyResult<String> {
+    layer.as_ref().map_or(Ok(String::new()), |l| {
+        Ok(format!(", layer={}", py_repr(py, l)?))
+    })
+}
+
 #[pymethods]
 impl Suggestion {
+    #[classattr]
+    fn __match_args__() -> (
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+    ) {
+        ("id", "text", "score", "kind", "layer")
+    }
+
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
         Ok(format!(
-            "Suggestion(id={}, text={:?}, score={:.4}, kind={:?})",
+            "Suggestion(id={}, text={}, score={:.4}, kind={}{})",
             self.id.bind(py).repr()?,
-            self.text,
+            py_repr(py, &self.text)?,
             self.score,
-            self.kind
+            kind_repr(py, &self.kind)?,
+            layer_repr(py, &self.layer)?
         ))
     }
 }
@@ -788,7 +865,7 @@ struct HybridSuggestion {
     id: Py<PyAny>,
     text: String,
     score: f64,
-    kind: &'static str,
+    kind: Py<PyAny>,
     lexical_score: Option<f64>,
     semantic_score: Option<f64>,
     highlights: Vec<(usize, usize)>,
@@ -806,7 +883,7 @@ impl HybridSuggestion {
             highlights: char_ranges(&h.text, &h.highlights),
             text: h.text,
             score: h.score,
-            kind: h.kind.as_str(),
+            kind: match_kind(py, h.kind)?,
             lexical_score: h.lexical_score,
             semantic_score: h.semantic_score,
             layer,
@@ -816,13 +893,25 @@ impl HybridSuggestion {
 
 #[pymethods]
 impl HybridSuggestion {
+    #[classattr]
+    fn __match_args__() -> (
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+    ) {
+        ("id", "text", "score", "kind", "layer")
+    }
+
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
         Ok(format!(
-            "HybridSuggestion(id={}, text={:?}, score={:.4}, kind={:?})",
+            "HybridSuggestion(id={}, text={}, score={:.4}, kind={}{})",
             self.id.bind(py).repr()?,
-            self.text,
+            py_repr(py, &self.text)?,
             self.score,
-            self.kind
+            kind_repr(py, &self.kind)?,
+            layer_repr(py, &self.layer)?
         ))
     }
 }
@@ -853,12 +942,18 @@ impl AliasSuggestion {
 
 #[pymethods]
 impl AliasSuggestion {
+    #[classattr]
+    fn __match_args__() -> (&'static str, &'static str, &'static str, &'static str) {
+        ("id", "text", "score", "layer")
+    }
+
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
         Ok(format!(
-            "AliasSuggestion(id={}, text={:?}, score={:.4})",
+            "AliasSuggestion(id={}, text={}, score={:.4}{})",
             self.id.bind(py).repr()?,
-            self.text,
-            self.score
+            py_repr(py, &self.text)?,
+            self.score,
+            layer_repr(py, &self.layer)?
         ))
     }
 }
@@ -1105,6 +1200,76 @@ fn layered<T, U>(
         .collect()
 }
 
+fn layered_options(
+    limit: usize,
+    contexts: Option<Vec<String>>,
+    ignore_missing_layers: bool,
+) -> completr_rs::SearchOptions {
+    search_options(limit, contexts).ignore_missing_layers(ignore_missing_layers)
+}
+
+fn ns_complete(
+    py: Python<'_>,
+    ns: &completr_rs::Namespace,
+    query: &str,
+    layers: Vec<String>,
+    options: completr_rs::SearchOptions,
+) -> PyResult<Vec<Suggestion>> {
+    let hits = py
+        .detach(|| ns.complete_with(&layers, query, &options))
+        .map_err(to_py_err)?;
+    layered(py, &layers, hits, Suggestion::from)
+}
+
+fn ns_complete_aliases(
+    py: Python<'_>,
+    ns: &completr_rs::Namespace,
+    query: &str,
+    layers: Vec<String>,
+    options: completr_rs::SearchOptions,
+) -> PyResult<Vec<AliasSuggestion>> {
+    let hits = py
+        .detach(|| ns.complete_aliases_with(&layers, query, &options))
+        .map_err(to_py_err)?;
+    layered(py, &layers, hits, AliasSuggestion::from)
+}
+
+fn ns_vector_search(
+    py: Python<'_>,
+    ns: &completr_rs::Namespace,
+    vector: &Bound<'_, PyAny>,
+    layers: Vec<String>,
+    options: completr_rs::SearchOptions,
+) -> PyResult<Vec<Suggestion>> {
+    let query = query_vector(py, vector)?;
+    let hits = py
+        .detach(|| ns.vector_search_with(&layers, &query, &options))
+        .map_err(to_py_err)?;
+    layered(py, &layers, hits, Suggestion::from)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ns_hybrid_search(
+    py: Python<'_>,
+    ns: &completr_rs::Namespace,
+    text: &str,
+    vector: &Bound<'_, PyAny>,
+    layers: Vec<String>,
+    limit: usize,
+    options: completr_rs::HybridOptions,
+) -> PyResult<Vec<HybridSuggestion>> {
+    let query = query_vector(py, vector)?;
+    let hits = py
+        .detach(|| ns.hybrid_search(&layers, text, &query, limit, &options))
+        .map_err(to_py_err)?;
+    hits.into_iter()
+        .map(|h| {
+            let layer = Some(layers[h.layer].clone());
+            HybridSuggestion::from(py, h, layer)
+        })
+        .collect()
+}
+
 #[pymethods]
 impl Engine {
     /// With several layers, each is asked for `limit * overfetch` suggestions before merging.
@@ -1119,14 +1284,15 @@ impl Engine {
         }
     }
 
-    /// Replaces or, with `None`, removes the given indexes in one step.
-    fn publish(&self, updates: &Bound<'_, PyDict>) -> PyResult<()> {
+    /// Replaces or, with `None`, removes the given indexes of `namespace` in one step.
+    #[pyo3(signature = (updates, *, namespace = "default"))]
+    fn publish(&self, updates: &Bound<'_, PyDict>, namespace: &str) -> PyResult<()> {
         let mut staged = Vec::with_capacity(updates.len());
         for (name, index) in updates.iter() {
             let index: Option<Py<Index>> = index.extract()?;
             staged.push((name.extract::<String>()?, index.map(|i| i.get().0.clone())));
         }
-        self.engine.publish(staged);
+        self.engine.publish_to(namespace, staged);
         Ok(())
     }
 
@@ -1146,11 +1312,28 @@ impl Engine {
         Some(py.detach(|| completr_rs::block_on(replica.version())))
     }
 
+    /// The current version of namespace `name`; every search through it sees that version.
+    fn namespace(&self, name: &str) -> PyResult<Namespace> {
+        self.follow();
+        self.engine
+            .namespace(name)
+            .map(Namespace)
+            .map_err(to_py_err)
+    }
+
+    /// Names of the namespaces, sorted.
+    fn namespaces(&self) -> Vec<String> {
+        self.follow();
+        self.engine.namespaces()
+    }
+
+    /// An index of the default namespace.
     fn get(&self, name: &str) -> Option<Index> {
         self.follow();
         self.engine.get(name).map(Index)
     }
 
+    /// Indexes of the default namespace.
     fn names(&self) -> Vec<String> {
         self.follow();
         self.engine.names()
@@ -1174,8 +1357,8 @@ impl Engine {
         Ok(Some(out))
     }
 
-    /// Later layers override earlier ones per document id; missing names are empty layers.
-    #[pyo3(signature = (query, layers, limit = 10, *, contexts = None))]
+    /// `Namespace.complete` in the default namespace.
+    #[pyo3(signature = (query, layers, limit = 10, *, contexts = None, ignore_missing_layers = false))]
     fn complete(
         &self,
         py: Python<'_>,
@@ -1183,15 +1366,14 @@ impl Engine {
         layers: Vec<String>,
         limit: usize,
         contexts: Option<Vec<String>>,
+        ignore_missing_layers: bool,
     ) -> PyResult<Vec<Suggestion>> {
         self.follow();
-        let names: Vec<&str> = layers.iter().map(String::as_str).collect();
-        let options = search_options(limit, contexts);
-        let hits = py.detach(|| self.engine.complete_with(&names, query, &options));
-        layered(py, &layers, hits, Suggestion::from)
+        let options = layered_options(limit, contexts, ignore_missing_layers);
+        ns_complete(py, &self.engine.default_namespace(), query, layers, options)
     }
 
-    #[pyo3(signature = (query, layers, limit = 10, *, contexts = None))]
+    #[pyo3(signature = (query, layers, limit = 10, *, contexts = None, ignore_missing_layers = false))]
     fn complete_aliases(
         &self,
         py: Python<'_>,
@@ -1199,15 +1381,14 @@ impl Engine {
         layers: Vec<String>,
         limit: usize,
         contexts: Option<Vec<String>>,
+        ignore_missing_layers: bool,
     ) -> PyResult<Vec<AliasSuggestion>> {
         self.follow();
-        let names: Vec<&str> = layers.iter().map(String::as_str).collect();
-        let options = search_options(limit, contexts);
-        let hits = py.detach(|| self.engine.complete_aliases_with(&names, query, &options));
-        layered(py, &layers, hits, AliasSuggestion::from)
+        let options = layered_options(limit, contexts, ignore_missing_layers);
+        ns_complete_aliases(py, &self.engine.default_namespace(), query, layers, options)
     }
 
-    #[pyo3(signature = (vector, layers, limit = 10, *, contexts = None))]
+    #[pyo3(signature = (vector, layers, limit = 10, *, contexts = None, ignore_missing_layers = false))]
     fn vector_search(
         &self,
         py: Python<'_>,
@@ -1215,18 +1396,20 @@ impl Engine {
         layers: Vec<String>,
         limit: usize,
         contexts: Option<Vec<String>>,
+        ignore_missing_layers: bool,
     ) -> PyResult<Vec<Suggestion>> {
         self.follow();
-        let query = query_vector(py, vector)?;
-        let names: Vec<&str> = layers.iter().map(String::as_str).collect();
-        let options = search_options(limit, contexts);
-        let hits = py
-            .detach(|| self.engine.vector_search_with(&names, &query, &options))
-            .map_err(to_py_err)?;
-        layered(py, &layers, hits, Suggestion::from)
+        let options = layered_options(limit, contexts, ignore_missing_layers);
+        ns_vector_search(
+            py,
+            &self.engine.default_namespace(),
+            vector,
+            layers,
+            options,
+        )
     }
 
-    #[pyo3(signature = (text, vector, layers, limit = 10, *, fusion = "rrf", rrf_k = 60.0, semantic_weight = 0.5, candidates = None, contexts = None))]
+    #[pyo3(signature = (text, vector, layers, limit = 10, *, fusion = "rrf", rrf_k = 60.0, semantic_weight = 0.5, candidates = None, contexts = None, ignore_missing_layers = false))]
     #[allow(clippy::too_many_arguments)]
     fn hybrid_search(
         &self,
@@ -1240,23 +1423,115 @@ impl Engine {
         semantic_weight: f64,
         candidates: Option<usize>,
         contexts: Option<Vec<String>>,
+        ignore_missing_layers: bool,
     ) -> PyResult<Vec<HybridSuggestion>> {
         self.follow();
-        let query = query_vector(py, vector)?;
-        let options = hybrid_options(fusion, rrf_k, semantic_weight, candidates, contexts)?;
-        let names: Vec<&str> = layers.iter().map(String::as_str).collect();
-        let hits = py
-            .detach(|| {
-                self.engine
-                    .hybrid_search(&names, text, &query, limit, &options)
-            })
-            .map_err(to_py_err)?;
-        hits.into_iter()
-            .map(|h| {
-                let layer = Some(layers[h.layer].clone());
-                HybridSuggestion::from(py, h, layer)
-            })
-            .collect()
+        let options = hybrid_options(fusion, rrf_k, semantic_weight, candidates, contexts)?
+            .ignore_missing_layers(ignore_missing_layers);
+        let ns = self.engine.default_namespace();
+        ns_hybrid_search(py, &ns, text, vector, layers, limit, options)
+    }
+}
+
+/// One version of one namespace, from `Engine.namespace()`. Every search through it sees that
+/// version, however the engine changes meanwhile.
+#[pyclass(frozen, module = "completr")]
+struct Namespace(completr_rs::Namespace);
+
+#[pymethods]
+impl Namespace {
+    #[getter]
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+
+    /// The database version it was synced at, or the count of its publishes.
+    #[getter]
+    fn version(&self) -> u64 {
+        self.0.version()
+    }
+
+    fn get(&self, name: &str) -> Option<Index> {
+        self.0.get(name).map(Index)
+    }
+
+    /// Names of its indexes, sorted.
+    fn names(&self) -> Vec<String> {
+        self.0.names()
+    }
+
+    /// Completes over `layers` in order, later layers overriding earlier ones per document id. A
+    /// missing layer raises `LayerNotFoundError` unless `ignore_missing_layers`.
+    #[pyo3(signature = (query, layers, limit = 10, *, contexts = None, ignore_missing_layers = false))]
+    fn complete(
+        &self,
+        py: Python<'_>,
+        query: &str,
+        layers: Vec<String>,
+        limit: usize,
+        contexts: Option<Vec<String>>,
+        ignore_missing_layers: bool,
+    ) -> PyResult<Vec<Suggestion>> {
+        let options = layered_options(limit, contexts, ignore_missing_layers);
+        ns_complete(py, &self.0, query, layers, options)
+    }
+
+    #[pyo3(signature = (query, layers, limit = 10, *, contexts = None, ignore_missing_layers = false))]
+    fn complete_aliases(
+        &self,
+        py: Python<'_>,
+        query: &str,
+        layers: Vec<String>,
+        limit: usize,
+        contexts: Option<Vec<String>>,
+        ignore_missing_layers: bool,
+    ) -> PyResult<Vec<AliasSuggestion>> {
+        let options = layered_options(limit, contexts, ignore_missing_layers);
+        ns_complete_aliases(py, &self.0, query, layers, options)
+    }
+
+    #[pyo3(signature = (vector, layers, limit = 10, *, contexts = None, ignore_missing_layers = false))]
+    fn vector_search(
+        &self,
+        py: Python<'_>,
+        vector: &Bound<'_, PyAny>,
+        layers: Vec<String>,
+        limit: usize,
+        contexts: Option<Vec<String>>,
+        ignore_missing_layers: bool,
+    ) -> PyResult<Vec<Suggestion>> {
+        let options = layered_options(limit, contexts, ignore_missing_layers);
+        ns_vector_search(py, &self.0, vector, layers, options)
+    }
+
+    #[pyo3(signature = (text, vector, layers, limit = 10, *, fusion = "rrf", rrf_k = 60.0, semantic_weight = 0.5, candidates = None, contexts = None, ignore_missing_layers = false))]
+    #[allow(clippy::too_many_arguments)]
+    fn hybrid_search(
+        &self,
+        py: Python<'_>,
+        text: &str,
+        vector: &Bound<'_, PyAny>,
+        layers: Vec<String>,
+        limit: usize,
+        fusion: &str,
+        rrf_k: f64,
+        semantic_weight: f64,
+        candidates: Option<usize>,
+        contexts: Option<Vec<String>>,
+        ignore_missing_layers: bool,
+    ) -> PyResult<Vec<HybridSuggestion>> {
+        let options = hybrid_options(fusion, rrf_k, semantic_weight, candidates, contexts)?
+            .ignore_missing_layers(ignore_missing_layers);
+        ns_hybrid_search(py, &self.0, text, vector, layers, limit, options)
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(format!(
+            "Namespace(name={}, version={}, indexes={})",
+            py_repr(py, self.0.name())?,
+            self.0.version(),
+            PyList::new(py, self.0.names())?.repr()?
+        ))
     }
 }
 
@@ -1341,6 +1616,13 @@ fn manifest_dict<'py>(
 struct Database(completr_rs::Database);
 
 impl Database {
+    fn default_namespace(&self) -> DatabaseNamespace {
+        DatabaseNamespace {
+            database: self.0.clone(),
+            name: "default".to_owned(),
+        }
+    }
+
     async fn read(
         &self,
         version: Option<u64>,
@@ -1403,15 +1685,28 @@ impl Database {
             .map_err(to_py_err)
     }
 
-    /// Names of the indexes in `version` (latest by default).
+    /// Namespace `name`, for writing, opening and compacting its indexes. Does no I/O.
+    fn namespace(&self, name: &str) -> PyResult<DatabaseNamespace> {
+        self.0.namespace(name).map_err(to_py_err)?;
+        Ok(DatabaseNamespace {
+            database: self.0.clone(),
+            name: name.to_owned(),
+        })
+    }
+
+    /// Names of the namespaces in `version` (latest by default).
     #[pyo3(signature = (version = None))]
-    fn index_names(&self, py: Python<'_>, version: Option<u64>) -> PyResult<Vec<String>> {
+    fn namespaces(&self, py: Python<'_>, version: Option<u64>) -> PyResult<Vec<String>> {
         let manifest = py
             .detach(|| completr_rs::block_on(self.read(version)))
             .map_err(to_py_err)?;
-        let mut names: Vec<String> = manifest.indexes.keys().cloned().collect();
-        names.sort();
-        Ok(names)
+        Ok(manifest.namespaces.keys().cloned().collect())
+    }
+
+    /// Names of the default namespace's indexes in `version` (latest by default).
+    #[pyo3(signature = (version = None))]
+    fn index_names(&self, py: Python<'_>, version: Option<u64>) -> PyResult<Vec<String>> {
+        self.default_namespace().index_names(py, version)
     }
 
     /// The manifest of `version` (latest by default) as a dict.
@@ -1423,19 +1718,13 @@ impl Database {
         manifest_dict(py, &manifest)
     }
 
-    /// A transaction against `version` (latest by default).
+    /// A transaction against `version` (latest by default), writing to the default namespace.
     #[pyo3(signature = (version = None))]
     fn begin(&self, py: Python<'_>, version: Option<u64>) -> PyResult<Transaction> {
-        let manifest = py
-            .detach(|| completr_rs::block_on(self.read(version)))
-            .map_err(to_py_err)?;
-        Ok(Transaction {
-            txn: Mutex::new(Some(self.0.transaction(manifest))),
-            options: self.0.build_options(),
-        })
+        self.default_namespace().begin(py, version)
     }
 
-    /// A snapshot of index `name` at `version` (latest by default).
+    /// A snapshot of index `name` of the default namespace at `version` (latest by default).
     #[pyo3(signature = (
         name, version = None, *, max_score = None, popularity_weight = 0.4, short_query_chars = 3, short_query_limit = 100,
         short_query_cache_entries = 10_000, vector_threads = 1,
@@ -1453,29 +1742,24 @@ impl Database {
         short_query_cache_entries: usize,
         vector_threads: usize,
     ) -> PyResult<Index> {
-        let options = index_options(
+        self.default_namespace().open_index(
+            py,
+            name,
+            version,
             max_score,
             popularity_weight,
             short_query_chars,
             short_query_limit,
             short_query_cache_entries,
             vector_threads,
-        );
-        let index = py.detach(|| {
-            completr_rs::block_on(async {
-                let manifest = self.read(version).await?;
-                self.0.open_index(&manifest, name, options).await
-            })
-        });
-        Ok(Index(Arc::new(index.map_err(to_py_err)?)))
+        )
     }
 
-    /// An engine serving every index of this database, loaded now. It picks up newer versions by
+    /// An engine serving every namespace of this database, loaded now. It picks up newer versions by
     /// itself every `sync_every` seconds, from a background thread started on its first query
-    /// (`None`: only on `engine.sync()`). With `group_separator`, indexes switch group by group to
-    /// bound memory.
+    /// (`None`: only on `engine.sync()`), switching one namespace at a time.
     #[pyo3(signature = (
-        *, sync_every = Some(5.0), group_separator = None, overfetch = 2, popularity_weight = 0.4,
+        *, sync_every = Some(5.0), overfetch = 2, popularity_weight = 0.4,
         short_query_chars = 3, short_query_limit = 100, short_query_cache_entries = 10_000, vector_threads = 1,
     ))]
     #[allow(clippy::too_many_arguments)]
@@ -1483,7 +1767,6 @@ impl Database {
         &self,
         py: Python<'_>,
         sync_every: Option<f64>,
-        group_separator: Option<&str>,
         overfetch: usize,
         popularity_weight: f64,
         short_query_chars: usize,
@@ -1500,10 +1783,6 @@ impl Database {
             vector_threads,
         );
         let replica = completr_rs::Replica::new(self.0.clone(), options);
-        let replica = match group_separator {
-            Some(separator) => replica.with_groups_by_suffix(separator),
-            None => replica,
-        };
         let engine = Engine {
             engine: Arc::new(completr_rs::Engine::new().with_overfetch(overfetch)),
             replica: Some(Arc::new(replica)),
@@ -1514,8 +1793,7 @@ impl Database {
         Ok(engine)
     }
 
-    /// One compaction step, or with `until_done` as many as are due; returns the new version,
-    /// or `None` if nothing was due.
+    /// `DatabaseNamespace.compact` in the default namespace.
     #[pyo3(signature = (index, *, fanout = 4, max_segments = 16, max_hidden_fraction = 0.25, until_done = false))]
     fn compact(
         &self,
@@ -1526,22 +1804,14 @@ impl Database {
         max_hidden_fraction: f64,
         until_done: bool,
     ) -> PyResult<Option<u64>> {
-        let policy = completr_rs::CompactionPolicy::default()
-            .fanout(fanout)
-            .max_segments(max_segments)
-            .max_hidden_fraction(max_hidden_fraction);
-        let manifest = py
-            .detach(|| {
-                completr_rs::block_on(async {
-                    if until_done {
-                        self.0.compact_all(index, &policy).await
-                    } else {
-                        self.0.compact(index, &policy).await
-                    }
-                })
-            })
-            .map_err(to_py_err)?;
-        Ok(manifest.map(|m| m.version))
+        self.default_namespace().compact(
+            py,
+            index,
+            fanout,
+            max_segments,
+            max_hidden_fraction,
+            until_done,
+        )
     }
 
     /// Deletes manifests beyond the newest `keep_versions` and unreferenced segments, both only
@@ -1598,10 +1868,140 @@ impl Database {
     }
 }
 
-/// Staged changes, committed together by `commit()`; usable once.
+async fn read_manifest(
+    database: &completr_rs::Database,
+    version: Option<u64>,
+) -> Result<completr_rs::Manifest, completr_rs::Error> {
+    match version {
+        Some(version) => database.manifest(version).await,
+        None => database.latest().await,
+    }
+}
+
+/// One namespace of a `Database`: its transactions, indexes and compaction.
+#[pyclass(frozen, module = "completr")]
+struct DatabaseNamespace {
+    database: completr_rs::Database,
+    name: String,
+}
+
+impl DatabaseNamespace {
+    fn handle(&self) -> PyResult<completr_rs::DatabaseNamespace> {
+        self.database.namespace(&self.name).map_err(to_py_err)
+    }
+}
+
+#[pymethods]
+impl DatabaseNamespace {
+    #[getter]
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Names of its indexes in `version` (latest by default).
+    #[pyo3(signature = (version = None))]
+    fn index_names(&self, py: Python<'_>, version: Option<u64>) -> PyResult<Vec<String>> {
+        let manifest = py
+            .detach(|| completr_rs::block_on(read_manifest(&self.database, version)))
+            .map_err(to_py_err)?;
+        Ok(manifest.index_names(&self.name))
+    }
+
+    /// A transaction against `version` (latest by default), writing to this namespace. As a
+    /// context manager it commits on success and discards its changes on an exception.
+    #[pyo3(signature = (version = None))]
+    fn begin(&self, py: Python<'_>, version: Option<u64>) -> PyResult<Transaction> {
+        let manifest = py
+            .detach(|| completr_rs::block_on(read_manifest(&self.database, version)))
+            .map_err(to_py_err)?;
+        let mut txn = self.database.transaction(manifest);
+        // Validates the name; operations then target it through `Transaction.namespace`.
+        txn.namespace(&self.name);
+        Ok(Transaction {
+            txn: Mutex::new(Some(txn)),
+            namespace: self.name.clone(),
+            options: self.database.build_options(),
+        })
+    }
+
+    /// A snapshot of index `name` at `version` (latest by default).
+    #[pyo3(signature = (
+        name, version = None, *, max_score = None, popularity_weight = 0.4, short_query_chars = 3, short_query_limit = 100,
+        short_query_cache_entries = 10_000, vector_threads = 1,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn open_index(
+        &self,
+        py: Python<'_>,
+        name: &str,
+        version: Option<u64>,
+        max_score: Option<f64>,
+        popularity_weight: f64,
+        short_query_chars: usize,
+        short_query_limit: usize,
+        short_query_cache_entries: usize,
+        vector_threads: usize,
+    ) -> PyResult<Index> {
+        let options = index_options(
+            max_score,
+            popularity_weight,
+            short_query_chars,
+            short_query_limit,
+            short_query_cache_entries,
+            vector_threads,
+        );
+        let namespace = self.handle()?;
+        let index = py.detach(|| {
+            completr_rs::block_on(async {
+                let manifest = read_manifest(&self.database, version).await?;
+                namespace.open_index(&manifest, name, options).await
+            })
+        });
+        Ok(Index(Arc::new(index.map_err(to_py_err)?)))
+    }
+
+    /// One compaction step, or with `until_done` as many as are due; returns the new version,
+    /// or `None` if nothing was due.
+    #[pyo3(signature = (index, *, fanout = 4, max_segments = 16, max_hidden_fraction = 0.25, until_done = false))]
+    fn compact(
+        &self,
+        py: Python<'_>,
+        index: &str,
+        fanout: usize,
+        max_segments: usize,
+        max_hidden_fraction: f64,
+        until_done: bool,
+    ) -> PyResult<Option<u64>> {
+        let policy = completr_rs::CompactionPolicy::default()
+            .fanout(fanout)
+            .max_segments(max_segments)
+            .max_hidden_fraction(max_hidden_fraction);
+        let namespace = self.handle()?;
+        let manifest = py
+            .detach(|| {
+                completr_rs::block_on(async {
+                    if until_done {
+                        namespace.compact_all(index, &policy).await
+                    } else {
+                        namespace.compact(index, &policy).await
+                    }
+                })
+            })
+            .map_err(to_py_err)?;
+        Ok(manifest.map(|m| m.version))
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(format!("DatabaseNamespace({})", py_repr(py, &self.name)?))
+    }
+}
+
+/// Staged changes, committed together by `commit()`; usable once. Index operations write to the
+/// transaction's namespace, or to another through `namespace()`.
 #[pyclass(frozen, module = "completr")]
 struct Transaction {
     txn: Mutex<Option<completr_rs::Transaction>>,
+    namespace: String,
     options: completr_rs::BuildOptions,
 }
 
@@ -1626,6 +2026,51 @@ impl Transaction {
         py.detach(|| completr_rs::Segment::build_with(options, docs, deletes))
             .map_err(to_py_err)
     }
+
+    fn append_in(
+        &self,
+        py: Python<'_>,
+        namespace: &str,
+        index: &str,
+        documents: &Bound<'_, PyAny>,
+        deletes: Vec<Id>,
+        vectors: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        let segment = self.segment(py, documents, numeric_ids(deletes), vectors)?;
+        self.with(|t| {
+            t.namespace(namespace).append(index, segment);
+            Ok(())
+        })
+    }
+
+    fn overwrite_in(
+        &self,
+        py: Python<'_>,
+        namespace: &str,
+        index: &str,
+        documents: &Bound<'_, PyAny>,
+        vectors: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        let segment = self.segment(py, documents, Vec::new(), vectors)?;
+        self.with(|t| {
+            t.namespace(namespace).overwrite(index, segment);
+            Ok(())
+        })
+    }
+
+    fn drop_in(&self, namespace: &str, index: &str) -> PyResult<()> {
+        self.with(|t| {
+            t.namespace(namespace).drop_index(index);
+            Ok(())
+        })
+    }
+
+    fn max_score_in(&self, namespace: &str, index: &str, max_score: f64) -> PyResult<()> {
+        self.with(|t| {
+            t.namespace(namespace).set_max_score(index, max_score);
+            Ok(())
+        })
+    }
 }
 
 #[pymethods]
@@ -1633,6 +2078,15 @@ impl Transaction {
     #[getter]
     fn read_version(&self) -> PyResult<u64> {
         self.with(|t| Ok(t.read_version()))
+    }
+
+    /// Index operations in namespace `name`, committed with the rest of this transaction.
+    fn namespace(slf: Bound<'_, Self>, name: &str) -> PyResult<NamespaceTransaction> {
+        completr_rs::validate_name("namespace", name).map_err(to_py_err)?;
+        Ok(NamespaceTransaction {
+            txn: slf.unbind(),
+            name: name.to_owned(),
+        })
     }
 
     /// Adds or replaces `documents` and deletes `deletes` (ids or keys) in `index`.
@@ -1645,11 +2099,14 @@ impl Transaction {
         deletes: Vec<Id>,
         vectors: Option<Bound<'_, PyAny>>,
     ) -> PyResult<()> {
-        let segment = self.segment(py, documents, numeric_ids(deletes), vectors.as_ref())?;
-        self.with(|t| {
-            t.append(index, segment);
-            Ok(())
-        })
+        self.append_in(
+            py,
+            &self.namespace,
+            index,
+            documents,
+            deletes,
+            vectors.as_ref(),
+        )
     }
 
     /// Replaces the whole of `index` with `documents`.
@@ -1661,25 +2118,15 @@ impl Transaction {
         documents: &Bound<'_, PyAny>,
         vectors: Option<Bound<'_, PyAny>>,
     ) -> PyResult<()> {
-        let segment = self.segment(py, documents, Vec::new(), vectors.as_ref())?;
-        self.with(|t| {
-            t.overwrite(index, segment);
-            Ok(())
-        })
+        self.overwrite_in(py, &self.namespace, index, documents, vectors.as_ref())
     }
 
     fn drop_index(&self, index: &str) -> PyResult<()> {
-        self.with(|t| {
-            t.drop_index(index);
-            Ok(())
-        })
+        self.drop_in(&self.namespace, index)
     }
 
     fn set_max_score(&self, index: &str, max_score: f64) -> PyResult<()> {
-        self.with(|t| {
-            t.set_max_score(index, max_score);
-            Ok(())
-        })
+        self.max_score_in(&self.namespace, index, max_score)
     }
 
     #[pyo3(signature = (key, value))]
@@ -1714,6 +2161,78 @@ impl Transaction {
             .detach(|| completr_rs::block_on(txn.commit()))
             .map_err(to_py_err)?;
         manifest_dict(py, &manifest)
+    }
+
+    fn __enter__(slf: Bound<'_, Self>) -> Bound<'_, Self> {
+        slf
+    }
+
+    /// Commits unless the block raised, in which case the changes are discarded.
+    #[pyo3(signature = (exc_type, _exc_value, _traceback))]
+    fn __exit__(
+        &self,
+        py: Python<'_>,
+        exc_type: Option<&Bound<'_, PyAny>>,
+        _exc_value: Option<&Bound<'_, PyAny>>,
+        _traceback: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<bool> {
+        let open = self.txn.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+        if exc_type.is_none() && open {
+            self.commit(py)?;
+        } else {
+            self.txn.lock().unwrap_or_else(|e| e.into_inner()).take();
+        }
+        Ok(false)
+    }
+}
+
+/// The index operations of a `Transaction` in one namespace.
+#[pyclass(frozen, module = "completr")]
+struct NamespaceTransaction {
+    txn: Py<Transaction>,
+    name: String,
+}
+
+#[pymethods]
+impl NamespaceTransaction {
+    #[getter]
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[pyo3(signature = (index, documents, deletes = Vec::new(), vectors = None))]
+    fn append(
+        &self,
+        py: Python<'_>,
+        index: &str,
+        documents: &Bound<'_, PyAny>,
+        deletes: Vec<Id>,
+        vectors: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        self.txn
+            .get()
+            .append_in(py, &self.name, index, documents, deletes, vectors.as_ref())
+    }
+
+    #[pyo3(signature = (index, documents, vectors = None))]
+    fn overwrite(
+        &self,
+        py: Python<'_>,
+        index: &str,
+        documents: &Bound<'_, PyAny>,
+        vectors: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        self.txn
+            .get()
+            .overwrite_in(py, &self.name, index, documents, vectors.as_ref())
+    }
+
+    fn drop_index(&self, index: &str) -> PyResult<()> {
+        self.txn.get().drop_in(&self.name, index)
+    }
+
+    fn set_max_score(&self, index: &str, max_score: f64) -> PyResult<()> {
+        self.txn.get().max_score_in(&self.name, index, max_score)
     }
 }
 
@@ -1770,7 +2289,16 @@ impl ChangeSet {
         Self(Some(completr_rs::ChangeSet::new()))
     }
 
-    /// Adds or replaces `documents` in `index`.
+    /// Changes to indexes of namespace `name`, submitted with the rest of this change set.
+    fn namespace(slf: Bound<'_, Self>, name: &str) -> PyResult<NamespaceChanges> {
+        completr_rs::validate_name("namespace", name).map_err(to_py_err)?;
+        Ok(NamespaceChanges {
+            set: slf.unbind(),
+            name: name.to_owned(),
+        })
+    }
+
+    /// Adds or replaces `documents` in `index` of the default namespace.
     #[pyo3(signature = (index, documents, vectors = None))]
     fn upsert(
         &mut self,
@@ -1784,9 +2312,46 @@ impl ChangeSet {
         Ok(())
     }
 
-    /// Deletes documents by id or key.
+    /// Deletes documents by id or key from `index` of the default namespace.
     fn delete(&mut self, index: &str, ids: Vec<Id>) -> PyResult<()> {
         self.inner()?.delete(index, numeric_ids(ids));
+        Ok(())
+    }
+}
+
+/// The changes of a `ChangeSet` in one namespace.
+#[pyclass(frozen, module = "completr")]
+struct NamespaceChanges {
+    set: Py<ChangeSet>,
+    name: String,
+}
+
+#[pymethods]
+impl NamespaceChanges {
+    #[getter]
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[pyo3(signature = (index, documents, vectors = None))]
+    fn upsert(
+        &self,
+        py: Python<'_>,
+        index: &str,
+        documents: &Bound<'_, PyAny>,
+        vectors: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        let docs = self::documents(py, documents, vectors.as_ref())?;
+        let mut set = self.set.bind(py).borrow_mut();
+        set.inner()?.namespace(&self.name).upsert(index, docs);
+        Ok(())
+    }
+
+    fn delete(&self, py: Python<'_>, index: &str, ids: Vec<Id>) -> PyResult<()> {
+        let mut set = self.set.bind(py).borrow_mut();
+        set.inner()?
+            .namespace(&self.name)
+            .delete(index, numeric_ids(ids));
         Ok(())
     }
 }
@@ -1876,7 +2441,7 @@ impl Replica {
     #[new]
     #[pyo3(signature = (
         database, engine, *, popularity_weight = 0.4, short_query_chars = 3, short_query_limit = 100,
-        short_query_cache_entries = 10_000, vector_threads = 1, group_separator = None,
+        short_query_cache_entries = 10_000, vector_threads = 1,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1887,7 +2452,6 @@ impl Replica {
         short_query_limit: usize,
         short_query_cache_entries: usize,
         vector_threads: usize,
-        group_separator: Option<&str>,
     ) -> Self {
         let options = index_options(
             None,
@@ -1898,10 +2462,6 @@ impl Replica {
             vector_threads,
         );
         let replica = completr_rs::Replica::new(database.0.clone(), options);
-        let replica = match group_separator {
-            Some(separator) => replica.with_groups_by_suffix(separator),
-            None => replica,
-        };
         Self {
             replica,
             engine: engine.engine.clone(),
@@ -1994,13 +2554,124 @@ impl Client {
         Ok(Self(client))
     }
 
+    /// Collections of namespace `name`. Does no I/O.
+    fn namespace(&self, name: &str) -> PyResult<ClientNamespace> {
+        self.0
+            .namespace(name)
+            .map(ClientNamespace)
+            .map_err(to_py_err)
+    }
+
+    /// Names of the default namespace's collections, sorted.
+    fn collections(&self, py: Python<'_>) -> PyResult<Vec<String>> {
+        self.default_namespace().collections(py)
+    }
+
+    /// An existing collection of the default namespace; `LayerNotFoundError` if there is none.
+    fn collection(&self, py: Python<'_>, name: &str) -> PyResult<Collection> {
+        self.default_namespace().collection(py, name)
+    }
+
+    /// A new collection of the default namespace; see `ClientNamespace.create_collection`.
+    #[pyo3(signature = (
+        name, *, optimize = "auto", fanout = 4, max_segments = 16, max_hidden_fraction = 0.25, min_interval = 30.0,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn create_collection(
+        &self,
+        py: Python<'_>,
+        name: &str,
+        optimize: &str,
+        fanout: usize,
+        max_segments: usize,
+        max_hidden_fraction: f64,
+        min_interval: f64,
+    ) -> PyResult<Collection> {
+        self.default_namespace().create_collection(
+            py,
+            name,
+            optimize,
+            fanout,
+            max_segments,
+            max_hidden_fraction,
+            min_interval,
+        )
+    }
+
+    #[pyo3(signature = (
+        name, *, optimize = "auto", fanout = 4, max_segments = 16, max_hidden_fraction = 0.25, min_interval = 30.0,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn get_or_create_collection(
+        &self,
+        py: Python<'_>,
+        name: &str,
+        optimize: &str,
+        fanout: usize,
+        max_segments: usize,
+        max_hidden_fraction: f64,
+        min_interval: f64,
+    ) -> PyResult<Collection> {
+        self.default_namespace().get_or_create_collection(
+            py,
+            name,
+            optimize,
+            fanout,
+            max_segments,
+            max_hidden_fraction,
+            min_interval,
+        )
+    }
+
+    fn drop_collection(&self, py: Python<'_>, name: &str) -> PyResult<()> {
+        self.default_namespace().drop_collection(py, name)
+    }
+
+    /// Loads the latest version now; returns it if it is new.
+    fn sync(&self, py: Python<'_>) -> PyResult<Option<u64>> {
+        py.detach(|| completr_rs::block_on(self.0.sync()))
+            .map_err(to_py_err)
+    }
+
+    /// The database underneath, for transactions, leases and other lower-level work.
+    #[getter]
+    fn database(&self) -> Database {
+        Database(self.0.database().clone())
+    }
+
+    fn __getitem__(&self, py: Python<'_>, name: &str) -> PyResult<Collection> {
+        self.collection(py, name)
+    }
+}
+
+impl Client {
+    fn default_namespace(&self) -> ClientNamespace {
+        ClientNamespace(
+            self.0
+                .namespace("default")
+                .expect("the default namespace name is valid"),
+        )
+    }
+}
+
+/// The collections of one namespace, from `Client.namespace()`.
+#[pyclass(frozen, module = "completr")]
+struct ClientNamespace(completr_rs::ClientNamespace);
+
+#[pymethods]
+impl ClientNamespace {
+    #[getter]
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+
     /// Names of the collections, sorted.
     fn collections(&self, py: Python<'_>) -> PyResult<Vec<String>> {
         py.detach(|| completr_rs::block_on(self.0.collections()))
             .map_err(to_py_err)
     }
 
-    /// An existing collection; `NotFoundError` if there is none of that name.
+    /// An existing collection; `LayerNotFoundError` if there is none of that name.
     fn collection(&self, py: Python<'_>, name: &str) -> PyResult<Collection> {
         py.detach(|| completr_rs::block_on(self.0.collection(name)))
             .map(Collection)
@@ -2067,20 +2738,12 @@ impl Client {
             .map_err(to_py_err)
     }
 
-    /// Loads the latest version now; returns it if it is new.
-    fn sync(&self, py: Python<'_>) -> PyResult<Option<u64>> {
-        py.detach(|| completr_rs::block_on(self.0.sync()))
-            .map_err(to_py_err)
-    }
-
-    /// The database underneath, for transactions, leases and other lower-level work.
-    #[getter]
-    fn database(&self) -> Database {
-        Database(self.0.database().clone())
-    }
-
     fn __getitem__(&self, py: Python<'_>, name: &str) -> PyResult<Collection> {
         self.collection(py, name)
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(format!("ClientNamespace({})", py_repr(py, self.0.name())?))
     }
 }
 
@@ -2093,6 +2756,11 @@ impl Collection {
     #[getter]
     fn name(&self) -> &str {
         self.0.name()
+    }
+
+    #[getter]
+    fn namespace(&self) -> &str {
+        self.0.namespace()
     }
 
     /// Adds documents, replacing any with the same id: dicts, `Document`s, or a pandas, polars or
@@ -2118,8 +2786,9 @@ impl Collection {
 
     /// Completions for `query`, best first. `aliases` adds synonym matches below the direct ones;
     /// `layers` are collections searched on top of this one, later ones overriding per document id;
-    /// `vector` is an embedding of the query, for results ranked by meaning as well.
-    #[pyo3(signature = (query, limit = 10, *, aliases = false, layers = None, contexts = None, vector = None))]
+    /// `vector` is an embedding of the query, for results ranked by meaning as well. A layer that
+    /// does not exist raises `LayerNotFoundError` unless `ignore_missing_layers`.
+    #[pyo3(signature = (query, limit = 10, *, aliases = false, layers = None, contexts = None, vector = None, ignore_missing_layers = false))]
     #[allow(clippy::too_many_arguments)]
     fn complete(
         &self,
@@ -2130,6 +2799,7 @@ impl Collection {
         layers: Option<Vec<String>>,
         contexts: Option<Vec<String>>,
         vector: Option<&Bound<'_, PyAny>>,
+        ignore_missing_layers: bool,
     ) -> PyResult<Vec<Suggestion>> {
         let vector = vector.map(|v| query_vector(py, v)).transpose()?;
         let options = completr_rs::Query::default()
@@ -2137,6 +2807,7 @@ impl Collection {
             .aliases(aliases)
             .layers(layers.unwrap_or_default())
             .contexts(contexts.unwrap_or_default())
+            .ignore_missing_layers(ignore_missing_layers)
             .vector(vector);
         let hits = py
             .detach(|| self.0.complete(query, &options))
@@ -2148,7 +2819,7 @@ impl Collection {
                     highlights: char_ranges(&c.text, &c.highlights),
                     text: c.text,
                     score: c.score,
-                    kind: c.kind.as_str(),
+                    kind: match_kind(py, c.kind)?,
                     layer: Some(c.collection),
                 })
             })
@@ -2179,8 +2850,12 @@ impl Collection {
         Ok(out)
     }
 
-    fn __repr__(&self) -> String {
-        format!("Collection({:?})", self.0.name())
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(format!(
+            "Collection(name={}, namespace={})",
+            py_repr(py, self.0.name())?,
+            py_repr(py, self.0.namespace())?
+        ))
     }
 }
 
@@ -2194,14 +2869,19 @@ fn completr(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SegmentWriter>()?;
     m.add_class::<Index>()?;
     m.add_class::<Engine>()?;
+    m.add_class::<Namespace>()?;
     m.add_class::<Store>()?;
     m.add_class::<Database>()?;
     m.add_class::<Client>()?;
+    m.add_class::<ClientNamespace>()?;
     m.add_class::<Collection>()?;
+    m.add_class::<DatabaseNamespace>()?;
     m.add_class::<Transaction>()?;
+    m.add_class::<NamespaceTransaction>()?;
     m.add_class::<Lease>()?;
     m.add_class::<Replica>()?;
     m.add_class::<ChangeSet>()?;
+    m.add_class::<NamespaceChanges>()?;
     m.add_class::<Ingestor>()?;
     m.add_class::<Suggestion>()?;
     m.add_class::<AliasSuggestion>()?;

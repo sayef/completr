@@ -74,10 +74,10 @@ an embedding. `Index.from_documents` builds an index from documents in memory, w
     ```
 
 ```text
-danc [('Dancing Queen – ABBA', 'prefix', 0.547), ('Dancing in the Dark – Bruce Springsteen', 'prefix', 0.462)]
-RHCP [('Under the Bridge – Red Hot Chili Peppers', 'abbreviation', 0.486)]
-bohemain rapsody [('Bohemian Rhapsody – Queen', 'fuzzy', 0.186)]
-queen [('Bohemian Rhapsody – Queen', 'infix', 0.356), ('Dancing Queen – ABBA', 'infix', 0.329)]
+danc [('Dancing Queen – ABBA', MatchKind.PREFIX, 0.547), ('Dancing in the Dark – Bruce Springsteen', MatchKind.PREFIX, 0.462)]
+RHCP [('Under the Bridge – Red Hot Chili Peppers', MatchKind.ABBREVIATION, 0.486)]
+bohemain rapsody [('Bohemian Rhapsody – Queen', MatchKind.FUZZY, 0.186)]
+queen [('Bohemian Rhapsody – Queen', MatchKind.INFIX, 0.356), ('Dancing Queen – ABBA', MatchKind.INFIX, 0.329)]
 ```
 
 ## Reading suggestions
@@ -124,7 +124,7 @@ print(index.complete_aliases("is this the real life"))
 
 ```text
 []
-[AliasSuggestion(id='bohemian', text="Bohemian Rhapsody – Queen", score=0.6637)]
+[AliasSuggestion(id='bohemian', text='Bohemian Rhapsody – Queen', score=0.6637)]
 ```
 
 ## A database
@@ -169,7 +169,7 @@ the database. An engine from the database serves its indexes.
 
 ```text
 1
-[('Dancing Queen – ABBA', 'prefix'), ('Dancing in the Dark – Bruce Springsteen', 'prefix')]
+[('Dancing Queen – ABBA', MatchKind.PREFIX), ('Dancing in the Dark – Bruce Springsteen', MatchKind.PREFIX)]
 ```
 
 `engine.complete` takes the query and a list of index names to search. With more than one name, later
@@ -199,7 +199,7 @@ print(engine.sync_status["error"])
 
 ```text
 []
-[Suggestion(id='blinding', text="Blinding Lights – The Weeknd", score=0.5666, kind="prefix")] 2
+[Suggestion(id='blinding', text='Blinding Lights – The Weeknd', score=0.5666, kind=MatchKind.PREFIX, layer='songs')] 2
 None
 ```
 

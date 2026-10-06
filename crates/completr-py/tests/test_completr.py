@@ -3,6 +3,8 @@ import time
 
 import pytest
 
+import completr
+
 from completr import CorruptionError, NotFoundError
 from completr import Engine, Index, Segment, Store
 
@@ -63,9 +65,42 @@ def test_engine_layers_override_by_id():
     )
     hits = engine.complete("machine", ["default", "acme"])
     assert {(h.id, h.layer) for h in hits} == {(1, "default"), (2, "acme")}
-    assert [h.id for h in engine.complete("machine", ["default", "missing"])] == [1, 2]
+    lenient = engine.complete("machine", ["default", "missing"], ignore_missing_layers=True)
+    assert [h.id for h in lenient] == [1, 2]
     engine.publish({"acme": None})
     assert engine.names() == ["default"]
+
+
+def test_namespaces_hold_a_version_and_name_what_is_missing():
+    engine = Engine()
+    tenant = Index([Segment.build([{"id": 2, "text": "Machine Vision Systems", "popularity": 1.0}])], max_score=1000.0)
+    engine.publish({"shared": Index([Segment.build(DOCS)], max_score=1000.0), "customer-a": tenant}, namespace="de-DE")
+    de = engine.namespace("de-DE")
+    assert (de.name, de.version, de.names()) == ("de-DE", 1, ["customer-a", "shared"])
+    hit = de.complete("machine vis", ["shared", "customer-a"])[0]
+    assert hit.kind is completr.MatchKind.PREFIX and hit.kind == "prefix" and hit.layer == "customer-a"
+    match hit:
+        case completr.Suggestion(id=2, kind=completr.MatchKind.PREFIX):
+            pass
+        case _:
+            pytest.fail(repr(hit))
+    assert repr(hit) == "Suggestion(id=2, text='Machine Vision Systems', score=0.4390, kind=MatchKind.PREFIX, layer='customer-a')"
+
+    with pytest.raises(completr.LayerNotFoundError) as missing:
+        de.complete("machine", ["shared", "customer-b"])
+    error = missing.value
+    assert (error.name, error.namespace, error.version) == ("customer-b", "de-DE", 1)
+    assert error.available == ["customer-a", "shared"] and "did you mean 'customer-a'?" in str(error)
+    assert isinstance(error, LookupError) and isinstance(error, NotFoundError)
+    assert len(de.complete("machine", ["shared", "customer-b"], ignore_missing_layers=True)) == 2
+    assert repr(de) == "Namespace(name='de-DE', version=1, indexes=['customer-a', 'shared'])"
+
+    with pytest.raises(completr.NamespaceNotFoundError) as wrong:
+        engine.namespace("de-De")
+    assert wrong.value.available == ["de-DE"] and "did you mean 'de-DE'?" in str(wrong.value)
+
+    engine.publish({"customer-a": None}, namespace="de-DE")
+    assert de.names() == ["customer-a", "shared"] and engine.namespace("de-DE").version == 2
 
 
 def _round_trip(store: Store):

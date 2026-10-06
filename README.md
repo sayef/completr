@@ -205,10 +205,10 @@ for query in ["danc", "RHCP", "bohemain rapsody", "queen"]:
 ```
 
 ```text
-danc [('Dancing Queen – ABBA', 'prefix', 0.547), ('Dancing in the Dark – Bruce Springsteen', 'prefix', 0.462)]
-RHCP [('Under the Bridge – Red Hot Chili Peppers', 'abbreviation', 0.486)]
-bohemain rapsody [('Bohemian Rhapsody – Queen', 'fuzzy', 0.186)]
-queen [('Bohemian Rhapsody – Queen', 'infix', 0.356), ('Dancing Queen – ABBA', 'infix', 0.329)]
+danc [('Dancing Queen – ABBA', MatchKind.PREFIX, 0.547), ('Dancing in the Dark – Bruce Springsteen', MatchKind.PREFIX, 0.462)]
+RHCP [('Under the Bridge – Red Hot Chili Peppers', MatchKind.ABBREVIATION, 0.486)]
+bohemain rapsody [('Bohemian Rhapsody – Queen', MatchKind.FUZZY, 0.186)]
+queen [('Bohemian Rhapsody – Queen', MatchKind.INFIX, 0.356), ('Dancing Queen – ABBA', MatchKind.INFIX, 0.329)]
 ```
 
 Each suggestion carries its `id` (an int or the string you gave), `text`, `score`, `kind`, `layer` (the
@@ -263,7 +263,7 @@ let engine = Arc::new(Engine::new());
 let replica = Arc::new(Replica::new(database, IndexOptions::default()));
 replica.sync(&engine).await?;
 let _follower = replica.follow(&engine, Duration::from_secs(5));   // syncs until dropped
-let hits = engine.complete(&["songs"], "danc", 10);
+let hits = engine.complete(&["songs"], "danc", 10)?;
 ```
 
 Runnable versions: [`quickstart.rs`](crates/completr/examples/quickstart.rs) and
@@ -310,7 +310,7 @@ Synonyms are searched with `complete_aliases`, apart from direct matches, so an 
 displaces what the user typed. Suggestions carry the document's text:
 
 ```python
-index.complete_aliases("is this the real")   # [AliasSuggestion(id='bohemian', text="Bohemian Rhapsody – Queen", ...)]
+index.complete_aliases("is this the real")   # [AliasSuggestion(id='bohemian', text='Bohemian Rhapsody – Queen', ...)]
 ```
 
 ### Layers
@@ -327,8 +327,8 @@ txn.append("radio", [{"id": "bohemian", "text": "Bohemian Rhapsody (Remastered 2
            deletes=["killer"])   # a station's edits, exclusives and removals
 txn.commit()
 
-stack = ["catalog", "catalog/de", "radio", f"user/{user_id}", "takedowns"]
-[(s.text, s.layer) for s in engine.complete("queen", stack)]
+stack = ["catalog", "catalog-de", "radio", f"user-{user_id}", "takedowns"]
+[(s.text, s.layer) for s in engine.complete("queen", stack, ignore_missing_layers=True)]
 # [('Bohemian Rhapsody (Remastered 2011) – Queen', 'radio'), ('Dancing Queen – ABBA', 'catalog'),
 #  ('Dancing Queen (Live Session) – ABBA', 'radio')]
 ```
@@ -339,8 +339,23 @@ stack = ["catalog", "catalog/de", "radio", f"user/{user_id}", "takedowns"]
 - **Promotions, takedowns and experiments** are layers published atomically, with no rebuild.
 
 Scores from every layer are on the first layer's scale, so an unchanged copy ranks exactly where it did.
-Five layers over 200,000 titles answer in 0.2 ms at the median. See [Layers](docs/guides/layers.md) for
-each pattern with its output.
+Five layers over 200,000 titles answer in 0.2 ms at the median. A layer that does not exist raises
+`LayerNotFoundError` unless the query passes `ignore_missing_layers=True`.
+
+Layers stack within a **namespace**: a set of indexes, such as one locale's catalogue and its tenants' layers,
+that the engine switches to a new version in one step. `engine.namespace("de")` holds that version for a
+request, so every search through it agrees:
+
+```python
+with db.namespace("de").begin() as txn:     # commits at the end of the block
+    txn.append("catalog", songs_de)
+    txn.append("radio", radio_edits_de)
+
+de = engine.namespace("de")                 # Namespace(name='de', version=1, indexes=['catalog', 'radio'])
+de.complete("99", ["catalog", "radio"])
+```
+
+See [Layers](docs/guides/layers.md) for each pattern with its output.
 
 ### Semantic and hybrid completion
 
@@ -428,7 +443,7 @@ collection is an index of the same name.
 client = completr.Client("./data")
 songs = client.get_or_create_collection("songs")
 songs.add([{"id": "bohemian", "text": "Bohemian Rhapsody – Queen", "popularity": 0.95, "synonyms": ["is this the real life"]}])
-songs.complete("is this the real", aliases=True)   # [Suggestion(id='bohemian', ..., kind="synonym")]
+songs.complete("is this the real", aliases=True)   # [Suggestion(id='bohemian', ..., kind=MatchKind.SYNONYM)]
 ```
 
 It does not expose index options, the choice of fusion, or getting documents by id; `client.database`
@@ -455,16 +470,22 @@ Engine events are logged to stderr; set `COMPLETR_LOG=completr=debug` for more.
 
 ### Errors
 
-Every error derives from `completr.CompletrError`: `ConflictError`, `CorruptionError`, `NotFoundError`,
-`InvalidInputError` (also a `ValueError`) and `StorageError` (also an `OSError`).
+Every error derives from `completr.CompletrError`: `ConflictError`, `CorruptionError`, `NotFoundError`
+(also a `LookupError`) with `NamespaceNotFoundError` and `LayerNotFoundError` under it, `InvalidInputError`
+(also a `ValueError`) and `StorageError` (also an `OSError`). The not-found errors carry the missing `name` and
+the names that do exist in `available`, and suggest a name when the missing one looks like a typo:
+
+```text
+LayerNotFoundError: no index 'custmer-a' in namespace 'de-DE' at version 3 (did you mean 'customer-a'?); indexes: customer-a, customer-b, shared; set ignore_missing_layers if it may not exist
+```
 
 ### Configuration
 
 | Where | Settings |
 |---|---|
 | `connect(...)` | `options`, `cache_dir`, and the build options `min_word_chars`, `max_edit_distance`, `fuzzy_prefix_chars`, `vector_bits`, `compact_keys`, `build_threads` |
-| `db.engine(...)` | `sync_every`, `group_separator`, `overfetch`, and the index options `popularity_weight`, `short_query_chars`, `short_query_limit`, `short_query_cache_entries`, `vector_threads` |
-| `complete(...)`, `hybrid_search(...)` | `limit`, `contexts`; `fusion`, `rrf_k`, `semantic_weight`, `candidates` |
+| `db.engine(...)` | `sync_every`, `overfetch`, and the index options `popularity_weight`, `short_query_chars`, `short_query_limit`, `short_query_cache_entries`, `vector_threads` |
+| `complete(...)`, `hybrid_search(...)` | `limit`, `contexts`, `ignore_missing_layers`; `fusion`, `rrf_k`, `semantic_weight`, `candidates` |
 | `db.compact(...)`, `db.cleanup(...)`, `Ingestor(...)` | `fanout`, `max_segments`, `max_hidden_fraction`; `keep_versions`, `older_than_seconds`; `lease_ttl_seconds`, `max_change_sets` |
 
 In Rust, `BuildOptions`, `IndexOptions`, `SearchOptions`, `HybridOptions`, `CompactionPolicy` and

@@ -35,7 +35,8 @@ def complete(
 ) -> list[Suggestion]:
     return [
         Suggestion(id=s.id, text=s.text, kind=s.kind, score=round(s.score, 4), highlights=s.highlights)
-        for s in engine.complete(q, [INDEX], limit, contexts=contexts)
+        # Empty until the index's first version is written.
+        for s in engine.complete(q, [INDEX], limit, contexts=contexts, ignore_missing_layers=True)
     ]
 
 

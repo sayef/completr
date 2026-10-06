@@ -10,12 +10,13 @@ use std::time::{Duration, Instant};
 use rustc_hash::FxHashMap;
 use serde_json::{json, Value};
 
-use crate::database::{now_ms, CompactionPolicy, Database, Replica};
+use crate::database::{now_ms, validate_name, CompactionPolicy, Database, Manifest, Replica};
+use crate::engine::{layered_complete, layered_complete_aliases};
 use crate::hybrid::HybridOptions;
 use crate::search::{MatchKind, SearchOptions, Suggestion};
 use crate::segment::BuildOptions;
 use crate::store::block_on;
-use crate::{Document, Engine, Error, IndexOptions};
+use crate::{Document, Engine, Error, Index, IndexOptions, DEFAULT_NAMESPACE};
 
 /// How a client connects and follows its database.
 #[derive(Clone, Debug)]
@@ -122,6 +123,8 @@ pub struct Query {
     pub layers: Vec<String>,
     /// Only documents tagged with any of these contexts; empty means all.
     pub contexts: Vec<String>,
+    /// Search a layer that does not exist as empty instead of failing.
+    pub ignore_missing_layers: bool,
     /// An embedding of the query, for results ranked by meaning as well as by text.
     pub vector: Option<Vec<f32>>,
 }
@@ -133,6 +136,7 @@ impl Default for Query {
             aliases: false,
             layers: Vec::new(),
             contexts: Vec::new(),
+            ignore_missing_layers: false,
             vector: None,
         }
     }
@@ -143,6 +147,7 @@ crate::setters!(Query {
     aliases: bool,
     layers: Vec<String>,
     contexts: Vec<String>,
+    ignore_missing_layers: bool,
     vector: Option<Vec<f32>>,
 });
 
@@ -200,11 +205,14 @@ struct State {
     follower: Option<u32>,
     synced_at_ms: Option<u64>,
     sync_error: Option<String>,
-    optimizing: FxHashMap<String, Instant>,
-    optimize_errors: FxHashMap<String, String>,
+    optimizing: FxHashMap<(String, String), Instant>,
+    optimize_errors: FxHashMap<(String, String), String>,
 }
 
-const SETTINGS: &str = "collection/";
+/// Index metadata key of a collection's settings.
+const SETTINGS: &str = "collection";
+/// Database metadata prefix of settings written before namespaces, for the default namespace.
+const LEGACY_SETTINGS: &str = "collection/";
 
 /// Opens the database at `url`: a local directory, `memory://`, `s3://`, `gs://` or `az://`.
 pub async fn connect(url: &str, options: ConnectOptions) -> Result<Client, Error> {
@@ -268,16 +276,26 @@ impl Inner {
             .ok();
     }
 
-    async fn settings(&self, name: &str) -> Result<Option<Optimize>, Error> {
-        let manifest = self.database.latest().await?;
-        let key = format!("{SETTINGS}{name}");
-        Ok(match manifest.metadata.get(&key) {
-            Some(raw) => Some(Optimize::from_json(
-                &serde_json::from_str(raw).unwrap_or(Value::Null),
-            )),
-            None => manifest.indexes.contains_key(name).then(Optimize::default),
-        })
+    async fn settings(&self, namespace: &str, name: &str) -> Result<Option<Optimize>, Error> {
+        Ok(settings(&self.database.latest().await?, namespace, name))
     }
+}
+
+/// A collection's settings, if it exists: an index, or settings written before its first document.
+fn settings(manifest: &Manifest, namespace: &str, name: &str) -> Option<Optimize> {
+    let parse = |raw: &str| Optimize::from_json(&serde_json::from_str(raw).unwrap_or(Value::Null));
+    if let Some(entry) = manifest.index(namespace, name) {
+        return Some(
+            entry
+                .metadata
+                .get(SETTINGS)
+                .map_or_else(Optimize::default, |raw| parse(raw)),
+        );
+    }
+    (namespace == DEFAULT_NAMESPACE)
+        .then(|| manifest.metadata.get(&format!("{LEGACY_SETTINGS}{name}")))
+        .flatten()
+        .map(|raw| parse(raw))
 }
 
 impl Client {
@@ -291,17 +309,85 @@ impl Client {
         &self.inner.database
     }
 
+    /// Collections of namespace `name`. Does no I/O.
+    pub fn namespace(&self, name: &str) -> Result<ClientNamespace, Error> {
+        validate_name("namespace", name)?;
+        Ok(ClientNamespace {
+            inner: self.inner.clone(),
+            name: name.to_owned(),
+        })
+    }
+
+    fn default_namespace(&self) -> ClientNamespace {
+        ClientNamespace {
+            inner: self.inner.clone(),
+            name: DEFAULT_NAMESPACE.to_owned(),
+        }
+    }
+
+    /// Names of the collections in the default namespace, sorted.
+    pub async fn collections(&self) -> Result<Vec<String>, Error> {
+        self.default_namespace().collections().await
+    }
+
+    /// An existing collection of the default namespace.
+    pub async fn collection(&self, name: &str) -> Result<Collection, Error> {
+        self.default_namespace().collection(name).await
+    }
+
+    /// A new collection in the default namespace; an error if one of that name exists.
+    pub async fn create_collection(
+        &self,
+        name: &str,
+        optimize: Optimize,
+    ) -> Result<Collection, Error> {
+        self.default_namespace()
+            .create_collection(name, optimize)
+            .await
+    }
+
+    /// The collection of that name, created with `optimize` if it does not exist yet.
+    pub async fn get_or_create_collection(
+        &self,
+        name: &str,
+        optimize: Optimize,
+    ) -> Result<Collection, Error> {
+        self.default_namespace()
+            .get_or_create_collection(name, optimize)
+            .await
+    }
+
+    /// Deletes a collection of the default namespace and its settings.
+    pub async fn drop_collection(&self, name: &str) -> Result<(), Error> {
+        self.default_namespace().drop_collection(name).await
+    }
+}
+
+/// The collections of one namespace.
+#[derive(Clone)]
+pub struct ClientNamespace {
+    inner: Arc<Inner>,
+    name: String,
+}
+
+impl ClientNamespace {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     /// Names of the collections, sorted.
     pub async fn collections(&self) -> Result<Vec<String>, Error> {
         let manifest = self.inner.database.latest().await?;
-        let mut names: Vec<String> = manifest.indexes.keys().cloned().collect();
-        names.extend(
-            manifest
-                .metadata
-                .keys()
-                .filter_map(|k| k.strip_prefix(SETTINGS))
-                .map(str::to_owned),
-        );
+        let mut names = manifest.index_names(&self.name);
+        if self.name == DEFAULT_NAMESPACE {
+            names.extend(
+                manifest
+                    .metadata
+                    .keys()
+                    .filter_map(|k| k.strip_prefix(LEGACY_SETTINGS))
+                    .map(str::to_owned),
+            );
+        }
         names.sort();
         names.dedup();
         Ok(names)
@@ -309,9 +395,15 @@ impl Client {
 
     /// An existing collection.
     pub async fn collection(&self, name: &str) -> Result<Collection, Error> {
-        match self.inner.settings(name).await? {
+        let manifest = self.inner.database.latest().await?;
+        match settings(&manifest, &self.name, name) {
             Some(optimize) => Ok(self.handle(name, optimize)),
-            None => Err(Error::NotFound(format!("collection {name}"))),
+            None => Err(Error::LayerNotFound {
+                namespace: self.name.clone(),
+                version: manifest.version,
+                name: name.to_owned(),
+                available: manifest.index_names(&self.name),
+            }),
         }
     }
 
@@ -321,8 +413,11 @@ impl Client {
         name: &str,
         optimize: Optimize,
     ) -> Result<Collection, Error> {
-        if self.inner.settings(name).await?.is_some() {
-            return Err(Error::input(format!("collection {name} already exists")));
+        if self.inner.settings(&self.name, name).await?.is_some() {
+            return Err(Error::input(format!(
+                "collection {name} already exists in namespace {}",
+                self.name
+            )));
         }
         self.save_settings(name, &optimize).await?;
         Ok(self.handle(name, optimize))
@@ -334,7 +429,7 @@ impl Client {
         name: &str,
         optimize: Optimize,
     ) -> Result<Collection, Error> {
-        match self.inner.settings(name).await? {
+        match self.inner.settings(&self.name, name).await? {
             Some(existing) => Ok(self.handle(name, existing)),
             None => {
                 self.save_settings(name, &optimize).await?;
@@ -345,30 +440,28 @@ impl Client {
 
     /// Deletes a collection and its settings.
     pub async fn drop_collection(&self, name: &str) -> Result<(), Error> {
-        let mut txn = self.inner.database.begin().await?;
-        txn.drop_index(name)
-            .set_metadata(&format!("{SETTINGS}{name}"), None);
+        let mut txn = self.inner.database.namespace(&self.name)?.begin().await?;
+        txn.drop_index(name);
+        if self.name == DEFAULT_NAMESPACE {
+            txn.set_metadata(&format!("{LEGACY_SETTINGS}{name}"), None);
+        }
         txn.commit().await?;
         self.inner.sync().await?;
         Ok(())
     }
 
     async fn save_settings(&self, name: &str, optimize: &Optimize) -> Result<(), Error> {
-        if name.is_empty() {
-            return Err(Error::input("a collection needs a name"));
-        }
-        let mut txn = self.inner.database.begin().await?;
-        txn.set_metadata(
-            &format!("{SETTINGS}{name}"),
-            Some(&optimize.to_json().to_string()),
-        );
+        let mut txn = self.inner.database.namespace(&self.name)?.begin().await?;
+        txn.set_index_metadata(name, SETTINGS, Some(&optimize.to_json().to_string()));
         txn.commit().await?;
+        self.inner.sync().await?;
         Ok(())
     }
 
     fn handle(&self, name: &str, optimize: Optimize) -> Collection {
         Collection {
             inner: self.inner.clone(),
+            namespace: self.name.clone(),
             name: name.to_owned(),
             optimize,
         }
@@ -379,6 +472,7 @@ impl Client {
 #[derive(Clone)]
 pub struct Collection {
     inner: Arc<Inner>,
+    namespace: String,
     name: String,
     optimize: Optimize,
 }
@@ -386,6 +480,14 @@ pub struct Collection {
 impl Collection {
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    fn key(&self) -> (String, String) {
+        (self.namespace.clone(), self.name.clone())
     }
 
     pub fn optimize_setting(&self) -> &Optimize {
@@ -407,7 +509,12 @@ impl Collection {
         documents: impl IntoIterator<Item = Document>,
         deletes: impl IntoIterator<Item = u64>,
     ) -> Result<u64, Error> {
-        let mut txn = self.inner.database.begin().await?;
+        let mut txn = self
+            .inner
+            .database
+            .namespace(&self.namespace)?
+            .begin()
+            .await?;
         txn.append_documents(&self.name, documents, deletes)?;
         let version = txn.commit().await?.version;
         self.inner.sync().await?;
@@ -428,19 +535,20 @@ impl Collection {
             let mut state = self.inner.state();
             if state
                 .optimizing
-                .get(&self.name)
+                .get(&self.key())
                 .is_some_and(|at| at.elapsed() < *min_interval)
             {
                 return;
             }
-            state.optimizing.insert(self.name.clone(), Instant::now());
+            state.optimizing.insert(self.key(), Instant::now());
         }
-        let (inner, name, policy) = (self.inner.clone(), self.name.clone(), policy.clone());
+        let (inner, key, policy) = (self.inner.clone(), self.key(), policy.clone());
         std::thread::Builder::new()
             .name("completr-optimize".into())
             .spawn(move || {
                 let result = block_on(async {
-                    let compacted = inner.database.compact_all(&name, &policy).await?;
+                    let namespace = inner.database.namespace(&key.0)?;
+                    let compacted = namespace.compact_all(&key.1, &policy).await?;
                     if compacted.is_some() {
                         inner.sync().await?;
                     }
@@ -448,8 +556,8 @@ impl Collection {
                 });
                 let mut state = inner.state();
                 match result {
-                    Ok(()) => state.optimize_errors.remove(&name),
-                    Err(e) => state.optimize_errors.insert(name, e.to_string()),
+                    Ok(()) => state.optimize_errors.remove(&key),
+                    Err(e) => state.optimize_errors.insert(key, e.to_string()),
                 };
             })
             .ok();
@@ -461,7 +569,8 @@ impl Collection {
             Optimize::Auto { policy, .. } => policy.clone(),
             Optimize::Off => CompactionPolicy::default(),
         };
-        let compacted = self.inner.database.compact_all(&self.name, &policy).await?;
+        let namespace = self.inner.database.namespace(&self.namespace)?;
+        let compacted = namespace.compact_all(&self.name, &policy).await?;
         if compacted.is_some() {
             self.inner.sync().await?;
         }
@@ -471,38 +580,60 @@ impl Collection {
     /// Completions for `text`, best first.
     pub fn complete(&self, text: &str, query: &Query) -> Result<Vec<Completion>, Error> {
         self.inner.follow();
-        let layers: Vec<&str> = std::iter::once(self.name.as_str())
+        let names: Vec<&str> = std::iter::once(self.name.as_str())
             .chain(query.layers.iter().map(String::as_str))
             .collect();
-        let name = |layer: usize| layers.get(layer).copied().unwrap_or_default().to_owned();
+        let name = |layer: usize| names.get(layer).copied().unwrap_or_default().to_owned();
+        let namespace = self.inner.engine.namespace(&self.namespace).ok();
+        let held: Vec<Option<Arc<Index>>> = names
+            .iter()
+            .map(|n| namespace.as_ref().and_then(|ns| ns.get(n)))
+            .collect();
+        // The collection itself is empty until its first write is synced; other layers must exist.
+        if !query.ignore_missing_layers {
+            if let Some(missing) = (1..names.len()).find(|&i| held[i].is_none()) {
+                return Err(Error::LayerNotFound {
+                    namespace: self.namespace.clone(),
+                    version: namespace.as_ref().map_or(0, |n| n.version()),
+                    name: names[missing].to_owned(),
+                    available: namespace.as_ref().map(|n| n.names()).unwrap_or_default(),
+                });
+            }
+        }
+        let layers: Vec<Option<&Index>> = held.iter().map(|i| i.as_deref()).collect();
         let search = SearchOptions::new(query.limit).contexts(query.contexts.iter().cloned());
-        let engine = &self.inner.engine;
+        let overfetch = self.inner.engine.overfetch();
         let mut out: Vec<Completion> = match &query.vector {
             Some(vector) => {
                 let options = HybridOptions::default().contexts(query.contexts.iter().cloned());
-                engine
-                    .hybrid_search(&layers, text, vector, query.limit, &options)?
-                    .into_iter()
-                    .map(|h| Completion {
-                        id: h.id,
-                        key: h.key,
-                        text: h.text,
-                        score: h.score,
-                        kind: h.kind,
-                        highlights: h.highlights,
-                        collection: name(h.layer),
-                    })
-                    .collect()
+                crate::engine::layered_hybrid_search(
+                    &layers,
+                    text,
+                    vector,
+                    query.limit,
+                    &options,
+                    overfetch,
+                )?
+                .into_iter()
+                .map(|h| Completion {
+                    id: h.id,
+                    key: h.key,
+                    text: h.text,
+                    score: h.score,
+                    kind: h.kind,
+                    highlights: h.highlights,
+                    collection: name(h.layer),
+                })
+                .collect()
             }
-            None => engine
-                .complete_with(&layers, text, &search)
+            None => layered_complete(&layers, text, &search, overfetch)
                 .into_iter()
                 .map(|h| completion(h.suggestion, name(h.layer)))
                 .collect(),
         };
         if query.aliases && out.len() < query.limit {
             let floor = out.iter().map(|c| c.score).fold(f64::INFINITY, f64::min);
-            let aliases = engine.complete_aliases_with(&layers, text, &search);
+            let aliases = layered_complete_aliases(&layers, text, &search, overfetch);
             let top = aliases.first().map_or(0.0, |a| a.suggestion.score);
             // Synonyms rank below every direct match, keeping their order, as typo corrections do.
             let scale = if floor.is_finite() && top > 0.0 {
@@ -535,11 +666,16 @@ impl Collection {
     pub async fn stats(&self) -> Result<CollectionStats, Error> {
         let manifest = self.inner.database.latest().await?;
         let segments = manifest
-            .indexes
-            .get(&self.name)
+            .index(&self.namespace, &self.name)
             .map_or(&[][..], |e| e.segments.as_slice());
         let synced_version = self.inner.replica.version().await;
-        let documents = self.inner.engine.get(&self.name).map_or(0, |i| i.len());
+        let documents = self
+            .inner
+            .engine
+            .namespace(&self.namespace)
+            .ok()
+            .and_then(|n| n.get(&self.name))
+            .map_or(0, |i| i.len());
         let state = self.inner.state();
         Ok(CollectionStats {
             documents,
@@ -550,7 +686,7 @@ impl Collection {
             synced_version,
             synced_at_ms: state.synced_at_ms,
             sync_error: state.sync_error.clone(),
-            optimize_error: state.optimize_errors.get(&self.name).cloned(),
+            optimize_error: state.optimize_errors.get(&self.key()).cloned(),
         })
     }
 }

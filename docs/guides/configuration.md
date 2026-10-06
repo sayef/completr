@@ -54,7 +54,6 @@ Passed to: `Index(...)`, `Index.from_documents` (`max_score`, `popularity_weight
 |---|---|---|---|
 | `sync_every` | 5.0 | `db.engine(...)` | Seconds between background syncs, started by the engine's first query. `None` syncs only on `engine.sync()`. |
 | `overfetch` | 2 | `Engine(...)`, `db.engine(...)` | Candidates per layer, as a multiple of `limit`, for searches over several layers. |
-| `group_separator` | `None` | `db.engine(...)`, `Replica(...)` | Switch indexes group by group, grouped by the part after the last separator, to bound memory. |
 
 ## Search options
 
@@ -62,6 +61,7 @@ Passed to: `Index(...)`, `Index.from_documents` (`max_score`, `popularity_weight
 |---|---|---|---|
 | `limit` | 10 | every search | Maximum number of suggestions. |
 | `contexts` | `None` | every search | Only documents tagged with any of these contexts. |
+| `ignore_missing_layers` | `False` | layered searches | Search a layer whose index does not exist as empty instead of raising `LayerNotFoundError`. |
 | `fusion` | `"rrf"` | `hybrid_search` | `"rrf"`, `"weighted"` or `"lexical_first"`. |
 | `rrf_k` | 60.0 | `hybrid_search` | `k` of reciprocal rank fusion. |
 | `semantic_weight` | 0.5 | `hybrid_search` | Weight of the semantic score in weighted fusion. |
@@ -99,7 +99,7 @@ db.cleanup(keep_versions=20, older_than_seconds=6 * 3600)
 ```
 
 ```text
-[Suggestion(id='billie', text="Billie Jean – Michael Jackson", score=0.8238, kind="prefix")]
+[Suggestion(id='billie', text='Billie Jean – Michael Jackson', score=0.8238, kind=MatchKind.PREFIX, layer='songs')]
 ```
 
 ## Rust
@@ -119,8 +119,7 @@ let cleanup = CleanupPolicy::default().keep_versions(20).older_than(Duration::fr
 ```
 
 Build options go to `Database::with_build_options`, index options to `Replica::new`, and the sync interval
-to `Replica::follow`. `Engine::with_overfetch` sets the overfetch, and `Replica::with_groups_by_suffix`
-the group separator.
+to `Replica::follow`. `Engine::with_overfetch` sets the overfetch.
 
 `IndexOptions` also has `carry_short_queries` (1000), the number of an old index's most-served short
 queries a replica recomputes on the new index before publishing it, and `warm_on_load` (`true`), which
@@ -176,7 +175,7 @@ print(songs.complete("bi", limit=5, aliases=True))
 ```
 
 ```text
-[Suggestion(id='billie', text="Billie Jean – Michael Jackson", score=0.5921, kind="prefix")]
+[Suggestion(id='billie', text='Billie Jean – Michael Jackson', score=0.5921, kind=MatchKind.PREFIX, layer='songs')]
 ```
 
 In Rust, `ConnectOptions` and `Query` have chainable setters named after their fields, and `Optimize` is

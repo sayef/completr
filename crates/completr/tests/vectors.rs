@@ -294,7 +294,7 @@ async fn database_compaction_keeps_vectors() {
     // Any hidden document forces a full merge.
     let policy = completr::CompactionPolicy::default().max_hidden_fraction(0.0);
     let full = ds.compact("a", &policy).await.unwrap().unwrap();
-    assert_eq!(full.indexes["a"].segments.len(), 1);
+    assert_eq!(full.namespaces["default"]["a"].segments.len(), 1);
     let after = results(
         &ds.open_index(&full, "a", IndexOptions::default())
             .await

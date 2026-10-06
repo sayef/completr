@@ -4,12 +4,17 @@ from typing import Any
 
 from ._async import (
     AsyncClient as AsyncClient,
+    AsyncClientNamespace as AsyncClientNamespace,
     AsyncCollection as AsyncCollection,
     AsyncDatabase as AsyncDatabase,
+    AsyncDatabaseNamespace as AsyncDatabaseNamespace,
     AsyncEngine as AsyncEngine,
 )
+from ._types import MatchKind as MatchKind
 from .completr import *  # noqa: F403
 from .completr import Database
+
+DEFAULT_NAMESPACE: str
 
 def connect(
     url: str,

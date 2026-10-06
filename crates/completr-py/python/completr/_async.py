@@ -3,7 +3,7 @@ stay synchronous (sub-millisecond). Constructors do not block: storage opens on 
 
 import asyncio
 
-from .completr import Client, Collection, Database, Engine
+from .completr import Client, ClientNamespace, Collection, Database, DatabaseNamespace, Engine
 
 
 class _Lazy:
@@ -64,8 +64,15 @@ class AsyncDatabase(_Lazy):
             raise RuntimeError("the database is not open yet; await one of its methods or open() first")
         return self._opened
 
+    def namespace(self, name):
+        """Namespace `name`; storage opens on its first awaited call."""
+        return AsyncDatabaseNamespace(self, name)
+
     async def versions(self):
         return await self._call("versions")
+
+    async def namespaces(self, version=None):
+        return await self._call("namespaces", version)
 
     async def latest_version(self):
         return await self._call("latest_version")
@@ -105,6 +112,35 @@ class AsyncDatabase(_Lazy):
         return await asyncio.to_thread(ingestor.run_once)
 
 
+class AsyncDatabaseNamespace:
+    """A `DatabaseNamespace` whose storage operations are awaitable."""
+
+    def __init__(self, database: AsyncDatabase, name: str):
+        self._database, self.name = database, name
+
+    async def _namespace(self) -> DatabaseNamespace:
+        return (await self._database._get()).namespace(self.name)
+
+    async def _call(self, method, *args, **kwargs):
+        namespace = await self._namespace()
+        return await asyncio.to_thread(getattr(namespace, method), *args, **kwargs)
+
+    async def index_names(self, version=None):
+        return await self._call("index_names", version)
+
+    async def begin(self, version=None):
+        return await self._call("begin", version)
+
+    async def open_index(self, name, version=None, **options):
+        return await self._call("open_index", name, version, **options)
+
+    async def compact(self, index, **policy):
+        return await self._call("compact", index, **policy)
+
+    def __repr__(self):
+        return f"AsyncDatabaseNamespace({self.name!r})"
+
+
 class AsyncCollection:
     """A `Collection` whose writes and storage calls are awaitable; `complete` stays synchronous."""
 
@@ -114,6 +150,10 @@ class AsyncCollection:
     @property
     def name(self) -> str:
         return self._collection.name
+
+    @property
+    def namespace(self) -> str:
+        return self._collection.namespace
 
     async def add(self, documents, vectors=None):
         return await asyncio.to_thread(self._collection.add, documents, vectors)
@@ -147,6 +187,10 @@ class AsyncClient(_Lazy):
             raise RuntimeError("the client is not open yet; await one of its methods or open() first")
         return self._opened
 
+    def namespace(self, name):
+        """The collections of namespace `name`; storage opens on its first awaited call."""
+        return AsyncClientNamespace(self, name)
+
     async def collections(self):
         return await self._call("collections")
 
@@ -164,3 +208,32 @@ class AsyncClient(_Lazy):
 
     async def sync(self):
         return await self._call("sync")
+
+
+class AsyncClientNamespace:
+    """A `ClientNamespace` whose storage calls are awaitable."""
+
+    def __init__(self, client: AsyncClient, name: str):
+        self._client, self.name = client, name
+
+    async def _call(self, method, *args, **kwargs):
+        namespace: ClientNamespace = (await self._client._get()).namespace(self.name)
+        return await asyncio.to_thread(getattr(namespace, method), *args, **kwargs)
+
+    async def collections(self):
+        return await self._call("collections")
+
+    async def collection(self, name):
+        return AsyncCollection(await self._call("collection", name))
+
+    async def create_collection(self, name, **settings):
+        return AsyncCollection(await self._call("create_collection", name, **settings))
+
+    async def get_or_create_collection(self, name, **settings):
+        return AsyncCollection(await self._call("get_or_create_collection", name, **settings))
+
+    async def drop_collection(self, name):
+        return await self._call("drop_collection", name)
+
+    def __repr__(self):
+        return f"AsyncClientNamespace({self.name!r})"

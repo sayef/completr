@@ -11,9 +11,9 @@ serves every tenant, language, user and experiment from one copy of the catalogu
 
 ```mermaid
 flowchart BT
-    catalog["catalog<br/>every song, built once"] --> de["catalog/de<br/>German charts and songs"]
+    catalog["catalog<br/>every song, built once"] --> de["catalog-de<br/>German charts and songs"]
     de --> radio["radio<br/>a station's edits and exclusives"]
-    radio --> user["user/42<br/>what this listener plays"]
+    radio --> user["user-42<br/>what this listener plays"]
     user --> takedowns["takedowns<br/>songs no one may see"]
 ```
 
@@ -33,8 +33,9 @@ A query passes its layers in order. Each layer is searched on its own, and the r
   unchanged ranks exactly where it did, and raising its popularity raises it by as much as it would in the
   catalogue.
 
-Each suggestion's `layer` names the index it came from. A layer name that is not published counts as an
-empty layer, so every audience can use the same list whether or not it has a layer of its own yet.
+Each suggestion's `layer` names the index it came from. A layer that does not exist raises
+`LayerNotFoundError`, naming the indexes that do; pass `ignore_missing_layers=True` when some audiences have
+no layer of their own yet (see [Missing layers](#missing-layers)).
 
 === "Python"
 
@@ -70,7 +71,7 @@ empty layer, so every audience can use the same list whether or not it has a lay
         ("catalog".to_owned(), Some(Arc::new(catalog))),
         ("radio".to_owned(), Some(Arc::new(radio))),
     ]);
-    for layered in engine.complete(&["catalog", "radio"], "queen", 10) {
+    for layered in engine.complete(&["catalog", "radio"], "queen", 10)? {
         println!("{} from layer {}", layered.suggestion.text, layered.layer);
     }
     ```
@@ -113,17 +114,17 @@ de = Index.from_documents([
     {"id": "luftballons", "text": "99 Luftballons – Nena", "popularity": 0.98},
     {"id": "atemlos", "text": "Atemlos durch die Nacht – Helene Fischer", "popularity": 0.9},
 ])
-engine.publish({"catalog/de": de})
+engine.publish({"catalog-de": de})
 
 show("99", ["catalog"])
-show("99", ["catalog", "catalog/de"])
-show("atem", ["catalog", "catalog/de"])
+show("99", ["catalog", "catalog-de"])
+show("atem", ["catalog", "catalog-de"])
 ```
 
 ```text
 [('99 Problems – Jay-Z', 'catalog'), ('99 Luftballons – Nena', 'catalog')]
-[('99 Luftballons – Nena', 'catalog/de'), ('99 Problems – Jay-Z', 'catalog')]
-[('Atemlos durch die Nacht – Helene Fischer', 'catalog/de')]
+[('99 Luftballons – Nena', 'catalog-de'), ('99 Problems – Jay-Z', 'catalog')]
+[('Atemlos durch die Nacht – Helene Fischer', 'catalog-de')]
 ```
 
 The same layer can carry translated titles, local spellings and local abbreviations as synonyms and
@@ -136,15 +137,15 @@ play, with popularity from their own history:
 
 ```python
 user = Index.from_documents([{"id": "ownown", "text": "Dancing On My Own – Robyn", "popularity": 1.0}])
-engine.publish({"user/42": user})
+engine.publish({"user-42": user})
 
 show("danc", ["catalog"])
-show("danc", ["catalog", "user/42"])
+show("danc", ["catalog", "user-42"])
 ```
 
 ```text
 [('Dancing Queen – ABBA', 'catalog'), ('Dancing in the Dark – Bruce Springsteen', 'catalog'), ('Dancing On My Own – Robyn', 'catalog')]
-[('Dancing On My Own – Robyn', 'user/42'), ('Dancing Queen – ABBA', 'catalog'), ('Dancing in the Dark – Bruce Springsteen', 'catalog')]
+[('Dancing On My Own – Robyn', 'user-42'), ('Dancing Queen – ABBA', 'catalog'), ('Dancing in the Dark – Bruce Springsteen', 'catalog')]
 ```
 
 A layer of a few dozen songs builds in under a millisecond, so it can be built per request from recent
@@ -179,14 +180,17 @@ over the same ids and add it to the stack of the users in the cohort:
 
 ```python
 def layers_for(user_id, cohort):
-    stack = ["catalog", "catalog/de", "radio"]
+    stack = ["catalog", "catalog-de", "radio"]
     if cohort == "b":
-        stack.append("exp/popularity-v2")
-    return stack + [f"user/{user_id}", "takedowns"]
+        stack.append("exp-popularity-v2")
+    return stack + [f"user-{user_id}", "takedowns"]
+
+engine.complete("danc", layers_for(7, "b"), ignore_missing_layers=True)
 ```
 
 Both arms serve from the same catalogue, the experiment costs only the ids it changes, and ending it is
-removing a name from a list.
+removing a name from a list. `ignore_missing_layers` lets listeners without a layer of their own use the same
+code.
 
 ## Stacking them
 
@@ -194,7 +198,7 @@ The layers compose. One query can apply the German charts, a station's edits, a 
 takedowns, in that order:
 
 ```python
-stack = ["catalog", "catalog/de", "radio", "user/42", "takedowns"]
+stack = ["catalog", "catalog-de", "radio", "user-42", "takedowns"]
 show("queen", stack)
 show("danc", stack)
 show("99", stack)
@@ -202,46 +206,83 @@ show("99", stack)
 
 ```text
 [('Bohemian Rhapsody (Remastered 2011) – Queen', 'radio'), ('Dancing Queen – ABBA', 'catalog'), ('Dancing Queen (Live Session) – ABBA', 'radio')]
-[('Dancing On My Own – Robyn', 'user/42'), ('Dancing Queen – ABBA', 'catalog'), ('Dancing Queen (Live Session) – ABBA', 'radio'), ('Dancing in the Dark – Bruce Springsteen', 'catalog')]
-[('99 Luftballons – Nena', 'catalog/de'), ('99 Problems – Jay-Z', 'catalog')]
+[('Dancing On My Own – Robyn', 'user-42'), ('Dancing Queen – ABBA', 'catalog'), ('Dancing Queen (Live Session) – ABBA', 'radio'), ('Dancing in the Dark – Bruce Springsteen', 'catalog')]
+[('99 Luftballons – Nena', 'catalog-de'), ('99 Problems – Jay-Z', 'catalog')]
 ```
 
 Order matters: put the layers that must have the last word, such as takedowns, last. `complete_aliases`,
 `vector_search` and `hybrid_search` take the same list of layers.
 
-## Layers in a database
+## Missing layers
 
-An engine from `db.engine()` serves every index of the database by name, so layers are index names, and
-each layer is written, versioned and synced like any index. The library has no notion of tenants or
-languages: express them as index names, such as `shared/en` and `radio/en`, and as layer lists.
+A layer list often names layers that only some audiences have: most listeners have no `user-…` layer yet.
+A missing layer is an error by default, so that a typo cannot silently drop a tenant's edits:
 
 ```python
-db = completr.connect("./data")
-txn = db.begin()
-txn.append("shared/en", [{"id": "bohemian", "text": "Bohemian Rhapsody – Queen", "popularity": 0.95}])
-txn.append("radio/en", [{"id": "billie", "text": "Billie Jean – Michael Jackson"}], deletes=["bohemian"])
-txn.commit()
-
-engine = db.engine(group_separator="/")
-print([(s.text, s.layer) for s in engine.complete("boh", ["shared/en", "radio/en"])])
-print([(s.text, s.layer) for s in engine.complete("bill", ["shared/en", "radio/en"])])
+show("danc", ["catalog", "user-7"])
 ```
 
 ```text
-[]
-[('Billie Jean – Michael Jackson', 'radio/en')]
+LayerNotFoundError: no index 'user-7' in namespace 'default' at version 5; indexes: catalog, catalog-de, promo, radio, takedowns, user-42; set ignore_missing_layers if it may not exist
 ```
+
+The error carries `name`, `namespace`, `version` and `available`, and suggests a name when the missing one is
+a likely typo of an existing one. When layers may legitimately be missing, say so:
+
+```python
+engine.complete("danc", ["catalog", "user-7"], ignore_missing_layers=True)
+```
+
+```text
+[('Dancing Queen – ABBA', 'catalog'), ('Dancing in the Dark – Bruce Springsteen', 'catalog'), ('Dancing On My Own – Robyn', 'catalog')]
+```
+
+## Namespaces
+
+Layers stack indexes within one **namespace**. A namespace is a named set of indexes that the engine switches
+to a new version in one step: every search through it sees one consistent version of all its layers, and a
+sync loads one namespace at a time, so memory never holds more than one namespace twice.
+
+Use a namespace for each set of indexes that are searched together and never with another set: a locale with
+its own catalogue and its own tenant layers, a market, an environment. Use layers within it for everything
+that overrides by document id.
+
+```python
+db = completr.connect("./data")
+with db.namespace("de").begin() as txn:
+    txn.append("catalog", [
+        {"id": "luftballons", "text": "99 Luftballons – Nena", "popularity": 0.98},
+        {"id": "problems", "text": "99 Problems – Jay-Z", "popularity": 0.6},
+    ])
+    txn.append("radio", [{"id": "problems", "text": "99 Problems (Radio Edit) – Jay-Z", "popularity": 0.6}])
+    txn.namespace("us").append("catalog", [
+        {"id": "problems", "text": "99 Problems – Jay-Z", "popularity": 0.95},
+        {"id": "luftballons", "text": "99 Red Balloons – Nena", "popularity": 0.4},
+    ])
+
+engine = db.engine()
+de = engine.namespace("de")          # Namespace(name='de', version=1, indexes=['catalog', 'radio'])
+de.complete("99", ["catalog", "radio"])
+engine.namespace("us").complete("99", ["catalog", "radio"], ignore_missing_layers=True)
+```
+
+```text
+[('99 Luftballons – Nena', 'catalog'), ('99 Problems (Radio Edit) – Jay-Z', 'radio')]
+[('99 Problems – Jay-Z', 'catalog'), ('99 Red Balloons – Nena', 'catalog')]
+```
+
+- `engine.namespace(name)` returns the namespace's current version and does no I/O. Searches through it keep
+  seeing that version, even while the engine syncs a newer one, so the completions and the synonym matches of
+  one request always agree. Take a new one per request.
+- An unknown namespace raises `NamespaceNotFoundError`, with `available` and a suggestion for likely typos.
+- A transaction writes to the namespace it was begun in; `txn.namespace(name)` writes to another in the same
+  commit. Change sets work the same way: `changes.namespace(name).upsert(...)`.
+- Indexes written without a namespace, and `engine.complete(...)` without one, use the namespace `default`.
+- Namespace and index names are 1 to 128 letters, digits, `.`, `_` or `-`.
 
 This makes layers a good home for fresh writes too: rebuild the large catalogue nightly, and append the
 day's new songs and corrections to a small `live` layer on top, which is quick to write and which the next
 rebuild folds back in.
-
-`group_separator="/"` makes the engine switch indexes group by group when it syncs, grouping by the part
-after the last separator: all `en` indexes switch together. This bounds serving memory; see
-[Serverless deployment](serverless.md#memory). A sync switches one group at a time (by default each index
-is its own group), so while a sync runs, a query over several layers can see one index at the new version
-and another still at the previous one. Put indexes that are searched together in one group when that
-matters.
 
 ## Cost
 
@@ -265,6 +306,7 @@ share of the results. Raise it for layers that shadow many, with `Engine(overfet
 ## Good to know
 
 - Overrides match by document id, so give a layer's versions the ids of the documents they replace.
-- `engine.publish` replaces the named indexes atomically; a search already running keeps the versions it
-  started with. `engine.get(name)` returns a published index and `engine.names()` lists them.
+- `engine.publish` replaces the named indexes of a namespace atomically (`namespace="default"` unless given);
+  a search already running keeps the versions it started with. `engine.namespace(name).get(index)` returns a
+  published index and `.names()` lists them.
 - Scores are put on the first layer's scale, so put the shared catalogue first.

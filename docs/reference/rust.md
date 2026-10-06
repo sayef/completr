@@ -67,7 +67,7 @@ async fn main() -> Result<(), completr::Error> {
     let replica = Arc::new(Replica::new(database, IndexOptions::default()));
     replica.sync(&engine).await?;
     let _follower = replica.follow(&engine, Duration::from_secs(5));   // syncs until dropped
-    let hits = engine.complete(&["songs"], "boh", 10);
+    let hits = engine.complete(&["songs"], "boh", 10)?;
     Ok(())
 }
 ```

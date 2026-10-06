@@ -32,6 +32,39 @@ pub(crate) fn char_len(s: &str) -> usize {
     s.chars().count()
 }
 
+/// The name in `names` closest to `name`, ignoring case, if it is a plausible typo of it.
+pub(crate) fn closest<'a>(name: &str, names: &'a [String]) -> Option<&'a str> {
+    let wanted: Vec<char> = lower(name).chars().collect();
+    let budget = (wanted.len() / 4).clamp(1, 3);
+    names
+        .iter()
+        .map(|n| {
+            (
+                edit_distance(&wanted, &lower(n).chars().collect::<Vec<_>>()),
+                n,
+            )
+        })
+        .filter(|&(d, _)| d <= budget)
+        .min_by_key(|&(d, _)| d)
+        .map(|(_, n)| n.as_str())
+}
+
+fn edit_distance(a: &[char], b: &[char]) -> usize {
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let next = (diagonal + usize::from(ca != cb))
+                .min(row[j] + 1)
+                .min(row[j + 1] + 1);
+            diagonal = row[j + 1];
+            row[j + 1] = next;
+        }
+    }
+    row[b.len()]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -104,26 +104,37 @@ def test_inbox_and_single_writer(database):
     standby.release()
 
 
-def test_grouped_replica_and_compacting_writer(database):
-    t = database.begin()
-    for tenant in ("base", "acme"):
-        for language in ("en", "de"):
-            t.append(f"{tenant}/{language}", DOCS[:20])
-    t.commit()
+def test_namespaces_switch_whole_and_writers_compact(database):
+    with database.namespace("en").begin() as t:
+        for tenant in ("base", "acme"):
+            t.append(tenant, DOCS[:20])
+        t.namespace("de").append("base", DOCS[:20])
     engine = Engine()
-    replica = Replica(database, engine, group_separator="/")
+    replica = Replica(database, engine)
     replica.sync()
-    assert engine.names() == ["acme/de", "acme/en", "base/de", "base/en"]
+    assert engine.namespaces() == ["de", "en"]
+    assert engine.namespace("en").names() == ["acme", "base"]
+    held = engine.namespace("en")
     ingestor = Ingestor(database, "w")
     for n in range(6):
         batch = ChangeSet()
-        batch.upsert("base/en", [{"id": 9000 + n, "text": f"extra {n}", "popularity": 0.2}])
+        batch.namespace("en").upsert("base", [{"id": 9000 + n, "text": f"extra {n}", "popularity": 0.2}])
         database.submit(batch)
         ingestor.run_once()
     replica.sync()
-    assert len(engine.get("base/en")) == 26
-    assert len(engine.get("base/en").segments()) < 7
+    en = engine.namespace("en")
+    assert len(en.get("base")) == 26 and len(en.get("base").segments()) < 7
+    assert len(held.get("base")) == 20 and held.version < en.version
+    assert database.namespace("en").index_names() == ["acme", "base"]
     ingestor.release()
+
+
+def test_a_failed_block_commits_nothing(database):
+    with pytest.raises(RuntimeError):
+        with database.namespace("en").begin() as t:
+            t.append("base", DOCS[:5])
+            raise RuntimeError("abandoned")
+    assert database.namespaces() == []
 
 
 def test_threaded_queries_during_updates(database):

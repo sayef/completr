@@ -52,7 +52,7 @@ async fn main() -> Result<(), completr::Error> {
     let replica = Arc::new(Replica::new(database.clone(), IndexOptions::default()));
     replica.sync(&engine).await?;
     let _follower = replica.follow(&engine, Duration::from_secs(5));
-    for layered in engine.complete(&["songs"], "danc", 10) {
+    for layered in engine.complete(&["songs"], "danc", 10)? {
         let s = layered.suggestion;
         println!("{} {} {:.3}", s.text, s.kind.as_str(), s.score);
     }

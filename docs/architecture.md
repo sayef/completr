@@ -209,8 +209,9 @@ Many writers committing directly contend on the manifest. Instead:
 A `Replica` polls for newer manifests. It lists only keys after its current version, downloads only
 segments it does not hold, rebuilds only the changed indexes, and publishes them to an `Engine`.
 
-With `group_separator`, it publishes one group of indexes at a time and releases replaced segments before
-loading the next group. Serving memory therefore holds at most one group twice, never the whole database.
+It publishes one namespace at a time, all of its changed indexes in one step, and releases replaced
+segments before loading the next namespace. Serving memory therefore holds at most one namespace twice,
+never the whole database, and a search through `engine.namespace(name)` sees one version of all its layers.
 
 Build and compaction peaks belong to the ingestor, so run ingestors outside serving processes.
 

@@ -67,8 +67,8 @@ scores, or getting a document by id. Use the building blocks for those: `client.
     ```
 
 ```text
-danc [('Dancing Queen – ABBA', 'prefix', 0.547, 'songs'), ('Dancing in the Dark – Bruce Springsteen', 'prefix', 0.462, 'songs')]
-RHCP [('Under the Bridge – Red Hot Chili Peppers', 'abbreviation', 0.486, 'songs')]
+danc [('Dancing Queen – ABBA', MatchKind.PREFIX, 0.547, 'songs'), ('Dancing in the Dark – Bruce Springsteen', MatchKind.PREFIX, 0.462, 'songs')]
+RHCP [('Under the Bridge – Red Hot Chili Peppers', MatchKind.ABBREVIATION, 0.486, 'songs')]
 ```
 
 In Python, `completr.connect` returns a `Database` and `completr.Client` a collections client. In Rust,
@@ -93,7 +93,7 @@ URLs, `cache_dir`, `options` and [build options](configuration.md#build-options)
 
 <!-- skip-test -->
 ```python
-collection.complete(query, limit=10, *, aliases=False, layers=None, contexts=None, vector=None)
+collection.complete(query, limit=10, *, aliases=False, layers=None, contexts=None, vector=None, ignore_missing_layers=False)
 ```
 
 | Option | Default | Effect |
@@ -101,6 +101,7 @@ collection.complete(query, limit=10, *, aliases=False, layers=None, contexts=Non
 | `limit` | 10 | Maximum number of suggestions. |
 | `aliases` | `False` | Also match synonyms, ranked below every direct match. |
 | `layers` | none | Collections searched on top of this one, later ones overriding earlier ones per id. |
+| `ignore_missing_layers` | `False` | Search a layer that does not exist as empty instead of raising `LayerNotFoundError`. |
 | `contexts` | none | Only documents tagged with any of these contexts. |
 | `vector` | none | An embedding of the query, fused with the text results by reciprocal rank; with an empty query, a vector search. |
 
@@ -117,7 +118,7 @@ print(songs.complete("is this the real life", aliases=True))
 
 ```text
 []
-[Suggestion(id='bohemian', text="Bohemian Rhapsody – Queen", score=0.6637, kind="synonym")]
+[Suggestion(id='bohemian', text='Bohemian Rhapsody – Queen', score=0.6637, kind=MatchKind.SYNONYM, layer='songs')]
 ```
 
 Layers are other collections:
@@ -132,9 +133,25 @@ print([(s.text, s.layer) for s in songs.complete("queen", layers=["radio"])])
 [('Bohemian Rhapsody (Remastered 2011) – Queen', 'radio'), ('Dancing Queen – ABBA', 'songs')]
 ```
 
-A layer that does not exist counts as an empty layer. A sync switches collections one at a time, so while
-one runs, a query over several layers can see one collection at the new version and another still at the
-previous one. See [Layers](layers.md) for how overrides apply.
+A layer that does not exist raises `LayerNotFoundError` unless `ignore_missing_layers=True`. See
+[Layers](layers.md) for how overrides apply.
+
+Collections live in namespaces; those above are in `default`. `client.namespace(name)` has the same
+collection methods, and the layers of a query come from the collection's namespace. A sync switches a whole
+namespace at once, so a query over several of its collections sees one version of all of them:
+
+```python
+de = client.namespace("de")
+charts = de.get_or_create_collection("charts")
+charts.add([{"id": "luftballons", "text": "99 Luftballons – Nena", "popularity": 0.98}])
+print(de.collections(), client.collections())
+print(charts)
+```
+
+```text
+['charts'] ['radio', 'songs']
+Collection(name='charts', namespace='de')
+```
 
 ## Reading from another process
 
@@ -157,7 +174,7 @@ print(served.complete("blind"))
 
 ```text
 []
-[Suggestion(id='blinding', text="Blinding Lights – The Weeknd", score=0.5666, kind="prefix")]
+[Suggestion(id='blinding', text='Blinding Lights – The Weeknd', score=0.5666, kind=MatchKind.PREFIX, layer='songs')]
 ```
 
 As with engines, open clients in each worker after a pre-forking server forks; see
@@ -173,7 +190,7 @@ print({key: stats[key] for key in ("documents", "segments", "version", "synced_v
 ```
 
 ```text
-{'documents': 5, 'segments': 2, 'version': 5, 'synced_version': 5, 'sync_error': None}
+{'documents': 5, 'segments': 2, 'version': 7, 'synced_version': 7, 'sync_error': None}
 ```
 
 | Field | Meaning |
@@ -234,7 +251,7 @@ database.cleanup(keep_versions=10, older_than_seconds=3600)
 ```text
 ['drafts', 'radio', 'songs']
 ['Dancing Queen – ABBA', 'Bohemian Rhapsody – Queen']
-Document(id='dancing', text="Dancing Queen – ABBA", popularity=0.85)
+Document(id='dancing', text='Dancing Queen – ABBA', popularity=0.85)
 ```
 
 For asyncio, `completr.AsyncClient` has the same methods, awaited; see [asyncio](asyncio.md#collections).

@@ -6,7 +6,8 @@ ranked in one request; you do not choose between prefix, infix or fuzzy search.
 <!-- skip-test -->
 ```python
 index.complete(query, limit=10, *, contexts=None)
-engine.complete(query, layers, limit=10, *, contexts=None)
+engine.namespace(name).complete(query, layers, limit=10, *, contexts=None, ignore_missing_layers=False)
+engine.complete(query, layers, limit=10, *, contexts=None, ignore_missing_layers=False)   # the default namespace
 ```
 
 | Method | Returns |
@@ -15,8 +16,8 @@ engine.complete(query, layers, limit=10, *, contexts=None)
 | `complete_aliases` | Documents whose synonyms match, as `AliasSuggestion`s. See [Synonyms](#synonyms). |
 | `vector_search`, `hybrid_search` | Nearest documents by embedding, alone or fused with `complete`. See [Semantic and hybrid](semantic-hybrid.md). |
 
-An `Index` searches one index. An `Engine`, including one from `db.engine()`, takes a list of index names
-to search as [layers](layers.md). Both have the same methods and options. In Rust, the `_with` variants
+An `Index` searches one index. An `Engine`, including one from `db.engine()`, and a `Namespace` from
+`engine.namespace(name)` take a list of index names to search as [layers](layers.md). Both have the same methods and options. In Rust, the `_with` variants
 take `SearchOptions`:
 
 ```rust
@@ -24,7 +25,7 @@ use completr::SearchOptions;
 
 let pop = SearchOptions::new(5).contexts(["pop"]);
 let hits = index.complete_with("danc", &pop);
-let layered = engine.complete_with(&["songs"], "danc", &pop);
+let layered = engine.complete_with(&["songs"], "danc", &pop)?;
 ```
 
 The examples on this page use this index:
@@ -64,12 +65,12 @@ for query in ["killer queen – queen", "danc", "rhcp", "queen", "bohemain rapso
 ```
 
 ```text
-'killer queen – queen' [('Killer Queen – Queen', 'exact')]
-'danc'                 [('Dancing Queen – ABBA', 'prefix'), ('Dancing in the Dark – Bruce Springsteen', 'prefix')]
-'rhcp'                 [('Under the Bridge – Red Hot Chili Peppers', 'abbreviation')]
-'queen'                [('Bohemian Rhapsody – Queen', 'infix'), ('Dancing Queen – ABBA', 'infix')]
-'bohemain rapsody'     [('Bohemian Rhapsody – Queen', 'fuzzy')]
-'dancingqueen'         [('Dancing Queen – ABBA', 'prefix')]
+'killer queen – queen' [('Killer Queen – Queen', MatchKind.EXACT)]
+'danc'                 [('Dancing Queen – ABBA', MatchKind.PREFIX), ('Dancing in the Dark – Bruce Springsteen', MatchKind.PREFIX)]
+'rhcp'                 [('Under the Bridge – Red Hot Chili Peppers', MatchKind.ABBREVIATION)]
+'queen'                [('Bohemian Rhapsody – Queen', MatchKind.INFIX), ('Dancing Queen – ABBA', MatchKind.INFIX)]
+'bohemain rapsody'     [('Bohemian Rhapsody – Queen', MatchKind.FUZZY)]
+'dancingqueen'         [('Dancing Queen – ABBA', MatchKind.PREFIX)]
 ```
 
 Notes on each kind:
@@ -156,7 +157,7 @@ print(index.complete_aliases("bohemian"))
 ```
 
 ```text
-[AliasSuggestion(id='bohemian', text="Bohemian Rhapsody – Queen", score=0.6637)]
+[AliasSuggestion(id='bohemian', text='Bohemian Rhapsody – Queen', score=0.6637)]
 []
 ```
 

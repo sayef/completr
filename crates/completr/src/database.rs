@@ -8,7 +8,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
-use crate::{BuildOptions, Document, Engine, Error, Index, IndexOptions, Segment, Store};
+use crate::{
+    BuildOptions, Document, Engine, Error, Index, IndexOptions, Segment, Store, DEFAULT_NAMESPACE,
+};
 
 const VERSIONS: &str = "_versions";
 const SEGMENTS: &str = "segments";
@@ -36,20 +38,91 @@ pub struct IndexEntry {
     pub max_score: f64,
     /// Oldest first.
     pub segments: Vec<SegmentRef>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
 }
+
+impl IndexEntry {
+    fn new(max_score: f64) -> Self {
+        Self {
+            max_score,
+            segments: Vec::new(),
+            metadata: BTreeMap::new(),
+        }
+    }
+}
+
+/// Indexes of one namespace by name.
+pub type Indexes = BTreeMap<String, IndexEntry>;
 
 /// The full state of a database at one version. Version 0 is the empty database and has no file.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(from = "StoredManifest")]
 #[non_exhaustive]
 pub struct Manifest {
     pub version: u64,
     pub parent: Option<u64>,
     pub timestamp_ms: u64,
-    pub indexes: BTreeMap<String, IndexEntry>,
+    /// Namespaces by name; none is empty.
+    pub namespaces: BTreeMap<String, Indexes>,
     pub metadata: BTreeMap<String, String>,
 }
 
+/// A manifest as stored; those written before namespaces keep their indexes in `indexes`.
+#[derive(Deserialize)]
+struct StoredManifest {
+    version: u64,
+    parent: Option<u64>,
+    timestamp_ms: u64,
+    #[serde(default)]
+    namespaces: BTreeMap<String, Indexes>,
+    #[serde(default)]
+    indexes: Indexes,
+    #[serde(default)]
+    metadata: BTreeMap<String, String>,
+}
+
+impl From<StoredManifest> for Manifest {
+    fn from(stored: StoredManifest) -> Self {
+        let mut namespaces = stored.namespaces;
+        if !stored.indexes.is_empty() {
+            namespaces
+                .entry(DEFAULT_NAMESPACE.to_owned())
+                .or_default()
+                .extend(stored.indexes);
+        }
+        Self {
+            version: stored.version,
+            parent: stored.parent,
+            timestamp_ms: stored.timestamp_ms,
+            namespaces,
+            metadata: stored.metadata,
+        }
+    }
+}
+
 impl Manifest {
+    pub fn index(&self, namespace: &str, name: &str) -> Option<&IndexEntry> {
+        self.namespaces.get(namespace)?.get(name)
+    }
+
+    /// Index names of `namespace`, sorted; empty if it does not exist.
+    pub fn index_names(&self, namespace: &str) -> Vec<String> {
+        self.namespaces
+            .get(namespace)
+            .map(|n| n.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Every index as `(namespace, name, entry)`.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &str, &IndexEntry)> {
+        self.namespaces.iter().flat_map(|(namespace, indexes)| {
+            indexes
+                .iter()
+                .map(move |(name, entry)| (namespace.as_str(), name.as_str(), entry))
+        })
+    }
+
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).expect("manifest serialises")
     }
@@ -77,7 +150,21 @@ fn parse_version(key: &str) -> Option<u64> {
         .ok()
 }
 
-/// Named indexes stored under one store prefix.
+/// Namespace and index names: 1 to 128 ASCII letters, digits, `.`, `_` or `-`.
+pub fn validate_name(what: &str, name: &str) -> Result<(), Error> {
+    let valid = (1..=128).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
+    if !valid {
+        return Err(Error::input(format!(
+            "{what} name {name:?} must be 1 to 128 letters, digits, '.', '_' or '-'"
+        )));
+    }
+    Ok(())
+}
+
+/// Named indexes in named namespaces, stored under one store prefix.
 #[derive(Clone, Debug)]
 pub struct Database {
     store: Store,
@@ -167,7 +254,23 @@ impl Database {
         self.manifest(self.latest_version().await?).await
     }
 
-    /// A transaction against the latest version.
+    /// Namespace `name`, for writing, opening and compacting its indexes. Does no I/O.
+    pub fn namespace(&self, name: &str) -> Result<DatabaseNamespace, Error> {
+        validate_name("namespace", name)?;
+        Ok(DatabaseNamespace {
+            database: self.clone(),
+            name: name.to_owned(),
+        })
+    }
+
+    fn default_namespace(&self) -> DatabaseNamespace {
+        DatabaseNamespace {
+            database: self.clone(),
+            name: DEFAULT_NAMESPACE.to_owned(),
+        }
+    }
+
+    /// A transaction against the latest version, writing to the default namespace.
     pub async fn begin(&self) -> Result<Transaction, Error> {
         Ok(self.transaction(self.latest().await?))
     }
@@ -176,10 +279,12 @@ impl Database {
     pub fn transaction(&self, read: Manifest) -> Transaction {
         Transaction {
             database: self.clone(),
+            namespace: DEFAULT_NAMESPACE.to_owned(),
             read,
             ops: Vec::new(),
             strict: false,
             max_retries: 32,
+            invalid: None,
         }
     }
 
@@ -197,101 +302,34 @@ impl Database {
         futures::future::try_join_all(loads).await
     }
 
-    /// Loads one index of `manifest`; its `max_score` overrides the one in `config`.
+    /// [`DatabaseNamespace::open_index`] in the default namespace.
     pub async fn open_index(
         &self,
         manifest: &Manifest,
         name: &str,
         config: IndexOptions,
     ) -> Result<Index, Error> {
-        let entry = manifest
-            .indexes
-            .get(name)
-            .ok_or_else(|| Error::NotFound(format!("index {name}")))?;
-        let segments = self.load_segments(&entry.segments).await?;
-        Index::new(
-            segments,
-            IndexOptions {
-                max_score: Some(entry.max_score),
-                ..config
-            },
-        )
+        self.default_namespace()
+            .open_index(manifest, name, config)
+            .await
     }
 
-    /// Runs one compaction step on `index` of the latest version; `None` if nothing is due.
-    ///
-    /// Builds without holding any lock and commits by rebasing over newer segments.
+    /// [`DatabaseNamespace::compact`] in the default namespace.
     pub async fn compact(
         &self,
         index: &str,
         policy: &CompactionPolicy,
     ) -> Result<Option<Manifest>, Error> {
-        let read = self.latest().await?;
-        let Some(entry) = read.indexes.get(index) else {
-            return Ok(None);
-        };
-        if entry.segments.len() < 2 {
-            return Ok(None);
-        }
-        // Each newer document or delete hides at most one older document, so this bounds the
-        // hidden fraction without loading anything.
-        let refs = &entry.segments;
-        let total: u64 = refs.iter().map(|s| s.documents).sum();
-        let newer: u64 = refs[1..].iter().map(|s| s.documents + s.deletes).sum();
-        let mut full = false;
-        if total > 0 && newer as f64 / total as f64 > policy.max_hidden_fraction {
-            let all = self.load_segments(refs).await?;
-            let config = IndexOptions {
-                max_score: Some(1.0),
-                ..IndexOptions::default()
-            };
-            let live = Index::new(all, config)?.len();
-            full = 1.0 - live as f64 / total as f64 > policy.max_hidden_fraction;
-        }
-        let tiered = policy.tiered_run(refs);
-        full |= tiered.is_none() && refs.len() > policy.max_segments;
-        let (start, end, level) = match (full, tiered) {
-            (true, _) => (0, refs.len(), BASE_LEVEL),
-            (false, Some(run)) => run,
-            (false, None) => return Ok(None),
-        };
-        let started = std::time::Instant::now();
-        let segments = self.load_segments(&refs[start..end]).await?;
-        let merged = merge(&segments, start == 0)?;
-        tracing::info!(
-            index,
-            merged = end - start,
-            level,
-            full,
-            documents = merged.len(),
-            ms = started.elapsed().as_millis() as u64,
-            "compacting"
-        );
-        let remove = entry.segments[start..end]
-            .iter()
-            .map(|s| s.id.clone())
-            .collect();
-        let mut txn = self.transaction(read);
-        txn.ops.push(Op::Replace {
-            index: index.to_owned(),
-            remove,
-            segment: Arc::new(merged),
-            level,
-        });
-        txn.commit().await.map(Some)
+        self.default_namespace().compact(index, policy).await
     }
 
-    /// Runs compaction steps on `index` until none is due; returns the last new manifest.
+    /// [`DatabaseNamespace::compact_all`] in the default namespace.
     pub async fn compact_all(
         &self,
         index: &str,
         policy: &CompactionPolicy,
     ) -> Result<Option<Manifest>, Error> {
-        let mut last = None;
-        while let Some(manifest) = self.compact(index, policy).await? {
-            last = Some(manifest);
-        }
-        Ok(last)
+        self.default_namespace().compact_all(index, policy).await
     }
 
     /// Deletes old manifests and segment files no retained manifest references.
@@ -318,9 +356,8 @@ impl Database {
             let manifest = self.manifest(version).await?;
             referenced.extend(
                 manifest
-                    .indexes
-                    .values()
-                    .flat_map(|e| e.segments.iter().map(|s| s.key.clone())),
+                    .entries()
+                    .flat_map(|(_, _, e)| e.segments.iter().map(|s| s.key.clone())),
             );
         }
         let mut stats = CleanupStats::default();
@@ -382,6 +419,135 @@ impl Database {
             expires_at_ms: 0,
         };
         Ok(lease.advance(ttl, false).await?.then_some(lease))
+    }
+}
+
+/// One namespace of a [`Database`]: its transactions, indexes and compaction.
+#[derive(Clone, Debug)]
+pub struct DatabaseNamespace {
+    database: Database,
+    name: String,
+}
+
+impl DatabaseNamespace {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn database(&self) -> &Database {
+        &self.database
+    }
+
+    /// A transaction against the latest version, writing to this namespace.
+    pub async fn begin(&self) -> Result<Transaction, Error> {
+        let mut txn = self.database.begin().await?;
+        txn.namespace = self.name.clone();
+        Ok(txn)
+    }
+
+    /// Index names at the latest version, sorted.
+    pub async fn index_names(&self) -> Result<Vec<String>, Error> {
+        Ok(self.database.latest().await?.index_names(&self.name))
+    }
+
+    /// Loads one index of `manifest`; its `max_score` overrides the one in `config`.
+    pub async fn open_index(
+        &self,
+        manifest: &Manifest,
+        name: &str,
+        config: IndexOptions,
+    ) -> Result<Index, Error> {
+        let entry = manifest
+            .index(&self.name, name)
+            .ok_or_else(|| Error::NotFound(format!("index {name} in namespace {}", self.name)))?;
+        let segments = self.database.load_segments(&entry.segments).await?;
+        Index::new(
+            segments,
+            IndexOptions {
+                max_score: (entry.max_score > 0.0).then_some(entry.max_score),
+                ..config
+            },
+        )
+    }
+
+    /// Runs one compaction step on `index` of the latest version; `None` if nothing is due.
+    ///
+    /// Builds without holding any lock and commits by rebasing over newer segments.
+    pub async fn compact(
+        &self,
+        index: &str,
+        policy: &CompactionPolicy,
+    ) -> Result<Option<Manifest>, Error> {
+        let read = self.database.latest().await?;
+        let Some(entry) = read.index(&self.name, index) else {
+            return Ok(None);
+        };
+        if entry.segments.len() < 2 {
+            return Ok(None);
+        }
+        // Each newer document or delete hides at most one older document, so this bounds the
+        // hidden fraction without loading anything.
+        let refs = &entry.segments;
+        let total: u64 = refs.iter().map(|s| s.documents).sum();
+        let newer: u64 = refs[1..].iter().map(|s| s.documents + s.deletes).sum();
+        let mut full = false;
+        if total > 0 && newer as f64 / total as f64 > policy.max_hidden_fraction {
+            let all = self.database.load_segments(refs).await?;
+            let config = IndexOptions {
+                max_score: Some(1.0),
+                ..IndexOptions::default()
+            };
+            let live = Index::new(all, config)?.len();
+            full = 1.0 - live as f64 / total as f64 > policy.max_hidden_fraction;
+        }
+        let tiered = policy.tiered_run(refs);
+        full |= tiered.is_none() && refs.len() > policy.max_segments;
+        let (start, end, level) = match (full, tiered) {
+            (true, _) => (0, refs.len(), BASE_LEVEL),
+            (false, Some(run)) => run,
+            (false, None) => return Ok(None),
+        };
+        let started = std::time::Instant::now();
+        let segments = self.database.load_segments(&refs[start..end]).await?;
+        let merged = merge(&segments, start == 0)?;
+        tracing::info!(
+            namespace = self.name.as_str(),
+            index,
+            merged = end - start,
+            level,
+            full,
+            documents = merged.len(),
+            ms = started.elapsed().as_millis() as u64,
+            "compacting"
+        );
+        let remove = entry.segments[start..end]
+            .iter()
+            .map(|s| s.id.clone())
+            .collect();
+        let mut txn = self.database.transaction(read);
+        txn.ops.push(Op::Replace {
+            target: Target {
+                namespace: self.name.clone(),
+                index: index.to_owned(),
+            },
+            remove,
+            segment: Arc::new(merged),
+            level,
+        });
+        txn.commit().await.map(Some)
+    }
+
+    /// Runs compaction steps on `index` until none is due; returns the last new manifest.
+    pub async fn compact_all(
+        &self,
+        index: &str,
+        policy: &CompactionPolicy,
+    ) -> Result<Option<Manifest>, Error> {
+        let mut last = None;
+        while let Some(manifest) = self.compact(index, policy).await? {
+            last = Some(manifest);
+        }
+        Ok(last)
     }
 }
 
@@ -485,23 +651,45 @@ pub struct CleanupStats {
     pub bytes_removed: u64,
 }
 
+/// An index of a namespace that a transaction operation touches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Target {
+    namespace: String,
+    index: String,
+}
+
+impl std::fmt::Display for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} in namespace {}", self.index, self.namespace)
+    }
+}
+
 enum Op {
     Append {
-        index: String,
+        target: Target,
         segment: Arc<Segment>,
     },
     Overwrite {
-        index: String,
+        target: Target,
         segment: Arc<Segment>,
     },
     Replace {
-        index: String,
+        target: Target,
         remove: Vec<String>,
         segment: Arc<Segment>,
         level: u32,
     },
     Drop {
-        index: String,
+        target: Target,
+    },
+    MaxScore {
+        target: Target,
+        max_score: f64,
+    },
+    IndexMetadata {
+        target: Target,
+        key: String,
+        value: Option<String>,
     },
     /// Refuses to commit if metadata `key` holds a higher generation, then records ours.
     Fence {
@@ -515,10 +703,6 @@ enum Op {
         ids: Vec<String>,
         keep: Vec<String>,
     },
-    MaxScore {
-        index: String,
-        max_score: f64,
-    },
     Metadata {
         key: String,
         value: Option<String>,
@@ -526,13 +710,14 @@ enum Op {
 }
 
 impl Op {
-    fn index(&self) -> Option<&str> {
+    fn target(&self) -> Option<&Target> {
         match self {
-            Op::Append { index, .. }
-            | Op::Overwrite { index, .. }
-            | Op::Replace { index, .. }
-            | Op::Drop { index }
-            | Op::MaxScore { index, .. } => Some(index),
+            Op::Append { target, .. }
+            | Op::Overwrite { target, .. }
+            | Op::Replace { target, .. }
+            | Op::Drop { target }
+            | Op::MaxScore { target, .. }
+            | Op::IndexMetadata { target, .. } => Some(target),
             Op::Metadata { .. } | Op::Fence { .. } | Op::Claim { .. } => None,
         }
     }
@@ -549,26 +734,42 @@ impl Op {
 
 /// Changes staged against one manifest and committed together.
 ///
-/// On a concurrent commit, appends, drops and metadata rebase onto the newer version (last
-/// writer wins per document id); overwrites, and everything in strict mode, fail with
-/// [`Error::Conflict`] if an index they touch changed.
+/// Index operations write to the transaction's namespace, or to another through
+/// [`Transaction::namespace`]. On a concurrent commit, appends, drops and metadata rebase onto the
+/// newer version (last writer wins per document id); overwrites, and everything in strict mode,
+/// fail with [`Error::Conflict`] if an index they touch changed.
 pub struct Transaction {
     database: Database,
+    namespace: String,
     read: Manifest,
     ops: Vec<Op>,
     strict: bool,
     max_retries: usize,
+    invalid: Option<Error>,
 }
 
-impl Transaction {
-    pub fn read_version(&self) -> u64 {
-        self.read.version
+/// Index operations of a [`Transaction`] in one namespace.
+pub struct NamespaceTransaction<'a> {
+    txn: &'a mut Transaction,
+    namespace: String,
+}
+
+impl NamespaceTransaction<'_> {
+    fn target(&mut self, index: &str) -> Target {
+        if self.txn.invalid.is_none() {
+            self.txn.invalid = validate_name("index", index).err();
+        }
+        Target {
+            namespace: self.namespace.clone(),
+            index: index.to_owned(),
+        }
     }
 
     /// Adds a segment on top of `index`, creating the index if needed.
     pub fn append(&mut self, index: &str, segment: Segment) -> &mut Self {
-        self.ops.push(Op::Append {
-            index: index.to_owned(),
+        let target = self.target(index);
+        self.txn.ops.push(Op::Append {
+            target,
             segment: Arc::new(segment),
         });
         self
@@ -580,33 +781,111 @@ impl Transaction {
         documents: impl IntoIterator<Item = Document>,
         deletes: impl IntoIterator<Item = u64>,
     ) -> Result<&mut Self, Error> {
-        let config = self.database.segment_config;
+        let config = self.txn.database.segment_config;
         Ok(self.append(index, Segment::build_with(config, documents, deletes)?))
     }
 
     /// Replaces all segments of `index` with one.
     pub fn overwrite(&mut self, index: &str, segment: Segment) -> &mut Self {
-        self.ops.push(Op::Overwrite {
-            index: index.to_owned(),
+        let target = self.target(index);
+        self.txn.ops.push(Op::Overwrite {
+            target,
             segment: Arc::new(segment),
         });
         self
     }
 
     pub fn drop_index(&mut self, index: &str) -> &mut Self {
-        self.ops.push(Op::Drop {
-            index: index.to_owned(),
-        });
+        let target = self.target(index);
+        self.txn.ops.push(Op::Drop { target });
         self
     }
 
     /// Pins `index`'s score normalisation. New indexes otherwise estimate it from their first segment.
     pub fn set_max_score(&mut self, index: &str, max_score: f64) -> &mut Self {
-        self.ops.push(Op::MaxScore {
-            index: index.to_owned(),
-            max_score,
+        let target = self.target(index);
+        self.txn.ops.push(Op::MaxScore { target, max_score });
+        self
+    }
+
+    /// Sets or, with `None`, removes metadata `key` of `index`.
+    pub fn set_index_metadata(&mut self, index: &str, key: &str, value: Option<&str>) -> &mut Self {
+        let target = self.target(index);
+        self.txn.ops.push(Op::IndexMetadata {
+            target,
+            key: key.to_owned(),
+            value: value.map(str::to_owned),
         });
         self
+    }
+}
+
+impl Transaction {
+    fn here(&mut self) -> NamespaceTransaction<'_> {
+        let namespace = self.namespace.clone();
+        NamespaceTransaction {
+            txn: self,
+            namespace,
+        }
+    }
+
+    /// Adds a segment on top of `index` in the transaction's namespace, creating it if needed.
+    pub fn append(&mut self, index: &str, segment: Segment) -> &mut Self {
+        self.here().append(index, segment);
+        self
+    }
+
+    pub fn append_documents(
+        &mut self,
+        index: &str,
+        documents: impl IntoIterator<Item = Document>,
+        deletes: impl IntoIterator<Item = u64>,
+    ) -> Result<&mut Self, Error> {
+        self.here().append_documents(index, documents, deletes)?;
+        Ok(self)
+    }
+
+    /// Replaces all segments of `index` with one.
+    pub fn overwrite(&mut self, index: &str, segment: Segment) -> &mut Self {
+        self.here().overwrite(index, segment);
+        self
+    }
+
+    pub fn drop_index(&mut self, index: &str) -> &mut Self {
+        self.here().drop_index(index);
+        self
+    }
+
+    pub fn set_max_score(&mut self, index: &str, max_score: f64) -> &mut Self {
+        self.here().set_max_score(index, max_score);
+        self
+    }
+
+    pub fn set_index_metadata(&mut self, index: &str, key: &str, value: Option<&str>) -> &mut Self {
+        self.here().set_index_metadata(index, key, value);
+        self
+    }
+}
+
+impl Transaction {
+    pub fn read_version(&self) -> u64 {
+        self.read.version
+    }
+
+    /// The namespace index operations on the transaction itself write to.
+    pub fn default_namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    /// Index operations in namespace `name`, committed with the rest of this transaction.
+    pub fn namespace(&mut self, name: &str) -> NamespaceTransaction<'_> {
+        if self.invalid.is_none() {
+            self.invalid = validate_name("namespace", name).err();
+        }
+        NamespaceTransaction {
+            txn: self,
+            namespace: name.to_owned(),
+        }
     }
 
     /// Fences this commit with a lease `generation`: it fails with [`Error::Conflict`] once a
@@ -656,7 +935,10 @@ impl Transaction {
     }
 
     /// Like [`Transaction::commit`], also returning how many manifest writes it took.
-    pub async fn commit_with_attempts(self) -> Result<(Manifest, usize), Error> {
+    pub async fn commit_with_attempts(mut self) -> Result<(Manifest, usize), Error> {
+        if let Some(error) = self.invalid.take() {
+            return Err(error);
+        }
         for op in &self.ops {
             if let Op::MaxScore { max_score, .. } = op {
                 if !(max_score.is_finite() && *max_score > 0.0) {
@@ -745,13 +1027,13 @@ impl Transaction {
                 }
                 _ => {}
             }
-            let Some(index) = op.index() else { continue };
-            let changed = self.read.indexes.get(index) != latest.indexes.get(index);
+            let Some(index) = op.target() else { continue };
+            let entry = |m: &Manifest| m.index(&index.namespace, &index.index).cloned();
+            let changed = entry(&self.read) != entry(latest);
             match op {
                 Op::Replace { remove, .. } => {
                     let current = latest
-                        .indexes
-                        .get(index)
+                        .index(&index.namespace, &index.index)
                         .map_or(&[][..], |e| &e.segments[..]);
                     if find_run(current, remove).is_none() {
                         return Err(Error::Conflict(format!(
@@ -779,19 +1061,13 @@ impl Transaction {
         for (op, staged) in self.ops.iter().zip(refs) {
             let staged = staged.as_ref();
             match op {
-                Op::Append { index, segment } => {
+                Op::Append { target, segment } => {
                     let reference = staged.unwrap();
-                    if !next.indexes.contains_key(index) {
-                        let max_score = estimate_max_score(segment)?;
-                        next.indexes.insert(
-                            index.clone(),
-                            IndexEntry {
-                                max_score,
-                                segments: Vec::new(),
-                            },
-                        );
+                    let entry = entry_mut(&mut next, target);
+                    // An index without segments and a pinned max_score takes it from its first.
+                    if entry.segments.is_empty() && entry.max_score == 0.0 {
+                        entry.max_score = estimate_max_score(segment)?;
                     }
-                    let entry = next.indexes.get_mut(index).unwrap();
                     // The first segment of an index is its base.
                     let level = if entry.segments.is_empty() {
                         BASE_LEVEL
@@ -803,44 +1079,45 @@ impl Transaction {
                         ..reference.clone()
                     });
                 }
-                Op::Overwrite { index, segment } => {
+                Op::Overwrite { target, segment } => {
                     let reference = staged.unwrap();
-                    let max_score = match next.indexes.get(index) {
-                        Some(entry) => entry.max_score,
-                        None => estimate_max_score(segment)?,
-                    };
-                    next.indexes.insert(
-                        index.clone(),
-                        IndexEntry {
-                            max_score,
-                            segments: vec![reference.clone()],
-                        },
-                    );
+                    let entry = entry_mut(&mut next, target);
+                    if entry.max_score == 0.0 {
+                        entry.max_score = estimate_max_score(segment)?;
+                    }
+                    entry.segments = vec![reference.clone()];
                 }
-                Op::Replace { index, remove, .. } => {
+                Op::Replace { target, remove, .. } => {
                     let reference = staged.unwrap();
                     let entry = next
-                        .indexes
-                        .get_mut(index)
-                        .ok_or_else(|| Error::Conflict(format!("{index} was dropped")))?;
+                        .namespaces
+                        .get_mut(&target.namespace)
+                        .and_then(|n| n.get_mut(&target.index))
+                        .ok_or_else(|| Error::Conflict(format!("{target} was dropped")))?;
                     let start = find_run(&entry.segments, remove).ok_or_else(|| {
-                        Error::Conflict(format!("segments of {index} being replaced changed"))
+                        Error::Conflict(format!("segments of {target} being replaced changed"))
                     })?;
                     entry
                         .segments
                         .splice(start..start + remove.len(), [reference.clone()]);
                 }
-                Op::Drop { index } => {
-                    next.indexes.remove(index);
+                Op::Drop { target } => {
+                    if let Some(indexes) = next.namespaces.get_mut(&target.namespace) {
+                        indexes.remove(&target.index);
+                        if indexes.is_empty() {
+                            next.namespaces.remove(&target.namespace);
+                        }
+                    }
                 }
-                Op::MaxScore { index, max_score } => {
-                    next.indexes
-                        .entry(index.clone())
-                        .or_insert_with(|| IndexEntry {
-                            max_score: *max_score,
-                            segments: Vec::new(),
-                        })
-                        .max_score = *max_score;
+                Op::MaxScore { target, max_score } => {
+                    entry_mut(&mut next, target).max_score = *max_score;
+                }
+                Op::IndexMetadata { target, key, value } => {
+                    let metadata = &mut entry_mut(&mut next, target).metadata;
+                    match value {
+                        Some(value) => metadata.insert(key.clone(), value.clone()),
+                        None => metadata.remove(key),
+                    };
                 }
                 Op::Fence { key, generation } => {
                     next.metadata.insert(key.clone(), generation.to_string());
@@ -864,6 +1141,16 @@ impl Transaction {
         }
         Ok(next)
     }
+}
+
+/// The entry of `target`, created empty, with its max_score unset, if missing.
+fn entry_mut<'a>(manifest: &'a mut Manifest, target: &Target) -> &'a mut IndexEntry {
+    manifest
+        .namespaces
+        .entry(target.namespace.clone())
+        .or_default()
+        .entry(target.index.clone())
+        .or_insert_with(|| IndexEntry::new(0.0))
 }
 
 fn estimate_max_score(segment: &Arc<Segment>) -> Result<f64, Error> {
@@ -1012,19 +1299,22 @@ impl Drop for Follower {
     }
 }
 
+/// A change to one index of an engine namespace; `None` removes it.
+type Update = (String, Option<Arc<Index>>);
+
 /// Keeps an [`Engine`] on the latest version of a database, loading only segments it lacks and
-/// republishing only indexes that changed.
+/// switching each namespace to its new indexes in one step, one namespace at a time.
 pub struct Replica {
     database: Database,
     config: IndexOptions,
-    group: Arc<dyn Fn(&str) -> String + Send + Sync>,
     state: tokio::sync::Mutex<ReplicaState>,
 }
 
 #[derive(Default)]
 struct ReplicaState {
     version: u64,
-    loaded: FxHashMap<String, (Vec<String>, f64)>,
+    /// Segment ids and max_score of each loaded index, by namespace and name.
+    loaded: FxHashMap<(String, String), (Vec<String>, f64)>,
     segments: FxHashMap<String, Arc<Segment>>,
 }
 
@@ -1034,27 +1324,8 @@ impl Replica {
         Self {
             database,
             config,
-            group: Arc::new(str::to_owned),
             state: tokio::sync::Mutex::default(),
         }
-    }
-
-    /// Indexes with the same group key are switched together; groups one after another. By
-    /// default each index is its own group.
-    pub fn with_groups(mut self, group: impl Fn(&str) -> String + Send + Sync + 'static) -> Self {
-        self.group = Arc::new(group);
-        self
-    }
-
-    /// Groups by the part after the last `separator`, e.g. `"/"` switches all `tenant/language`
-    /// indexes of one language together.
-    pub fn with_groups_by_suffix(self, separator: &str) -> Self {
-        let separator = separator.to_owned();
-        self.with_groups(move |name| {
-            name.rsplit_once(separator.as_str())
-                .map_or(name, |(_, s)| s)
-                .to_owned()
-        })
     }
 
     pub async fn version(&self) -> u64 {
@@ -1098,40 +1369,42 @@ impl Replica {
         let mut downloaded = 0usize;
 
         // Removals first, so their memory is free before anything new loads.
-        let removed: Vec<String> = state
-            .loaded
-            .keys()
-            .filter(|n| !manifest.indexes.contains_key(*n))
-            .cloned()
-            .collect();
-        if !removed.is_empty() {
-            engine.publish(removed.iter().map(|n| (n.clone(), None)));
-            for name in &removed {
-                state.loaded.remove(name);
-            }
-            release_unreferenced(&mut state);
-        }
-
-        // Then one group at a time: load, publish, release the replaced segments, so memory
-        // never holds more than one group twice.
-        let mut groups: std::collections::BTreeMap<String, Vec<(&String, &IndexEntry)>> =
-            Default::default();
-        for (name, entry) in &manifest.indexes {
-            let ids: Vec<&String> = entry.segments.iter().map(|s| &s.id).collect();
-            let unchanged = state
-                .loaded
-                .get(name)
-                .is_some_and(|(i, m)| i.iter().eq(ids.iter().copied()) && *m == entry.max_score);
-            if !unchanged {
-                groups
-                    .entry((self.group)(name))
+        let mut removed: BTreeMap<String, Vec<Update>> = BTreeMap::new();
+        for (namespace, name) in state.loaded.keys() {
+            if manifest.index(namespace, name).is_none() {
+                removed
+                    .entry(namespace.clone())
                     .or_default()
-                    .push((name, entry));
+                    .push((name.clone(), None));
             }
         }
-        for members in groups.into_values() {
+        for (namespace, updates) in removed {
+            for (name, _) in &updates {
+                state.loaded.remove(&(namespace.clone(), name.clone()));
+            }
+            engine.update(&namespace, Some(version), updates);
+        }
+        release_unreferenced(&mut state);
+
+        // Then one namespace at a time: load, publish, release the replaced segments, so memory
+        // never holds more than one namespace twice.
+        for (namespace, indexes) in &manifest.namespaces {
+            let changed: Vec<(&String, &IndexEntry)> = indexes
+                .iter()
+                .filter(|(name, entry)| {
+                    let key = (namespace.clone(), (*name).clone());
+                    !state.loaded.get(&key).is_some_and(|(ids, max_score)| {
+                        ids.iter().eq(entry.segments.iter().map(|s| &s.id))
+                            && *max_score == entry.max_score
+                    })
+                })
+                .collect();
+            if changed.is_empty() {
+                engine.update(namespace, Some(version), Vec::new());
+                continue;
+            }
             let mut missing: Vec<SegmentRef> = Vec::new();
-            for segment in members.iter().flat_map(|(_, e)| &e.segments) {
+            for segment in changed.iter().flat_map(|(_, e)| &e.segments) {
                 if !state.segments.contains_key(&segment.id)
                     && !missing.iter().any(|m| m.id == segment.id)
                 {
@@ -1145,23 +1418,25 @@ impl Replica {
             {
                 state.segments.insert(reference.id.clone(), segment);
             }
-            let mut updates = Vec::with_capacity(members.len());
+            let current = engine.namespace(namespace).ok();
+            let mut updates = Vec::with_capacity(changed.len());
             let mut carried = Vec::new();
-            for (name, entry) in &members {
+            for (name, entry) in &changed {
                 let segments = entry
                     .segments
                     .iter()
                     .map(|s| state.segments[&s.id].clone())
                     .collect();
+                // An index created without documents has no score scale yet.
                 let config = IndexOptions {
-                    max_score: Some(entry.max_score),
+                    max_score: (entry.max_score > 0.0).then_some(entry.max_score),
                     ..self.config.clone()
                 };
                 let index = Arc::new(Index::new(segments, config)?);
                 if self.config.warm_on_load {
                     index.warm();
                 }
-                if let Some(old) = engine.get(name) {
+                if let Some(old) = current.as_ref().and_then(|n| n.get(name)) {
                     carried.push((
                         old.hot_short_queries(self.config.carry_short_queries),
                         index.clone(),
@@ -1169,10 +1444,13 @@ impl Replica {
                 }
                 updates.push(((*name).clone(), Some(index)));
             }
-            engine.publish(updates);
-            for (name, entry) in &members {
+            drop(current);
+            engine.update(namespace, Some(version), updates);
+            for (name, entry) in &changed {
                 let ids = entry.segments.iter().map(|s| s.id.clone()).collect();
-                state.loaded.insert((*name).clone(), (ids, entry.max_score));
+                state
+                    .loaded
+                    .insert((namespace.clone(), (*name).clone()), (ids, entry.max_score));
             }
             release_unreferenced(&mut state);
             // Published first, so readers see the new version while its cache fills.
@@ -1186,9 +1464,8 @@ impl Replica {
         }
 
         let keys: Vec<&str> = manifest
-            .indexes
-            .values()
-            .flat_map(|e| e.segments.iter().map(|s| s.key.as_str()))
+            .entries()
+            .flat_map(|(_, _, e)| e.segments.iter().map(|s| s.key.as_str()))
             .collect();
         self.database.store.prune_cache(keys)?;
         state.version = version;

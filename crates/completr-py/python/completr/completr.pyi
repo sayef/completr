@@ -1,12 +1,14 @@
 from collections.abc import Buffer, Iterable, Mapping, Sequence
 from os import PathLike
-from typing import Any, Literal, TypedDict
+from types import TracebackType
+from typing import Any, Literal, Self, TypedDict
+
+from ._types import MatchKind
 
 __version__: str
 
 Id = int | str
 """A document id: an int, or a string key."""
-MatchKind = Literal["exact", "prefix", "abbreviation", "infix", "fuzzy", "semantic", "synonym"]
 FusionKind = Literal["rrf", "weighted", "lexical_first"]
 Vector = Buffer | Sequence[float]
 """An embedding: a 1-D float32 array or a list of floats."""
@@ -29,6 +31,16 @@ class CompletrError(Exception): ...
 class ConflictError(CompletrError): ...
 class CorruptionError(CompletrError): ...
 class NotFoundError(CompletrError, LookupError): ...
+class NamespaceNotFoundError(NotFoundError):
+    name: str
+    available: list[str]
+
+class LayerNotFoundError(NotFoundError):
+    name: str
+    namespace: str
+    version: int
+    available: list[str]
+
 class InvalidInputError(CompletrError, ValueError): ...
 class StorageError(CompletrError, OSError): ...
 
@@ -60,6 +72,7 @@ class Document:
     def to_dict(self) -> DocumentDict: ...
 
 class Suggestion:
+    __match_args__ = ("id", "text", "score", "kind", "layer")
     id: Id
     text: str
     score: float
@@ -69,6 +82,7 @@ class Suggestion:
     layer: str | None
 
 class HybridSuggestion:
+    __match_args__ = ("id", "text", "score", "kind", "layer")
     id: Id
     text: str
     score: float
@@ -79,6 +93,7 @@ class HybridSuggestion:
     layer: str | None
 
 class AliasSuggestion:
+    __match_args__ = ("id", "text", "score", "layer")
     id: Id
     text: str
     score: float
@@ -185,26 +200,41 @@ class Index:
     def max_score(self) -> float: ...
     def __len__(self) -> int: ...
 
-class Engine:
-    def __init__(self, overfetch: int = 2) -> None: ...
-    def publish(self, updates: Mapping[str, Index | None]) -> None: ...
-    def sync(self) -> int | None:
-        """Loads the database's latest version now; only for engines from `Database.engine()`."""
+class Namespace:
+    """One version of one namespace; every search through it sees that version."""
     @property
-    def sync_status(self) -> dict[str, Any] | None:
-        """The background sync's last run: `synced_at` and `error`; `None` before it has run."""
+    def name(self) -> str: ...
     @property
-    def version(self) -> int | None: ...
+    def version(self) -> int: ...
     def get(self, name: str) -> Index | None: ...
     def names(self) -> list[str]: ...
     def complete(
-        self, query: str, layers: Sequence[str], limit: int = 10, *, contexts: Sequence[str] | None = None
-    ) -> list[Suggestion]: ...
+        self,
+        query: str,
+        layers: Sequence[str],
+        limit: int = 10,
+        *,
+        contexts: Sequence[str] | None = None,
+        ignore_missing_layers: bool = False,
+    ) -> list[Suggestion]:
+        """Later layers override earlier ones per document id; a missing layer raises `LayerNotFoundError`."""
     def complete_aliases(
-        self, query: str, layers: Sequence[str], limit: int = 10, *, contexts: Sequence[str] | None = None
+        self,
+        query: str,
+        layers: Sequence[str],
+        limit: int = 10,
+        *,
+        contexts: Sequence[str] | None = None,
+        ignore_missing_layers: bool = False,
     ) -> list[AliasSuggestion]: ...
     def vector_search(
-        self, vector: Vector, layers: Sequence[str], limit: int = 10, *, contexts: Sequence[str] | None = None
+        self,
+        vector: Vector,
+        layers: Sequence[str],
+        limit: int = 10,
+        *,
+        contexts: Sequence[str] | None = None,
+        ignore_missing_layers: bool = False,
     ) -> list[Suggestion]: ...
     def hybrid_search(
         self,
@@ -218,6 +248,65 @@ class Engine:
         semantic_weight: float = 0.5,
         candidates: int | None = None,
         contexts: Sequence[str] | None = None,
+        ignore_missing_layers: bool = False,
+    ) -> list[HybridSuggestion]: ...
+
+class Engine:
+    def __init__(self, overfetch: int = 2) -> None: ...
+    def publish(self, updates: Mapping[str, Index | None], *, namespace: str = "default") -> None: ...
+    def sync(self) -> int | None:
+        """Loads the database's latest version now; only for engines from `Database.engine()`."""
+    @property
+    def sync_status(self) -> dict[str, Any] | None:
+        """The background sync's last run: `synced_at` and `error`; `None` before it has run."""
+    @property
+    def version(self) -> int | None: ...
+    def namespace(self, name: str) -> Namespace:
+        """The current version of namespace `name`; `NamespaceNotFoundError` if there is none."""
+    def namespaces(self) -> list[str]: ...
+    def get(self, name: str) -> Index | None: ...
+    def names(self) -> list[str]: ...
+    def complete(
+        self,
+        query: str,
+        layers: Sequence[str],
+        limit: int = 10,
+        *,
+        contexts: Sequence[str] | None = None,
+        ignore_missing_layers: bool = False,
+    ) -> list[Suggestion]:
+        """`Namespace.complete` in the default namespace."""
+    def complete_aliases(
+        self,
+        query: str,
+        layers: Sequence[str],
+        limit: int = 10,
+        *,
+        contexts: Sequence[str] | None = None,
+        ignore_missing_layers: bool = False,
+    ) -> list[AliasSuggestion]: ...
+    def vector_search(
+        self,
+        vector: Vector,
+        layers: Sequence[str],
+        limit: int = 10,
+        *,
+        contexts: Sequence[str] | None = None,
+        ignore_missing_layers: bool = False,
+    ) -> list[Suggestion]: ...
+    def hybrid_search(
+        self,
+        text: str,
+        vector: Vector,
+        layers: Sequence[str],
+        limit: int = 10,
+        *,
+        fusion: FusionKind = "rrf",
+        rrf_k: float = 60.0,
+        semantic_weight: float = 0.5,
+        candidates: int | None = None,
+        contexts: Sequence[str] | None = None,
+        ignore_missing_layers: bool = False,
     ) -> list[HybridSuggestion]: ...
 
 class Store:
@@ -233,9 +322,22 @@ class Store:
     def put_segment(self, key: str, segment: Segment) -> None: ...
     def get_segment(self, key: str) -> Segment: ...
 
+class NamespaceTransaction:
+    """The index operations of a `Transaction` in one namespace."""
+    @property
+    def name(self) -> str: ...
+    def append(
+        self, index: str, documents: Documents, deletes: Sequence[Id] = ..., vectors: Vectors | None = None
+    ) -> None: ...
+    def overwrite(self, index: str, documents: Documents, vectors: Vectors | None = None) -> None: ...
+    def drop_index(self, index: str) -> None: ...
+    def set_max_score(self, index: str, max_score: float) -> None: ...
+
 class Transaction:
+    """As a context manager, commits on success and discards its changes on an exception."""
     @property
     def read_version(self) -> int: ...
+    def namespace(self, name: str) -> NamespaceTransaction: ...
     def append(
         self, index: str, documents: Documents, deletes: Sequence[Id] = ..., vectors: Vectors | None = None
     ) -> None: ...
@@ -246,12 +348,44 @@ class Transaction:
     def strict(self, strict: bool = True) -> None: ...
     def max_retries(self, retries: int) -> None: ...
     def commit(self) -> dict[str, Any]: ...
+    def __enter__(self) -> Self: ...
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None
+    ) -> bool: ...
 
 class Lease:
     @property
     def generation(self) -> int: ...
     def renew(self, ttl_seconds: float) -> bool: ...
     def release(self) -> None: ...
+
+class DatabaseNamespace:
+    """One namespace of a `Database`: its transactions, indexes and compaction."""
+    @property
+    def name(self) -> str: ...
+    def index_names(self, version: int | None = None) -> list[str]: ...
+    def begin(self, version: int | None = None) -> Transaction: ...
+    def open_index(
+        self,
+        name: str,
+        version: int | None = None,
+        *,
+        max_score: float | None = None,
+        popularity_weight: float = 0.4,
+        short_query_chars: int = 3,
+        short_query_limit: int = 100,
+        short_query_cache_entries: int = 10_000,
+        vector_threads: int = 1,
+    ) -> Index: ...
+    def compact(
+        self,
+        index: str,
+        *,
+        fanout: int = 4,
+        max_segments: int = 16,
+        max_hidden_fraction: float = 0.25,
+        until_done: bool = False,
+    ) -> int | None: ...
 
 class Database:
     def __init__(
@@ -267,9 +401,13 @@ class Database:
         compact_keys: bool = False,
         build_threads: int = 1,
     ) -> None: ...
+    def namespace(self, name: str) -> DatabaseNamespace:
+        """Namespace `name`: 1 to 128 letters, digits, '.', '_' or '-'. Does no I/O."""
+    def namespaces(self, version: int | None = None) -> list[str]: ...
     def versions(self) -> list[int]: ...
     def latest_version(self) -> int: ...
-    def index_names(self, version: int | None = None) -> list[str]: ...
+    def index_names(self, version: int | None = None) -> list[str]:
+        """Indexes of the default namespace."""
     def manifest(self, version: int | None = None) -> dict[str, Any]: ...
     def begin(self, version: int | None = None) -> Transaction: ...
     def open_index(
@@ -288,7 +426,6 @@ class Database:
         self,
         *,
         sync_every: float | None = 5.0,
-        group_separator: str | None = None,
         overfetch: int = 2,
         popularity_weight: float = 0.4,
         short_query_chars: int = 3,
@@ -310,8 +447,16 @@ class Database:
     def submit(self, changes: ChangeSet) -> str: ...
     def pending_change_sets(self) -> int: ...
 
+class NamespaceChanges:
+    """The changes of a `ChangeSet` in one namespace."""
+    @property
+    def name(self) -> str: ...
+    def upsert(self, index: str, documents: Documents, vectors: Vectors | None = None) -> None: ...
+    def delete(self, index: str, ids: Sequence[Id]) -> None: ...
+
 class ChangeSet:
     def __init__(self) -> None: ...
+    def namespace(self, name: str) -> NamespaceChanges: ...
     def upsert(self, index: str, documents: Documents, vectors: Vectors | None = None) -> None: ...
     def delete(self, index: str, ids: Sequence[Id]) -> None: ...
 
@@ -341,7 +486,6 @@ class Replica:
         short_query_limit: int = 100,
         short_query_cache_entries: int = 10_000,
         vector_threads: int = 1,
-        group_separator: str | None = None,
     ) -> None: ...
     @property
     def version(self) -> int: ...
@@ -363,6 +507,8 @@ class CollectionStats(TypedDict):
 class Collection:
     @property
     def name(self) -> str: ...
+    @property
+    def namespace(self) -> str: ...
     def add(self, documents: Documents, vectors: Vectors | None = None) -> int:
         """Adds documents, replacing any with the same id; durable on return. Returns the new version."""
     def delete(self, ids: Sequence[Id]) -> int: ...
@@ -375,10 +521,40 @@ class Collection:
         layers: Sequence[str] | None = None,
         contexts: Sequence[str] | None = None,
         vector: Vector | None = None,
+        ignore_missing_layers: bool = False,
     ) -> list[Suggestion]:
         """Completions, best first; `Suggestion.layer` is the collection each came from."""
     def optimize(self) -> int | None: ...
     def stats(self) -> CollectionStats: ...
+
+class ClientNamespace:
+    """The collections of one namespace."""
+    @property
+    def name(self) -> str: ...
+    def collections(self) -> list[str]: ...
+    def collection(self, name: str) -> Collection: ...
+    def create_collection(
+        self,
+        name: str,
+        *,
+        optimize: OptimizeKind = "auto",
+        fanout: int = 4,
+        max_segments: int = 16,
+        max_hidden_fraction: float = 0.25,
+        min_interval: float = 30.0,
+    ) -> Collection: ...
+    def get_or_create_collection(
+        self,
+        name: str,
+        *,
+        optimize: OptimizeKind = "auto",
+        fanout: int = 4,
+        max_segments: int = 16,
+        max_hidden_fraction: float = 0.25,
+        min_interval: float = 30.0,
+    ) -> Collection: ...
+    def drop_collection(self, name: str) -> None: ...
+    def __getitem__(self, name: str) -> Collection: ...
 
 class Client:
     def __init__(
@@ -395,6 +571,7 @@ class Client:
         compact_keys: bool = False,
         build_threads: int = 1,
     ) -> None: ...
+    def namespace(self, name: str) -> ClientNamespace: ...
     def collections(self) -> list[str]: ...
     def collection(self, name: str) -> Collection: ...
     def create_collection(

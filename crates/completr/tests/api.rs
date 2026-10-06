@@ -131,7 +131,13 @@ fn contexts_filter_layers_and_newer_versions() {
 
     let engine = Engine::new();
     engine.publish([("shared".to_owned(), Some(Arc::new(index)))]);
-    let layered = engine.complete_with(&["shared", "missing"], "mach", &books);
+    let layered = engine
+        .complete_with(
+            &["shared", "missing"],
+            "mach",
+            &books.clone().ignore_missing_layers(true),
+        )
+        .unwrap();
     assert_eq!(layered.len(), 2);
     assert!(layered.iter().all(|l| l.layer == 0));
 }
@@ -207,8 +213,8 @@ fn a_small_layer_scores_on_the_scale_of_the_first() {
         ),
         ("same".to_owned(), Some(Arc::new(same))),
     ]);
-    let alone = engine.complete(&["catalog"], "danc", 10);
-    let layered = engine.complete(&["catalog", "same"], "danc", 10);
+    let alone = engine.complete(&["catalog"], "danc", 10).unwrap();
+    let layered = engine.complete(&["catalog", "same"], "danc", 10).unwrap();
     let scores = |hits: &[completr::LayeredSuggestion<completr::Suggestion>]| {
         hits.iter()
             .map(|h| (h.suggestion.id, (h.suggestion.score * 1e6).round()))
@@ -269,13 +275,55 @@ fn later_layers_hide_renamed_and_deleted_documents() {
     ]);
     let found: Vec<_> = engine
         .complete(&["shared", "acme"], "machine", 10)
+        .unwrap()
         .into_iter()
         .map(|l| l.suggestion.key.unwrap())
         .collect();
     assert_eq!(found, ["ml"]);
-    let vision = engine.complete(&["shared", "acme"], "vision", 10);
+    let vision = engine.complete(&["shared", "acme"], "vision", 10).unwrap();
     assert_eq!(
         (vision[0].suggestion.text.as_str(), vision[0].layer),
         ("Computer Vision", 1)
     );
+}
+
+#[test]
+fn missing_layers_and_namespaces_fail_with_the_names_that_exist() {
+    let engine = Engine::new();
+    engine.publish_to(
+        "de-DE",
+        [("customer-a".to_owned(), Some(Arc::new(index())))],
+    );
+    let de = engine.namespace("de-DE").unwrap();
+    let missing = de
+        .complete(&["customer-a", "partner-b"], "mach", 10)
+        .unwrap_err();
+    assert_eq!(
+        missing.to_string(),
+        "no index 'partner-b' in namespace 'de-DE' at version 1; indexes: customer-a; \
+         set ignore_missing_layers if it may not exist"
+    );
+    let typo = de
+        .complete(&["customer-b"], "mach", 10)
+        .unwrap_err()
+        .to_string();
+    assert!(typo.contains("(did you mean 'customer-a'?)"), "{typo}");
+    let lenient = SearchOptions::new(10).ignore_missing_layers(true);
+    assert_eq!(
+        de.complete_with(&["customer-a", "customer-b"], "mach", &lenient)
+            .unwrap()
+            .len(),
+        3
+    );
+
+    let namespace = engine.namespace("de-De").unwrap_err().to_string();
+    assert_eq!(
+        namespace,
+        "no namespace 'de-De' (did you mean 'de-DE'?); namespaces: de-DE"
+    );
+    assert!(matches!(
+        engine.namespace("fr-FR"),
+        Err(completr::Error::NamespaceNotFound { .. })
+    ));
+    assert!(engine.complete(&["customer-a"], "mach", 10).is_err());
 }

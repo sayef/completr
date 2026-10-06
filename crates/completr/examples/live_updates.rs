@@ -63,7 +63,7 @@ async fn main() -> Result<(), completr::Error> {
         follower.status().error
     );
     let pop = SearchOptions::new(5).contexts(["pop"]);
-    for layered in engine.complete_with(&["songs"], "bill", &pop) {
+    for layered in engine.complete_with(&["songs"], "bill", &pop)? {
         let s = layered.suggestion;
         println!("{:?} {} {} {:.3}", s.key, s.text, s.kind.as_str(), s.score);
     }

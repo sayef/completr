@@ -151,7 +151,7 @@ print([(s.id, s.text, s.kind) for s in engine.complete("bill", ["songs"], contex
 ```
 
 ```text
-[('billie', 'Billie Jean – Michael Jackson', 'prefix')]
+[('billie', 'Billie Jean – Michael Jackson', MatchKind.PREFIX)]
 ```
 
 ## Under asyncio

@@ -136,6 +136,8 @@ async fn load(corpus: &str, url: &str) {
     let ds = open(url).await;
     let mut txn = ds.begin().await.unwrap();
     for (name, entry) in value["indexes"].as_object().unwrap() {
+        // Index names allow letters, digits, '.', '_' and '-' only.
+        let name = &name.replace('/', "-");
         let docs: Vec<Document> = entry["docs"]
             .as_array()
             .unwrap()
@@ -512,7 +514,7 @@ async fn inbox(
 async fn compact(url: &str, name: &str) {
     let ds = open(url).await;
     let before = ds.latest().await.unwrap();
-    let segments = before.indexes[name].segments.len();
+    let segments = before.namespaces["default"][name].segments.len();
     let reference = ds
         .open_index(&before, name, IndexOptions::default())
         .await
@@ -533,7 +535,7 @@ async fn compact(url: &str, name: &str) {
     report(
         &format!(
             "tiered compaction -> {:?} segments",
-            step.map(|m| m.indexes[name].segments.len())
+            step.map(|m| m.namespaces["default"][name].segments.len())
         ),
         usage,
     );
@@ -559,7 +561,7 @@ async fn compact(url: &str, name: &str) {
         .all(|(q, e)| index.complete(q, 10) == *e);
     println!(
         "  after: {} segments, results identical: {same}, queries {}",
-        full.indexes[name].segments.len(),
+        full.namespaces["default"][name].segments.len(),
         latency(&index, &qs)
     );
 }
@@ -755,7 +757,7 @@ async fn concurrent(
     println!(
         "    final v{} with {} segments: missing inserts {missing}, wrong last-ingestor values {hot_wrong}, deleted still visible {deleted_alive}",
         manifest.version,
-        manifest.indexes[name].segments.len()
+        manifest.namespaces["default"][name].segments.len()
     );
 }
 

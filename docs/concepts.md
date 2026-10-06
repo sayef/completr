@@ -49,13 +49,14 @@ segment files, the latter in bounded memory.
 
 ## Engines and layers
 
-An **engine** holds indexes by name and replaces them atomically. A search names a list of indexes, its
-**layers**. Later layers override earlier ones per document id, so a tenant's edits, deletions and
+An **engine** holds indexes by name in **namespaces**, and switches each namespace to a new version in one
+step. A search names a list of a namespace's indexes, its **layers**. Later layers override earlier ones per document id, so a tenant's edits, deletions and
 additions shadow shared data without copying it. Each suggestion names the index it came from. See
 [Layers](guides/layers.md).
 
-The library has no notion of tenants, languages or domains. You express those as index names, for example
-`radio/en`, and as layer lists.
+The library has no notion of tenants, languages or domains. You express those as namespaces, such as one per
+locale, index names, such as one per tenant, and layer lists. A layer that does not exist raises
+`LayerNotFoundError` unless the search passes `ignore_missing_layers=True`.
 
 ## Databases and versions
 

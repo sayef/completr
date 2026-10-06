@@ -7,8 +7,11 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::database::claimed;
-use crate::{CompactionPolicy, Database, Document, Error, Index, IndexOptions, Lease, Segment};
+use crate::database::{claimed, validate_name};
+use crate::{
+    CompactionPolicy, Database, Document, Error, Index, IndexOptions, Lease, Segment,
+    DEFAULT_NAMESPACE,
+};
 
 const INBOX: &str = "_inbox";
 const REJECTED: &str = "_rejected";
@@ -17,11 +20,20 @@ const INGESTOR_LEASE: &str = "ingestor";
 const APPLIED: &str = "completr.inbox.applied";
 const GENERATION: &str = "completr.ingestor.generation";
 
+/// An index of a namespace, as `(namespace, index)`.
+type Target = (String, String);
+
 /// Changes to one or more indexes, applied together and in submission order relative to
 /// other change sets. Later change sets win per document id.
 #[derive(Default)]
 pub struct ChangeSet {
-    changes: BTreeMap<String, (Vec<Document>, Vec<u64>)>,
+    changes: BTreeMap<Target, (Vec<Document>, Vec<u64>)>,
+}
+
+/// The changes of a [`ChangeSet`] in one namespace.
+pub struct NamespaceChanges<'a> {
+    set: &'a mut ChangeSet,
+    namespace: String,
 }
 
 impl ChangeSet {
@@ -29,25 +41,27 @@ impl ChangeSet {
         Self::default()
     }
 
+    /// Changes to indexes of namespace `name`.
+    pub fn namespace(&mut self, name: &str) -> NamespaceChanges<'_> {
+        NamespaceChanges {
+            set: self,
+            namespace: name.to_owned(),
+        }
+    }
+
+    /// Upserts into `index` of the default namespace.
     pub fn upsert(
         &mut self,
         index: &str,
         documents: impl IntoIterator<Item = Document>,
     ) -> &mut Self {
-        self.changes
-            .entry(index.to_owned())
-            .or_default()
-            .0
-            .extend(documents);
+        self.namespace(DEFAULT_NAMESPACE).upsert(index, documents);
         self
     }
 
+    /// Deletes from `index` of the default namespace.
     pub fn delete(&mut self, index: &str, ids: impl IntoIterator<Item = u64>) -> &mut Self {
-        self.changes
-            .entry(index.to_owned())
-            .or_default()
-            .1
-            .extend(ids);
+        self.namespace(DEFAULT_NAMESPACE).delete(index, ids);
         self
     }
 
@@ -58,20 +72,50 @@ impl ChangeSet {
     }
 }
 
+impl NamespaceChanges<'_> {
+    pub fn upsert(
+        &mut self,
+        index: &str,
+        documents: impl IntoIterator<Item = Document>,
+    ) -> &mut Self {
+        self.set
+            .changes
+            .entry((self.namespace.clone(), index.to_owned()))
+            .or_default()
+            .0
+            .extend(documents);
+        self
+    }
+
+    pub fn delete(&mut self, index: &str, ids: impl IntoIterator<Item = u64>) -> &mut Self {
+        self.set
+            .changes
+            .entry((self.namespace.clone(), index.to_owned()))
+            .or_default()
+            .1
+            .extend(ids);
+        self
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct Header {
     id: String,
     /// Index name and byte length of its segment, in file order.
     parts: Vec<(String, u64)>,
+    /// Namespace of each part; batches written before namespaces have none.
+    #[serde(default)]
+    namespaces: Vec<String>,
 }
 
-fn encode(id: &str, parts: &[(String, Segment)]) -> Vec<u8> {
+fn encode(id: &str, parts: &[(Target, Segment)]) -> Vec<u8> {
     let header = Header {
         id: id.to_owned(),
         parts: parts
             .iter()
-            .map(|(n, s)| (n.clone(), s.size_bytes() as u64))
+            .map(|((_, n), s)| (n.clone(), s.size_bytes() as u64))
             .collect(),
+        namespaces: parts.iter().map(|((ns, _), _)| ns.clone()).collect(),
     };
     let json = serde_json::to_vec(&header).expect("header serialises");
     let mut out = MAGIC.to_vec();
@@ -83,7 +127,7 @@ fn encode(id: &str, parts: &[(String, Segment)]) -> Vec<u8> {
     out
 }
 
-fn decode(data: &[u8]) -> Result<(String, Vec<(String, Segment)>), Error> {
+fn decode(data: &[u8]) -> Result<(String, Vec<(Target, Segment)>), Error> {
     let bad = || Error::Corrupt("invalid inbox batch".into());
     if data.len() < 16 || &data[..8] != MAGIC {
         return Err(bad());
@@ -94,12 +138,17 @@ fn decode(data: &[u8]) -> Result<(String, Vec<(String, Segment)>), Error> {
         serde_json::from_slice(data.get(16..16 + len).ok_or_else(bad)?).map_err(|_| bad())?;
     let mut pos = 16 + len;
     let mut parts = Vec::with_capacity(header.parts.len());
-    for (name, size) in header.parts {
+    for (i, (name, size)) in header.parts.into_iter().enumerate() {
+        let namespace = header
+            .namespaces
+            .get(i)
+            .cloned()
+            .unwrap_or_else(|| DEFAULT_NAMESPACE.to_owned());
         let end = pos
             .checked_add(usize::try_from(size).map_err(|_| bad())?)
             .ok_or_else(bad)?;
         parts.push((
-            name,
+            (namespace, name),
             Segment::from_bytes(data.get(pos..end).ok_or_else(bad)?.to_vec())?,
         ));
         pos = end;
@@ -129,8 +178,13 @@ impl Database {
         let id = batch_id();
         let config = self.build_options();
         let mut parts = Vec::with_capacity(batch.changes.len());
-        for (index, (documents, deletes)) in batch.changes {
-            parts.push((index, Segment::build_with(config, documents, deletes)?));
+        for ((namespace, index), (documents, deletes)) in batch.changes {
+            validate_name("namespace", &namespace)?;
+            validate_name("index", &index)?;
+            parts.push((
+                (namespace, index),
+                Segment::build_with(config, documents, deletes)?,
+            ));
         }
         let key = format!("{INBOX}/{id}.batch");
         if !self
@@ -274,7 +328,7 @@ impl Ingestor {
         if pending.is_empty() {
             return Ok(IngestStep::Idle);
         }
-        let mut per_index: BTreeMap<String, Vec<Arc<Segment>>> = BTreeMap::new();
+        let mut per_index: BTreeMap<Target, Vec<Arc<Segment>>> = BTreeMap::new();
         let mut documents = 0;
         for (_, parts) in batches {
             for (index, segment) in parts {
@@ -282,9 +336,9 @@ impl Ingestor {
                 per_index.entry(index).or_default().push(Arc::new(segment));
             }
         }
-        let touched: Vec<String> = per_index.keys().cloned().collect();
+        let touched: Vec<Target> = per_index.keys().cloned().collect();
         let mut txn = self.database.transaction(read);
-        for (index, segments) in per_index {
+        for ((namespace, index), segments) in per_index {
             let segment = if segments.len() == 1 {
                 Arc::try_unwrap(segments.into_iter().next().unwrap())
                     .unwrap_or_else(|s| Segment::from_bytes(s.to_bytes()).unwrap())
@@ -302,7 +356,7 @@ impl Ingestor {
                 )?;
                 view.merged_segment(deletes, None, 1)?
             };
-            txn.append(&index, segment);
+            txn.namespace(&namespace).append(&index, segment);
         }
         // Applied ids stay recorded until their batch objects are gone.
         let keep: Vec<String> = done.iter().map(|(id, _)| id.clone()).collect();
@@ -319,8 +373,9 @@ impl Ingestor {
         let mut version = manifest.version;
         tracing::info!(version, change_sets = pending.len(), documents, "ingested");
         if let Some(policy) = &self.compaction {
-            for index in &touched {
-                match self.database.compact_all(index, policy).await {
+            for (namespace, index) in &touched {
+                let namespace = self.database.namespace(namespace)?;
+                match namespace.compact_all(index, policy).await {
                     Ok(Some(compacted)) => version = compacted.version,
                     Ok(None) | Err(Error::Conflict(_)) => {}
                     Err(e) => return Err(e),

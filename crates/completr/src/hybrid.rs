@@ -36,9 +36,16 @@ pub struct HybridOptions {
     pub candidates: Option<usize>,
     /// Only documents tagged with any of these contexts; empty means all documents.
     pub contexts: Vec<String>,
+    /// In layered searches, search a layer whose index does not exist as empty instead of failing.
+    pub ignore_missing_layers: bool,
 }
 
 impl HybridOptions {
+    pub fn ignore_missing_layers(mut self, ignore: bool) -> Self {
+        self.ignore_missing_layers = ignore;
+        self
+    }
+
     pub fn fusion(mut self, fusion: Fusion) -> Self {
         self.fusion = fusion;
         self
@@ -55,7 +62,9 @@ impl HybridOptions {
     }
 
     pub(crate) fn search_options(&self, limit: usize) -> crate::SearchOptions {
-        crate::SearchOptions::new(self.candidate_count(limit)).contexts(self.contexts.clone())
+        crate::SearchOptions::new(self.candidate_count(limit))
+            .contexts(self.contexts.clone())
+            .ignore_missing_layers(self.ignore_missing_layers)
     }
 
     pub(crate) fn candidate_count(&self, limit: usize) -> usize {

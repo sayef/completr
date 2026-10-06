@@ -67,6 +67,8 @@ pub struct SearchOptions {
     pub limit: usize,
     /// Only documents tagged with any of these contexts; empty means all documents.
     pub contexts: Vec<String>,
+    /// In layered searches, search a layer whose index does not exist as empty instead of failing.
+    pub ignore_missing_layers: bool,
 }
 
 impl Default for SearchOptions {
@@ -80,11 +82,17 @@ impl SearchOptions {
         Self {
             limit,
             contexts: Vec::new(),
+            ignore_missing_layers: false,
         }
     }
 
     pub fn limit(mut self, limit: usize) -> Self {
         self.limit = limit;
+        self
+    }
+
+    pub fn ignore_missing_layers(mut self, ignore: bool) -> Self {
+        self.ignore_missing_layers = ignore;
         self
     }
 

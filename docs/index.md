@@ -168,14 +168,14 @@ hide:
     let replica = Arc::new(Replica::new(database, IndexOptions::default()));
     replica.sync(&engine).await?;
     let _follower = replica.follow(&engine, Duration::from_secs(5));
-    let hits = engine.complete(&["songs"], "danc", 10);
+    let hits = engine.complete(&["songs"], "danc", 10)?;
     ```
 
 ```text
-danc [('Dancing Queen – ABBA', 'prefix'), ('Dancing in the Dark – Bruce Springsteen', 'prefix')]
-RHCP [('Under the Bridge – Red Hot Chili Peppers', 'abbreviation')]
-bohemain rapsody [('Bohemian Rhapsody – Queen', 'fuzzy')]
-queen [('Bohemian Rhapsody – Queen', 'infix'), ('Dancing Queen – ABBA', 'infix')]
+danc [('Dancing Queen – ABBA', MatchKind.PREFIX), ('Dancing in the Dark – Bruce Springsteen', MatchKind.PREFIX)]
+RHCP [('Under the Bridge – Red Hot Chili Peppers', MatchKind.ABBREVIATION)]
+bohemain rapsody [('Bohemian Rhapsody – Queen', MatchKind.FUZZY)]
+queen [('Bohemian Rhapsody – Queen', MatchKind.INFIX), ('Dancing Queen – ABBA', MatchKind.INFIX)]
 ['Dancing Queen – ABBA', 'Dancing in the Dark – Bruce Springsteen']
 ```
 

@@ -37,9 +37,11 @@ fn doc(id: u64, text: &str) -> Document {
     Document::new(id, text, 0.5)
 }
 
-async fn text_of(ds: &Database, index: &str, id: u64) -> Option<String> {
+async fn text_of(ds: &Database, namespace: &str, index: &str, id: u64) -> Option<String> {
     let manifest = ds.latest().await.unwrap();
     let index = ds
+        .namespace(namespace)
+        .unwrap()
         .open_index(&manifest, index, IndexOptions::default())
         .await
         .unwrap();
@@ -52,16 +54,15 @@ async fn batches_fold_into_one_commit() {
     for ds in databases(&dir, "fold").await {
         let mut first = ChangeSet::new();
         first
-            .upsert(
-                "default/en",
-                [doc(1, "python"), doc(2, "rust"), doc(3, "go")],
-            )
-            .upsert("acme/en", [doc(1, "python custom")]);
+            .namespace("en")
+            .upsert("shared", [doc(1, "python"), doc(2, "rust"), doc(3, "go")])
+            .upsert("acme", [doc(1, "python custom")]);
         ds.submit(first).await.unwrap();
         let mut second = ChangeSet::new();
         second
-            .upsert("default/en", [doc(2, "rust lang")])
-            .delete("default/en", [3]);
+            .namespace("en")
+            .upsert("shared", [doc(2, "rust lang")])
+            .delete("shared", [3]);
         ds.submit(second).await.unwrap();
         assert_eq!(ds.pending_change_sets().await.unwrap(), 2);
 
@@ -77,16 +78,16 @@ async fn batches_fold_into_one_commit() {
         );
         assert_eq!(ds.pending_change_sets().await.unwrap(), 0);
         assert_eq!(
-            text_of(&ds, "default/en", 2).await.as_deref(),
+            text_of(&ds, "en", "shared", 2).await.as_deref(),
             Some("rust lang")
         );
-        assert_eq!(text_of(&ds, "default/en", 3).await, None);
+        assert_eq!(text_of(&ds, "en", "shared", 3).await, None);
         assert_eq!(
-            text_of(&ds, "acme/en", 1).await.as_deref(),
+            text_of(&ds, "en", "acme", 1).await.as_deref(),
             Some("python custom")
         );
         assert_eq!(
-            ds.latest().await.unwrap().indexes["default/en"]
+            ds.latest().await.unwrap().namespaces["en"]["shared"]
                 .segments
                 .len(),
             1
@@ -147,7 +148,10 @@ async fn leftover_applied_batches_are_not_reapplied() {
             ingestor.run_once().await.unwrap(),
             IngestStep::Committed { change_sets: 1, .. }
         ));
-        assert_eq!(text_of(&ds, "i", 7).await.as_deref(), Some("second"));
+        assert_eq!(
+            text_of(&ds, "default", "i", 7).await.as_deref(),
+            Some("second")
+        );
         assert_eq!(ds.pending_change_sets().await.unwrap(), 0);
         ingestor.release().await.unwrap();
         wipe(&ds).await;
@@ -266,7 +270,10 @@ async fn corrupt_batches_are_set_aside() {
             ingestor.run_once().await.unwrap(),
             IngestStep::Committed { change_sets: 1, .. }
         ));
-        assert_eq!(text_of(&ds, "i", 1).await.as_deref(), Some("kept"));
+        assert_eq!(
+            text_of(&ds, "default", "i", 1).await.as_deref(),
+            Some("kept")
+        );
         assert_eq!(ds.pending_change_sets().await.unwrap(), 0);
         assert_eq!(ds.store().list("_rejected").await.unwrap().len(), 1);
         ingestor.release().await.unwrap();

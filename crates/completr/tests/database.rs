@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use completr::{
     CleanupPolicy, CompactionPolicy, Database, Document, Engine, Error, Index, IndexOptions,
-    Replica, Segment, BASE_LEVEL,
+    Manifest, Replica, Segment, BASE_LEVEL,
 };
 
 /// A fresh database per backend: memory, a temp dir, and S3 when `COMPLETR_TEST_S3_URL` is set.
@@ -86,7 +86,11 @@ async fn commits_rebase_and_conflict() {
             .set_metadata("cursor", Some("1"));
         let v1 = t.commit().await.unwrap();
         assert_eq!(
-            (v1.version, v1.parent, v1.indexes["a"].max_score),
+            (
+                v1.version,
+                v1.parent,
+                v1.namespaces["default"]["a"].max_score
+            ),
             (1, None, 700.0)
         );
 
@@ -111,7 +115,7 @@ async fn commits_rebase_and_conflict() {
         assert_eq!(first.commit().await.unwrap().version, 2);
         let v3 = second.commit().await.unwrap();
         assert_eq!((v3.version, v3.parent), (3, Some(2)));
-        assert_eq!(v3.indexes["a"].segments.len(), 3);
+        assert_eq!(v3.namespaces["default"]["a"].segments.len(), 3);
         assert_eq!(v3.metadata["cursor"], "1");
         assert!(matches!(strict.commit().await, Err(Error::Conflict(_))));
         assert!(matches!(overwrite.commit().await, Err(Error::Conflict(_))));
@@ -160,7 +164,7 @@ async fn compaction_preserves_results() {
             .await
             .unwrap()
             .expect("five level-0 segments are due");
-        let levels: Vec<u32> = tiered.indexes["a"]
+        let levels: Vec<u32> = tiered.namespaces["default"]["a"]
             .segments
             .iter()
             .map(|s| s.level)
@@ -181,7 +185,7 @@ async fn compaction_preserves_results() {
             .await
             .unwrap()
             .unwrap();
-        let entry = &full.indexes["a"];
+        let entry = &full.namespaces["default"]["a"];
         assert_eq!(
             (
                 entry.segments.len(),
@@ -338,32 +342,62 @@ async fn replica_loads_only_changes() {
         let replica = Replica::new(ds.clone(), IndexOptions::default());
         assert_eq!(replica.sync(&engine).await.unwrap(), None);
 
-        let mut t = ds.begin().await.unwrap();
-        t.append_documents("base/en", docs(0..50, "d"), []).unwrap();
-        t.append_documents("acme/en", docs(0..5, "acme"), [])
+        let en = ds.namespace("en").unwrap();
+        let mut t = en.begin().await.unwrap();
+        t.append_documents("base", docs(0..50, "d"), []).unwrap();
+        t.append_documents("acme", docs(0..5, "acme"), []).unwrap();
+        t.namespace("de")
+            .append_documents("base", docs(0..3, "d"), [])
             .unwrap();
         t.commit().await.unwrap();
         assert_eq!(replica.sync(&engine).await.unwrap(), Some(1));
-        assert_eq!(engine.names(), ["acme/en", "base/en"]);
-        let default_before = engine.get("base/en").unwrap();
+        assert_eq!(engine.namespaces(), ["de", "en"]);
+        let held = engine.namespace("en").unwrap();
+        assert_eq!(
+            (held.names(), held.version()),
+            (vec!["acme".to_owned(), "base".to_owned()], 1)
+        );
+        let base_before = held.get("base").unwrap();
 
-        let mut t = ds.begin().await.unwrap();
-        t.append_documents("acme/en", docs(5..8, "acme"), [])
-            .unwrap();
+        let mut t = en.begin().await.unwrap();
+        t.append_documents("acme", docs(5..8, "acme"), []).unwrap();
         t.commit().await.unwrap();
         assert_eq!(replica.sync(&engine).await.unwrap(), Some(2));
-        assert!(Arc::ptr_eq(
-            &default_before,
-            &engine.get("base/en").unwrap()
-        ));
-        assert_eq!(engine.get("acme/en").unwrap().len(), 8);
+        let now = engine.namespace("en").unwrap();
+        assert!(Arc::ptr_eq(&base_before, &now.get("base").unwrap()));
+        assert_eq!(now.get("acme").unwrap().len(), 8);
+        assert_eq!(
+            (now.version(), engine.namespace("de").unwrap().version()),
+            (2, 2)
+        );
+        // A held namespace keeps serving the version it was taken at.
+        assert_eq!((held.version(), held.get("acme").unwrap().len()), (1, 5));
 
-        let mut t = ds.begin().await.unwrap();
-        t.drop_index("acme/en");
+        let mut t = en.begin().await.unwrap();
+        t.drop_index("acme");
+        t.namespace("de").drop_index("base");
         t.commit().await.unwrap();
         assert_eq!(replica.sync(&engine).await.unwrap(), Some(3));
-        assert_eq!(engine.names(), ["base/en"]);
+        assert_eq!(engine.namespaces(), ["en"]);
+        assert_eq!(engine.namespace("en").unwrap().names(), ["base"]);
         assert_eq!(replica.sync(&engine).await.unwrap(), None);
         wipe(&ds).await;
     }
+}
+
+#[tokio::test]
+async fn names_are_validated_and_old_manifests_load_into_the_default_namespace() {
+    let ds = Database::open("memory://", Vec::<(String, String)>::new())
+        .await
+        .unwrap();
+    assert!(matches!(ds.namespace("de/DE"), Err(Error::InvalidInput(_))));
+    let mut t = ds.begin().await.unwrap();
+    t.append_documents("radio/en", docs(0..2, "d"), []).unwrap();
+    assert!(matches!(t.commit().await, Err(Error::InvalidInput(_))));
+
+    let old = br#"{"version": 4, "parent": 3, "timestamp_ms": 1,
+        "indexes": {"songs": {"max_score": 2.0, "segments": []}}, "metadata": {}}"#;
+    let manifest = Manifest::from_json(old).unwrap();
+    assert_eq!(manifest.index_names(completr::DEFAULT_NAMESPACE), ["songs"]);
+    assert_eq!(manifest.index("default", "songs").unwrap().max_score, 2.0);
 }

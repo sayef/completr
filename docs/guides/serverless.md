@@ -94,7 +94,7 @@ durable.
     txn = db.begin()
     txn.append("songs", [{"id": f"s{i}", "text": f"song {i}", "popularity": 0.5} for i in range(10_000)])
     manifest = txn.commit()
-    print(manifest["version"], list(manifest["indexes"]))
+    print(manifest["version"], list(manifest["namespaces"]["default"]))
     ```
 
 === "Rust"
@@ -147,7 +147,7 @@ except ConflictError as error:
 ```
 
 ```text
-commit conflict: songs changed since version 1
+commit conflict: songs in namespace default changed since version 1
 ```
 
 Each commit writes one segment per changed index, so batch documents where you can: one append of 10,000
@@ -196,7 +196,7 @@ search in progress keeps the version it started with.
     let replica = Arc::new(Replica::new(database.clone(), IndexOptions::default()));
     replica.sync(&engine).await?;
     let follower = replica.follow(&engine, Duration::from_secs(2));
-    let hits = engine.complete(&["songs"], "bill", 10);
+    let hits = engine.complete(&["songs"], "bill", 10)?;
     ```
 
 ```text
@@ -237,9 +237,9 @@ for i in range(5):
     txn = db.begin()
     txn.append("songs", [{"id": f"extra-{i}", "text": f"Extra {i}"}])
     txn.commit()
-print(len(db.manifest()["indexes"]["songs"]["segments"]))
+print(len(db.manifest()["namespaces"]["default"]["songs"]["segments"]))
 db.compact("songs", until_done=True)
-print(len(db.manifest()["indexes"]["songs"]["segments"]))
+print(len(db.manifest()["namespaces"]["default"]["songs"]["segments"]))
 ```
 
 ```text
@@ -311,24 +311,22 @@ A segment is memory-mapped and costs roughly 100 bytes per short title, plus abo
 vector at 4 bits. Hundreds of thousands to a few million documents per index fit comfortably on one
 machine.
 
-While an engine switches versions, the old and new segments of an index are both mapped. When a database
-holds many indexes, pass `group_separator` to `db.engine()` (`Replica::with_groups_by_suffix` in Rust).
-The engine then switches indexes group by group, grouping by the part after the last separator, and
-releases replaced segments before it loads the next group. Serving memory holds at most one group twice,
-never the whole database.
+While an engine switches versions, the old and new segments of an index are both mapped. The engine
+switches one [namespace](layers.md#namespaces) at a time and releases replaced segments before it loads the
+next, so serving memory holds at most one namespace twice, never the whole database. Splitting a large
+database into namespaces, such as one per locale, bounds that peak:
 
 ```python
-txn = db.begin()
-txn.append("shared/en", [{"id": "bohemian", "text": "Bohemian Rhapsody – Queen", "popularity": 0.95}])
-txn.append("radio/en", [{"id": "bohemian", "text": "Bohemian Rhapsody (Remastered 2011) – Queen", "popularity": 0.95}])
-txn.commit()
+with db.namespace("en").begin() as txn:
+    txn.append("shared", [{"id": "bohemian", "text": "Bohemian Rhapsody – Queen", "popularity": 0.95}])
+    txn.append("radio", [{"id": "bohemian", "text": "Bohemian Rhapsody (Remastered 2011) – Queen", "popularity": 0.95}])
 
-engine = db.engine(group_separator="/")   # "radio/en", "shared/en": all "en" indexes switch together
-print([(s.text, s.layer) for s in engine.complete("bohemian", ["shared/en", "radio/en"])])
+engine = db.engine()   # "shared" and "radio" of "en" switch together
+print([(s.text, s.layer) for s in engine.namespace("en").complete("bohemian", ["shared", "radio"])])
 ```
 
 ```text
-[('Bohemian Rhapsody (Remastered 2011) – Queen', 'radio/en')]
+[('Bohemian Rhapsody (Remastered 2011) – Queen', 'radio')]
 ```
 
 Other settings that affect memory and speed:

@@ -1,8 +1,12 @@
 """Layers: python crates/completr-py/examples/layers.py
 
-One catalogue, many views: tenants, locales, listeners, promotions and takedowns as layers.
+One catalogue, many views: tenants, locales, listeners, promotions and takedowns as layers, and
+namespaces that switch together.
 """
 
+import tempfile
+
+import completr
 from completr import Engine, Index, Segment
 
 catalog = Index.from_documents([
@@ -18,8 +22,10 @@ catalog = Index.from_documents([
 engine = Engine()
 engine.publish({"catalog": catalog})
 
-def show(query, layers):
-    return [(s.text, s.layer) for s in engine.complete(query, layers, limit=4)]
+
+def show(query, layers, **options):
+    return [(s.text, s.layer) for s in engine.complete(query, layers, limit=4, **options)]
+
 
 print("\n# tenant")
 radio = Index([Segment.build([
@@ -35,16 +41,16 @@ de = Index.from_documents([
     {"id": "luftballons", "text": "99 Luftballons – Nena", "popularity": 0.98},
     {"id": "atemlos", "text": "Atemlos durch die Nacht – Helene Fischer", "popularity": 0.9},
 ])
-engine.publish({"catalog/de": de})
+engine.publish({"catalog-de": de})
 print(show("99", ["catalog"]))
-print(show("99", ["catalog", "catalog/de"]))
-print(show("atem", ["catalog"]), show("atem", ["catalog", "catalog/de"]))
+print(show("99", ["catalog", "catalog-de"]))
+print(show("atem", ["catalog"]), show("atem", ["catalog", "catalog-de"]))
 
 print("\n# personal")
 user = Index.from_documents([{"id": "ownown", "text": "Dancing On My Own – Robyn", "popularity": 1.0}])
-engine.publish({"user/42": user})
+engine.publish({"user-42": user})
 print(show("danc", ["catalog"]))
-print(show("danc", ["catalog", "user/42"]))
+print(show("danc", ["catalog", "user-42"]))
 
 print("\n# promotion and takedown")
 promo = Index.from_documents([{"id": "dark", "text": "Dancing in the Dark – Bruce Springsteen", "popularity": 1.0}])
@@ -54,7 +60,33 @@ print(show("danc", ["catalog", "promo"]))
 print(show("bill", ["catalog"]), show("bill", ["catalog", "takedowns"]))
 
 print("\n# stacked")
-stack = ["catalog", "catalog/de", "radio", "user/42", "takedowns"]
+stack = ["catalog", "catalog-de", "radio", "user-42", "takedowns"]
 print(show("queen", stack))
 print(show("danc", stack))
 print(show("99", stack))
+
+print("\n# missing layers")
+try:
+    show("danc", ["catalog", "user-7"])
+except completr.LayerNotFoundError as error:
+    print(error)
+print(show("danc", ["catalog", "user-7"], ignore_missing_layers=True))
+
+print("\n# namespaces")
+db = completr.connect(tempfile.mkdtemp())
+with db.namespace("de").begin() as txn:
+    txn.append("catalog", [
+        {"id": "luftballons", "text": "99 Luftballons – Nena", "popularity": 0.98},
+        {"id": "problems", "text": "99 Problems – Jay-Z", "popularity": 0.6},
+    ])
+    txn.append("radio", [{"id": "problems", "text": "99 Problems (Radio Edit) – Jay-Z", "popularity": 0.6}])
+    txn.namespace("us").append("catalog", [
+        {"id": "problems", "text": "99 Problems – Jay-Z", "popularity": 0.95},
+        {"id": "luftballons", "text": "99 Red Balloons – Nena", "popularity": 0.4},
+    ])
+served = db.engine()
+print(served.namespaces())
+de = served.namespace("de")
+print(de)
+print([(s.text, s.layer) for s in de.complete("99", ["catalog", "radio"])])
+print([(s.text, s.layer) for s in served.namespace("us").complete("99", ["catalog", "radio"], ignore_missing_layers=True)])
