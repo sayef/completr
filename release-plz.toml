@@ -39,21 +39,12 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 """
 
-# Generated sections go right below `## [Unreleased]`, so hand-written notes there join the release.
+# Only the version heading: the hand-written notes under `## [Unreleased]` become the release's entry.
 body = """
 
 ## [{{ version }}]\
     {%- if release_link -%}({{ release_link }}){% endif %} \
     - {{ timestamp | date(format="%Y-%m-%d") }}
-{% for group, commits in commits | group_by(attribute="group") %}
-### {{ group | striptags | trim | upper_first }}
-
-{% for commit in commits -%}
-- {% if commit.scope %}*({{ commit.scope }})* {% endif %}\
-  {% if commit.breaking %}[**breaking**] {% endif %}\
-  {{ commit.message | split(pat="\n") | first | trim | upper_first }}
-{% endfor -%}
-{% endfor %}
 """
 
 trim = true
