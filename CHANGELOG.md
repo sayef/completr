@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/sayef/completr/compare/v0.2.0...v0.2.1) - 2026-10-06
+
 ### Fixed
 
 - A crash on macOS when pyarrow, or another library with its own mimalloc, is loaded in the same process.
