@@ -44,7 +44,6 @@ body = """
 ## [{{ version }}]\
     {%- if release_link -%}({{ release_link }}){% endif %} \
     - {{ timestamp | date(format="%Y-%m-%d") }}
-
 """
 
 trim = false
