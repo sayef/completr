@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/completr", "crates/completr-cli", "crates/completr-py"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 rust-version = "1.94.1"
 license = "MIT"
