@@ -7,7 +7,7 @@ use futures::{StreamExt, TryStreamExt};
 use object_store::local::LocalFileSystem;
 use object_store::memory::InMemory;
 use object_store::path::Path;
-use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload};
+use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, TagSet};
 use url::Url;
 
 use crate::{Error, Segment};
@@ -29,6 +29,8 @@ pub struct Store {
     /// Where remote segments are downloaded to and memory-mapped from, per store URL.
     cache: Option<PathBuf>,
     namespace: String,
+    /// Tags on every object written, e.g. to select bucket lifecycle rules.
+    tags: TagSet,
 }
 
 impl Store {
@@ -80,6 +82,7 @@ impl Store {
             local_root: None,
             cache: None,
             namespace,
+            tags: TagSet::default(),
         })
     }
 
@@ -93,6 +96,7 @@ impl Store {
             local_root: Some(root),
             cache: None,
             namespace: String::new(),
+            tags: TagSet::default(),
         })
     }
 
@@ -115,9 +119,31 @@ impl Store {
             .to_vec())
     }
 
+    /// Tags every object this store writes from now on; S3 and Azure keep them, other stores ignore them.
+    pub fn with_tags<K: AsRef<str>, V: AsRef<str>>(
+        mut self,
+        tags: impl IntoIterator<Item = (K, V)>,
+    ) -> Self {
+        let mut set = TagSet::default();
+        for (key, value) in tags {
+            set.push(key.as_ref(), value.as_ref());
+        }
+        self.tags = set;
+        self
+    }
+
+    /// The tags written with every object, URL-encoded as S3 takes them.
+    pub fn tags(&self) -> &str {
+        self.tags.encoded()
+    }
+
     pub async fn put(&self, key: &str, data: Vec<u8>) -> Result<(), Error> {
+        let options = PutOptions {
+            tags: self.tags.clone(),
+            ..PutOptions::default()
+        };
         self.inner
-            .put(&self.path(key), PutPayload::from(data))
+            .put_opts(&self.path(key), PutPayload::from(data), options)
             .await?;
         Ok(())
     }
@@ -127,6 +153,7 @@ impl Store {
     pub async fn put_if_absent(&self, key: &str, data: Vec<u8>) -> Result<bool, Error> {
         let options = PutOptions {
             mode: PutMode::Create,
+            tags: self.tags.clone(),
             ..PutOptions::default()
         };
         match self
@@ -431,6 +458,13 @@ impl BlockingStore {
         self.0.with_cache_dir(dir).map(Self)
     }
 
+    pub fn with_tags<K: AsRef<str>, V: AsRef<str>>(
+        self,
+        tags: impl IntoIterator<Item = (K, V)>,
+    ) -> Self {
+        Self(self.0.with_tags(tags))
+    }
+
     pub fn prune_cache<'a>(&self, keep: impl IntoIterator<Item = &'a str>) -> Result<usize, Error> {
         self.0.prune_cache(keep)
     }
@@ -556,6 +590,123 @@ mod s3 {
 mod tests {
     use super::*;
     use crate::Document;
+
+    /// An in-memory store that records the tags each write carries.
+    #[derive(Debug, Default)]
+    struct Recording {
+        inner: InMemory,
+        tags: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl std::fmt::Display for Recording {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "Recording")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ObjectStore for Recording {
+        async fn put_opts(
+            &self,
+            location: &Path,
+            payload: PutPayload,
+            opts: PutOptions,
+        ) -> object_store::Result<object_store::PutResult> {
+            self.tags
+                .lock()
+                .unwrap()
+                .push(opts.tags.encoded().to_owned());
+            self.inner.put_opts(location, payload, opts).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            location: &Path,
+            opts: object_store::PutMultipartOptions,
+        ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+            self.inner.put_multipart_opts(location, opts).await
+        }
+
+        async fn get_opts(
+            &self,
+            location: &Path,
+            options: object_store::GetOptions,
+        ) -> object_store::Result<object_store::GetResult> {
+            self.inner.get_opts(location, options).await
+        }
+
+        fn delete_stream(
+            &self,
+            locations: futures::stream::BoxStream<'static, object_store::Result<Path>>,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<Path>> {
+            self.inner.delete_stream(locations)
+        }
+
+        fn list(
+            &self,
+            prefix: Option<&Path>,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+        {
+            self.inner.list(prefix)
+        }
+
+        async fn list_with_delimiter(
+            &self,
+            prefix: Option<&Path>,
+        ) -> object_store::Result<object_store::ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+
+        async fn copy_opts(
+            &self,
+            from: &Path,
+            to: &Path,
+            options: object_store::CopyOptions,
+        ) -> object_store::Result<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
+    }
+
+    #[tokio::test]
+    async fn every_write_carries_the_tags() {
+        let recording = Arc::new(Recording::default());
+        let store = Store {
+            inner: recording.clone(),
+            prefix: Path::default(),
+            local_root: None,
+            cache: None,
+            namespace: "recording".into(),
+            tags: TagSet::default(),
+        }
+        .with_tags([
+            ("LifecycleRule", "KeepForever"),
+            ("team", "search & ranking"),
+        ]);
+        assert_eq!(
+            store.tags(),
+            "LifecycleRule=KeepForever&team=search+%26+ranking"
+        );
+
+        let database = crate::Database::new(store);
+        let mut txn = database.begin().await.unwrap();
+        txn.append_documents("songs", [Document::new(1, "Rust", 0.5)], [])
+            .unwrap();
+        txn.commit().await.unwrap();
+        let mut changes = crate::ChangeSet::new();
+        changes.upsert("songs", [Document::new(2, "Go", 0.5)]);
+        database.submit(changes).await.unwrap();
+        database
+            .acquire_lease("ingestor", "me", std::time::Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        let written = recording.tags.lock().unwrap().clone();
+        // A segment, a version, a change set and a lease.
+        assert!(written.len() >= 4, "{written:?}");
+        assert!(written
+            .iter()
+            .all(|t| t == "LifecycleRule=KeepForever&team=search+%26+ranking"));
+    }
 
     #[test]
     fn local_and_memory_round_trip() {

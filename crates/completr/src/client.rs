@@ -28,6 +28,8 @@ pub struct ConnectOptions {
     pub cache_dir: Option<PathBuf>,
     /// Storage options, such as credentials or a region, passed to the object store.
     pub storage: Vec<(String, String)>,
+    /// Tags on every object written, e.g. to select bucket lifecycle rules.
+    pub tags: Vec<(String, String)>,
     pub build: BuildOptions,
     pub index: IndexOptions,
 }
@@ -38,6 +40,7 @@ impl Default for ConnectOptions {
             sync_every: Some(Duration::from_secs(5)),
             cache_dir: None,
             storage: Vec::new(),
+            tags: Vec::new(),
             build: BuildOptions::default(),
             index: IndexOptions::default(),
         }
@@ -48,6 +51,7 @@ crate::setters!(ConnectOptions {
     sync_every: Option<Duration>,
     cache_dir: Option<PathBuf>,
     storage: Vec<(String, String)>,
+    tags: Vec<(String, String)>,
     build: BuildOptions,
     index: IndexOptions,
 });
@@ -218,7 +222,8 @@ const LEGACY_SETTINGS: &str = "collection/";
 pub async fn connect(url: &str, options: ConnectOptions) -> Result<Client, Error> {
     let mut database = Database::open(url, options.storage)
         .await?
-        .with_build_options(options.build);
+        .with_build_options(options.build)
+        .with_tags(options.tags);
     if let Some(dir) = &options.cache_dir {
         database = database.with_cache_dir(dir)?;
     }

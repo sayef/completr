@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `tags` on databases, stores and clients, and `--tag` on the command line: tags on every object written,
+  for buckets that select lifecycle rules by tag.
+
 ## [0.2.1](https://github.com/sayef/completr/compare/v0.2.0...v0.2.1) - 2026-10-06
 
 ### Fixed

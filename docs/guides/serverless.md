@@ -67,6 +67,20 @@ default credentials file or the instance metadata server.
 In Rust, the S3 credential chain requires the `aws-credentials` feature, and options are the key-value
 pairs passed to `Database::open`.
 
+### Object tags
+
+`tags` puts the same tags on every object completr writes: segments, manifests, change sets and leases.
+Use them where a bucket selects lifecycle rules, replication or cost allocation by tag:
+
+<!-- skip-test -->
+```python
+db = completr.connect("s3://bucket/completions", tags={"LifecycleRule": "KeepForever"})
+```
+
+Pick a rule that never expires or archives objects. completr deletes what it no longer needs itself, with
+[cleanup](#cleanup), while a segment still in use can be months old. S3 needs `s3:PutObjectTagging` for
+tagged writes. In Rust the option is `Database::with_tags`, and on the command line `--tag KEY=VALUE`.
+
 ## Disk cache
 
 For object stores, pass `cache_dir` to keep downloaded segments on local disk. They are then

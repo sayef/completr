@@ -12,6 +12,7 @@ Passed to `completr.connect(url, ...)`, `completr.Database(url, ...)` and `compl
 | `url` | required | A local path, or an `s3://`, `gs://`, `az://` or `memory://` URL. |
 | `options` | `None` | `object_store` configuration keys, such as `aws_region`, `aws_endpoint` or `google_service_account`. They override the environment. |
 | `cache_dir` | `None` | Local directory for downloaded segments, memory-mapped. No effect on local databases. |
+| `tags` | `None` | Tags on every object written, such as `{"LifecycleRule": "KeepForever"}`. S3 and Azure keep them; other stores ignore them. |
 
 `connect` also takes the [build options](#build-options), which apply to every segment the database's
 transactions and ingestors build.
@@ -140,6 +141,7 @@ Passed to `completr.Client(url, ...)` and `completr.AsyncClient(url, ...)`, toge
 | `sync_every` | 5.0 | Seconds between background syncs. `None` syncs only on `client.sync()`. |
 | `cache_dir` | `None` | As for `connect`. |
 | `options` | `None` | As for `connect`. |
+| `tags` | `None` | As for `connect`. |
 
 ### Collection settings
 

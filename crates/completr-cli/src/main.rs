@@ -28,6 +28,9 @@ struct Cli {
         default_value = "default"
     )]
     namespace: String,
+    /// Tag every object written, e.g. `--tag LifecycleRule=KeepForever`; repeatable.
+    #[arg(long = "tag", global = true, env = "COMPLETR_TAGS", value_delimiter = ',', value_parser = tag)]
+    tags: Vec<(String, String)>,
     #[command(subcommand)]
     command: Command,
 }
@@ -82,6 +85,13 @@ enum Command {
         #[arg(long, default_value_t = 1.0)]
         interval: f64,
     },
+}
+
+fn tag(value: &str) -> Result<(String, String), String> {
+    let (key, value) = value
+        .split_once('=')
+        .ok_or_else(|| format!("expected KEY=VALUE, got {value:?}"))?;
+    Ok((key.to_owned(), value.to_owned()))
 }
 
 fn document(line: &str) -> Result<Document, String> {
@@ -150,7 +160,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_writer(std::io::stderr)
         .init();
     let cli = Cli::parse();
-    let db = Database::open(&cli.url, Vec::<(String, String)>::new()).await?;
+    let db = Database::open(&cli.url, Vec::<(String, String)>::new())
+        .await?
+        .with_tags(cli.tags.clone());
     match cli.command {
         Command::Inspect { json } => {
             let manifest = db.latest().await?;

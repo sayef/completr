@@ -3,6 +3,8 @@ import time
 
 import pytest
 
+import completr
+
 from completr import ConflictError
 from completr import ChangeSet, Database, Engine, Replica, Store, Ingestor
 
@@ -184,3 +186,14 @@ def test_threaded_queries_during_updates(database):
     assert len({id(index) for index, _, _ in samples}) > 1
     for index, query, result in samples:
         assert [(h.id, h.score, h.kind) for h in index.complete(query, 10)] == result
+
+
+def test_tags_are_accepted_everywhere_and_ignored_by_local_stores(tmp_path):
+    tags = {"LifecycleRule": "KeepForever"}
+    db = completr.connect(str(tmp_path / "db"), tags=tags)
+    with db.begin() as txn:
+        txn.append("songs", DOCS[:2])
+    assert db.index_names() == ["songs"]
+    completr.Store(str(tmp_path / "store"), tags=tags).put("a", b"x")
+    client = completr.Client(str(tmp_path / "client"), sync_every=None, tags=tags)
+    client.create_collection("songs").add(DOCS[:2])

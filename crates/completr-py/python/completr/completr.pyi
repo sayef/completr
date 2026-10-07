@@ -311,7 +311,12 @@ class Engine:
 
 class Store:
     def __init__(
-        self, url: str, options: Mapping[str, str] | None = None, cache_dir: str | PathLike[str] | None = None
+        self,
+        url: str,
+        options: Mapping[str, str] | None = None,
+        cache_dir: str | PathLike[str] | None = None,
+        *,
+        tags: Mapping[str, str] | None = None,
     ) -> None: ...
     def prune_cache(self, keep: Sequence[str]) -> int: ...
     def get(self, key: str) -> bytes: ...
@@ -394,6 +399,7 @@ class Database:
         options: Mapping[str, str] | None = None,
         cache_dir: str | PathLike[str] | None = None,
         *,
+        tags: Mapping[str, str] | None = None,
         min_word_chars: int = 3,
         max_edit_distance: int = 2,
         fuzzy_prefix_chars: int = 7,
@@ -564,6 +570,7 @@ class Client:
         sync_every: float | None = 5.0,
         cache_dir: str | PathLike[str] | None = None,
         options: Mapping[str, str] | None = None,
+        tags: Mapping[str, str] | None = None,
         min_word_chars: int = 3,
         max_edit_distance: int = 2,
         fuzzy_prefix_chars: int = 7,

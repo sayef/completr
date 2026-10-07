@@ -53,6 +53,7 @@ aws-credentials = ["aws", "dep:aws-config", "dep:aws-credential-types", "dep:asy
 [dev-dependencies]
 turbovec = "1.0.0"
 tempfile = "3"
+async-trait = "0.1"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

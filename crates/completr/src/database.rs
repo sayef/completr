@@ -196,6 +196,17 @@ impl Database {
         Ok(Self::new(Store::open_with(url, options).await?))
     }
 
+    /// Tags every object this database writes, e.g. to select bucket lifecycle rules.
+    pub fn with_tags<K: AsRef<str>, V: AsRef<str>>(
+        self,
+        tags: impl IntoIterator<Item = (K, V)>,
+    ) -> Self {
+        Self {
+            store: self.store.with_tags(tags),
+            ..self
+        }
+    }
+
     /// Caches downloaded segments in `dir` and memory-maps them.
     pub fn with_cache_dir(self, dir: impl AsRef<std::path::Path>) -> Result<Self, Error> {
         Ok(Self {

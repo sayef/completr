@@ -1543,17 +1543,19 @@ struct Store(completr_rs::BlockingStore);
 #[pymethods]
 impl Store {
     #[new]
-    #[pyo3(signature = (url, options = None, cache_dir = None))]
+    #[pyo3(signature = (url, options = None, cache_dir = None, *, tags = None))]
     fn new(
         py: Python<'_>,
         url: &str,
         options: Option<HashMap<String, String>>,
         cache_dir: Option<PathBuf>,
+        tags: Option<HashMap<String, String>>,
     ) -> PyResult<Self> {
         let options = options.unwrap_or_default();
         let store = py
             .detach(|| completr_rs::BlockingStore::open_with(url, options))
-            .map_err(to_py_err)?;
+            .map_err(to_py_err)?
+            .with_tags(tags.unwrap_or_default());
         let store = match cache_dir {
             Some(dir) => store.with_cache_dir(dir).map_err(to_py_err)?,
             None => store,
@@ -1637,11 +1639,11 @@ impl Database {
 
 #[pymethods]
 impl Database {
-    /// `cache_dir` keeps downloaded segments on local disk, memory-mapped. The keyword settings
-    /// apply to segments this database builds from documents.
+    /// `cache_dir` keeps downloaded segments on local disk, memory-mapped; `tags` go on every object
+    /// written. The other keyword settings apply to segments this database builds from documents.
     #[new]
     #[pyo3(signature = (
-        url, options = None, cache_dir = None, *,
+        url, options = None, cache_dir = None, *, tags = None,
         min_word_chars = 3, max_edit_distance = 2, fuzzy_prefix_chars = 7, vector_bits = 4, compact_keys = false, build_threads = 1,
     ))]
     #[allow(clippy::too_many_arguments)]
@@ -1650,6 +1652,7 @@ impl Database {
         url: &str,
         options: Option<HashMap<String, String>>,
         cache_dir: Option<PathBuf>,
+        tags: Option<HashMap<String, String>>,
         min_word_chars: u8,
         max_edit_distance: u8,
         fuzzy_prefix_chars: u8,
@@ -1660,7 +1663,8 @@ impl Database {
         let options = options.unwrap_or_default();
         let database = py
             .detach(|| completr_rs::block_on(completr_rs::Database::open(url, options)))
-            .map_err(to_py_err)?;
+            .map_err(to_py_err)?
+            .with_tags(tags.unwrap_or_default());
         let database = match cache_dir {
             Some(dir) => database.with_cache_dir(dir).map_err(to_py_err)?,
             None => database,
@@ -2519,7 +2523,7 @@ impl Client {
     /// `None` syncs only on `sync()`. The keyword settings apply to segments this client builds.
     #[new]
     #[pyo3(signature = (
-        url = "memory://", *, sync_every = Some(5.0), cache_dir = None, options = None,
+        url = "memory://", *, sync_every = Some(5.0), cache_dir = None, options = None, tags = None,
         min_word_chars = 3, max_edit_distance = 2, fuzzy_prefix_chars = 7, vector_bits = 4, compact_keys = false, build_threads = 1,
     ))]
     #[allow(clippy::too_many_arguments)]
@@ -2529,6 +2533,7 @@ impl Client {
         sync_every: Option<f64>,
         cache_dir: Option<PathBuf>,
         options: Option<HashMap<String, String>>,
+        tags: Option<HashMap<String, String>>,
         min_word_chars: u8,
         max_edit_distance: u8,
         fuzzy_prefix_chars: u8,
@@ -2548,6 +2553,7 @@ impl Client {
             .sync_every(sync_every.map(|s| Duration::from_secs_f64(s.max(0.001))))
             .cache_dir(cache_dir)
             .storage(options.unwrap_or_default().into_iter().collect())
+            .tags(tags.unwrap_or_default().into_iter().collect())
             .build(build);
         let client = py
             .detach(|| completr_rs::block_on(completr_rs::connect(url, connect)))
