@@ -5,7 +5,8 @@ use rustc_hash::FxHashMap;
 
 use crate::hybrid::fuse;
 use crate::{
-    AliasSuggestion, Error, HybridOptions, HybridSuggestion, Index, SearchOptions, Suggestion,
+    AliasSuggestion, Error, HybridOptions, HybridSuggestion, Index, MatchKind, SearchOptions,
+    Suggestion,
 };
 
 /// The namespace of indexes published or written without naming one.
@@ -409,7 +410,7 @@ pub fn layered_complete(
         })
         .collect();
     merge(layers, per_layer, options.limit, |s: &Suggestion| {
-        (s.id, s.score)
+        (s.id, s.kind == MatchKind::Fuzzy, s.score)
     })
 }
 
@@ -433,7 +434,7 @@ pub fn layered_complete_aliases(
         })
         .collect();
     merge(layers, per_layer, options.limit, |s: &AliasSuggestion| {
-        (s.id, s.score)
+        (s.id, false, s.score)
     })
 }
 
@@ -452,7 +453,7 @@ pub fn layered_vector_search(
         });
     }
     Ok(merge(layers, per_layer, options.limit, |s: &Suggestion| {
-        (s.id, s.score)
+        (s.id, false, s.score)
     }))
 }
 
@@ -471,7 +472,7 @@ fn merge<S>(
     layers: &[Option<&Index>],
     per_layer: Vec<Vec<S>>,
     limit: usize,
-    key: impl Fn(&S) -> (u64, f64),
+    key: impl Fn(&S) -> (u64, bool, f64),
 ) -> Vec<LayeredSuggestion<S>> {
     let mut merged: Vec<LayeredSuggestion<S>> = Vec::new();
     let mut position: FxHashMap<u64, usize> = FxHashMap::default();
@@ -495,11 +496,11 @@ fn merge<S>(
             .flatten()
             .any(|index| index.covers(id))
     });
+    // A correction from one layer never outranks a direct match from another.
     merged.sort_by(|a, b| {
-        key(&b.suggestion)
-            .1
-            .partial_cmp(&key(&a.suggestion).1)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        let (a, b) = (key(&a.suggestion), key(&b.suggestion));
+        a.1.cmp(&b.1)
+            .then(b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal))
     });
     merged.truncate(limit);
     merged

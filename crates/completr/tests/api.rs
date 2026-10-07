@@ -327,3 +327,84 @@ fn missing_layers_and_namespaces_fail_with_the_names_that_exist() {
     ));
     assert!(engine.complete(&["customer-a"], "mach", 10).is_err());
 }
+
+fn crowded() -> Index {
+    let docs = [
+        ("Salesforce (software)", 0.9),
+        ("Salesforce Marketing Cloud", 0.6),
+        ("Salesforce Sales Cloud", 0.2),
+        ("Salesforce automation", 0.2),
+        ("Salesforce Service Cloud", 0.2),
+        ("Salesforce Einstein", 0.2),
+        ("Sales", 0.9),
+        ("Sales plays", 0.8),
+        ("Sales tax", 0.7),
+        ("Photoshop plugin", 0.5),
+        ("Adobe Photoshop", 0.3),
+        ("Photosynthesis", 0.9),
+        ("Photosystem", 0.8),
+        ("PhotoScape", 0.8),
+    ];
+    let docs = docs
+        .iter()
+        .enumerate()
+        .map(|(i, &(text, popularity))| Document::new(i as u64, text, popularity));
+    Index::from_documents(docs).unwrap()
+}
+
+#[test]
+fn a_shorter_limit_returns_the_head_of_a_longer_one() {
+    let index = crowded();
+    for query in ["salesf", "photosh"] {
+        let long = index.complete(query, 20);
+        for limit in 1..10 {
+            let short = index.complete(query, limit);
+            assert_eq!(
+                ids(&short, |s| s.id),
+                ids(&long[..limit.min(long.len())], |s| s.id),
+                "{query} limit {limit}"
+            );
+        }
+    }
+}
+
+#[test]
+fn every_direct_match_ranks_above_corrections() {
+    let index = crowded();
+    let hits = index.complete("photosh", 3);
+    let kinds: Vec<_> = hits.iter().map(|s| s.kind).collect();
+    assert_eq!(
+        kinds[..2],
+        [MatchKind::Prefix, MatchKind::Infix],
+        "{hits:?}"
+    );
+}
+
+#[test]
+fn a_correction_in_one_layer_ranks_below_a_direct_match_in_another() {
+    let base = Index::from_documents([Document::new(1, "Sales", 0.9)]).unwrap();
+    let customer = Index::from_documents([Document::new(2, "Salesforce Admin", 0.01)]).unwrap();
+    let hits = completr::layered_complete(
+        &[Some(&base), Some(&customer)],
+        "salesf",
+        &SearchOptions::new(5),
+        2,
+    );
+    let order: Vec<_> = hits
+        .iter()
+        .map(|h| (h.suggestion.id, h.suggestion.kind))
+        .collect();
+    assert_eq!(order, [(2, MatchKind::Prefix), (1, MatchKind::Fuzzy)]);
+}
+
+#[test]
+fn a_query_of_two_characters_is_not_corrected() {
+    let index = Index::from_documents([
+        Document::new(1, "C# (programming language)", 0.6).with_abbreviation("C#"),
+        Document::new(2, "Carbon", 0.9),
+        Document::new(3, "Car classification", 0.9),
+    ])
+    .unwrap();
+    let hits = index.complete("c#", 5);
+    assert_eq!(ids(&hits, |s| s.id), [1], "{hits:?}");
+}

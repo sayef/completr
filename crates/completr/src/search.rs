@@ -9,6 +9,9 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::index::{char_count, current_filter, with_filter, Field};
 use crate::{fuzzy, text, Index};
 
+/// Shorter queries are not corrected: one edit away from two characters is almost anything.
+const MIN_CORRECTED_CHARS: usize = 3;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum MatchKind {
@@ -898,7 +901,10 @@ impl Index {
             .collect();
 
         let mut fuzzy_matches: FxHashMap<u32, (usize, usize, f64)> = FxHashMap::default();
-        if prefix_matches.len() < max_results && depth < 2 {
+        if prefix_matches.len() < max_results
+            && depth < 2
+            && text::char_len(q) >= MIN_CORRECTED_CHARS
+        {
             let mut last_distance = 0;
             for (rank, (phrase, distance)) in self
                 .fix_spell(
@@ -1017,9 +1023,11 @@ impl Index {
                 (score, len, self.id_key(doc), doc, m)
             })
             .collect();
+        // Corrections rank below every direct match before the cut, so a longer limit only appends.
         scored.sort_unstable_by(|a, b| {
-            b.0.partial_cmp(&a.0)
-                .unwrap_or(Ordering::Equal)
+            (a.4.fuzzy_distance > 0)
+                .cmp(&(b.4.fuzzy_distance > 0))
+                .then(b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal))
                 .then(a.1.cmp(&b.1))
                 .then(a.2.cmp(&b.2))
         });
