@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.3](https://github.com/sayef/completr/compare/v0.2.2...v0.2.3) - 2026-10-07
+
 ## [0.2.2](https://github.com/sayef/completr/compare/v0.2.1...v0.2.2) - 2026-10-07
 
 ### Added
