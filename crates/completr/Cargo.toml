@@ -26,7 +26,7 @@ rayon = "1.10"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 rapidfuzz = "0.5"
 turbovec = "1.0.0"
-zstd = "0.13"
+zstd = "0.14"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 fsst-rs = "0.6"
 async-trait = { version = "0.1", optional = true }
